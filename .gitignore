@@ -1,0 +1,13 @@
+/build/
+/build-host/
+/build-arm/
+/build-sanitize/
+/.tools/
+/*.app/
+__pycache__/
+*.pyc
+.DS_Store
+*.elf
+*.hex
+*.bin
+*.map

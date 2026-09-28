@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>EasyTVC Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">↗</span><div>EasyTVC<span>STUDIO / 01</span></div></div>
+    <nav aria-label="Workspace">
+      <button class="nav-item selected" data-tab="tune">⌁ <span>Tuning lab</span></button>
+      <button class="nav-item" data-tab="device">⇄ <span>Board connection</span></button>
+      <button class="nav-item" data-tab="guide">⊞ <span>USB &amp; setup</span></button>
+    </nav>
+    <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Local tools. Your profiles stay with you.</p></div>
+    <button id="quit" class="quiet">Quit Studio ↗</button>
+  </aside>
+  <main>
+    <header><span class="eyebrow">FLIGHT SYSTEMS / EASYTVC v0.1</span><span id="connection-badge" class="badge">OFFLINE · SIMULATION</span></header>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="tune" class="tab">
+      <div class="page-title"><div><h1>Find your balance.</h1><p>Tune two gimbal axes. Explore disturbances. Keep the limits in view.</p></div><button id="run" class="primary">Run simulation <span>↗</span></button></div>
+      <div class="banner"><strong>Development workspace</strong><span>The board pin map is still unverified. Simulation works now; physical TVC and USB settings need a board-specific firmware adapter.</span></div>
+      <div class="profile-bar"><label>PROFILE <input id="profile-name" maxlength="80" aria-label="Profile name"></label><div><button id="import">Import</button><button id="export">Save profile ↓</button><button id="reset" class="quiet">Reset</button></div><input id="file" type="file" accept="application/json,.json" hidden></div>
+      <div class="workspace-grid">
+        <div class="controls">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">01 / CONTROL</span><h2>Gimbal tuning</h2></div><span class="chip">200 Hz model</span></div><p class="help">Body +Z points toward the nose. Axis X and Y are the two tilt rotations; axial spin is uncontrolled.</p><div id="axes"></div><label class="inline-field">Tilt cutoff <span><input id="maximum-tilt" type="number" min="5" max="45" step="1"> °</span></label></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">02 / CONDITIONS</span><h2>Wind &amp; weather</h2></div><span class="weather-icon">≋</span></div><div id="conditions"></div><label class="check"><input id="wet" type="checkbox"> Rain, condensation, or wet hardware</label><details><summary>Your operating limits</summary><div id="weather-limits"></div><label class="check"><input id="validated" type="checkbox"> These limits were independently validated for my vehicle.</label></details><div id="weather-result" class="assessment">Operating limits are unvalidated.</div><p class="help">Wind inputs change the simulated disturbance. Gains do not change automatically. No setting provides all-weather capability.</p></article>
+        </div>
+        <div class="results">
+          <article class="card chart-card"><div class="card-heading"><div><span class="eyebrow">RESPONSE PREVIEW</span><h2>How does it settle?</h2></div><div class="legend"><span class="x">● Axis X</span><span class="y">● Axis Y</span></div></div><div class="chart-wrap"><canvas id="chart" aria-label="Simulated tilt versus time" role="img"></canvas><span id="chart-hint">Run the model to see the response.</span></div><div class="chart-foot"><span id="chart-caption">Tilt · degrees / time · seconds</span><button id="csv" class="quiet" disabled>Export CSV ↓</button></div><div class="metrics"><div><span>PEAK TILT</span><strong id="peak">—</strong></div><div><span>FINAL TILT</span><strong id="final">—</strong></div><div><span>AT OUTPUT LIMIT</span><strong id="saturation">—</strong></div></div><div id="simulation-status" class="assessment">Ready for a simulated bench run.</div><p class="help">Uses the C firmware controller. Constant thrust, two-axis rotational dynamics, servo lag, and a simplified wind torque. It does not predict trajectory, stability through burnout, vibration, battery behavior, or hardware reliability.</p></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">03 / VEHICLE</span><h2>Model assumptions</h2></div><span class="chip">Example values</span></div><p class="help">Replace these with measured vehicle and actuator data. Simulation assumes servo directions produce the correct torque; prove those directions on the bench.</p><div id="plant" class="field-grid"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">04 / ACTUATORS</span><h2>Servo calibration</h2></div><span class="chip">Profile only</span></div><p class="help">Choose separate output channels and measured pulse limits. Editing these fields does not move hardware. A proper 5 V servo supply is required; USB power alone is not established as sufficient.</p><div id="servos"></div></article>
+        </div>
+      </div>
+    </section>
+    <section id="device" class="tab" hidden>
+      <div class="page-title"><div><h1>A direct connection.</h1><p>Read and verify settings over USB serial once the board adapter is complete.</p></div></div>
+      <div class="banner"><strong>Adapter required</strong><span>The included blank STM32 image does not expose a serial port. The ST DFU bootloader is for programming; it cannot stream telemetry or change tuning.</span></div>
+      <article class="card"><h2>USB serial device</h2><div class="connection-controls"><select id="port" aria-label="Serial port"><option value="">No USB serial devices</option></select><button id="refresh">Refresh</button><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div><p id="device-status">Disconnected. Simulation and profile editing remain available.</p><div class="actions"><button id="read" disabled>Read tuning from board</button><button id="write" disabled>Save tuning to board</button></div><p class="help">Saving requires verified hardware, idle state, and the physical arm input off. Studio waits for storage acknowledgement and verifies the complete packet by reading it back.</p></article>
+      <article class="card"><div class="card-heading"><h2>Live telemetry</h2><button id="telemetry-export" disabled>Export CSV ↓</button></div><p id="telemetry-status">No sensor data received.</p><div class="telemetry-grid" id="telemetry-values"></div><p class="help">Telemetry display uses the core’s CSV format. It is diagnostic data, not a safety interlock. A stale stream is marked explicitly.</p></article>
+    </section>
+    <section id="guide" class="tab" hidden>
+      <div class="page-title"><div><h1>From code to board.</h1><p>A USB-C connector provides transport. The firmware still needs the exact board wiring.</p></div></div>
+      <article class="card guide"><h2>What is ready</h2><p>Profile editing, simulation using the C controller, CRC-protected settings, serial transport, and a USB DFU utility. The core is host tested. The available MCU image is a blank bring-up image and does not operate TVC.</p><h2>What is needed for physical TVC</h2><ol><li>EasyTVC v0.1 schematic or verified pin map: sensor bus pins and chip selects, servo timer pins, clock, USB, and arm input.</li><li>Servo model, measured endpoints, linkage direction, gimbal geometry, and the board-to-rocket orientation.</li><li>Board drivers for sensors, USB CDC, PWM, watchdog, and atomic settings storage; then powered bench validation.</li></ol><h2>USB-C upload workflow</h2><ol><li>Use a data-capable USB-C cable. Keep motors, ignition, and recovery charges disconnected during bring-up.</li><li>Enter the STM32 ROM bootloader using the board’s BOOT/RST controls. Confirm the exact sequence with the board documentation.</li><li>List the DFU device with <code>python3 scripts/dfu.py list</code>.</li><li>Inspect an appropriate image with <code>python3 scripts/dfu.py inspect path/to/firmware.bin</code>. Confirm the board, image purpose, address, and hash.</li><li>The explicit <code>flash</code> command downloads and reads back the bytes for verification. See <code>docs/usb-and-studio.md</code> for the command. Studio does not flash from a browser.</li></ol><h2>Weather and reliability</h2><p>Increasing PID gains can produce oscillation or saturate a servo. Wind tolerance depends on available thrust and torque, inertia, aerodynamics, servo speed, structural limits, and the actual flight conditions. Simulation is a tool for exploring those relationships; measured bench and flight evidence establishes usable limits.</p><p>This workspace does not implement a flight recovery system. Pyro outputs remain disabled. Do not use it as the sole flight or recovery computer.</p><h2>References</h2><p>Board specification: <a href="https://mr-wongs-shenanigans.com/products/easytvc" target="_blank" rel="noreferrer">Mr Wong’s EasyTVC</a>. Control reference: <a href="https://github.com/ArduPilot/ardupilot/blob/master/libraries/AC_PID/AC_PID.cpp" target="_blank" rel="noreferrer">ArduPilot PID</a>. Programming: <a href="https://dfu-util.sourceforge.net/dfu-util.1.html" target="_blank" rel="noreferrer">dfu-util</a>. External source code has not been copied into this project.</p></article>
+    </section>
+    <footer>EasyTVC Studio <span>LOCAL DEVELOPMENT BUILD · HARDWARE UNVERIFIED</span></footer>
+  </main>
+</body>
+</html>
