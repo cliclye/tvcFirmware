@@ -19,6 +19,7 @@ but must not call into this state concurrently.
   storage leaves the active settings unchanged.
 
 The hardware adapter, including its storage callback, **does not exist yet**.
+Vendor pin macros are in `board_pins.h`; they are not wired to peripherals.
 `tests/protocol_console.c` is only a host fixture with simulated storage.
 
 ## Coordinate convention and control
@@ -60,14 +61,15 @@ policy. Pyro outputs remain compiled out.
 
 Do not set `hardware_verified=true` merely because an image builds. Complete:
 
-1. Schematic/continuity evidence and startup/off behavior for every touched pin.
-2. Clock/FPU setup, complete interrupt vectors, brownout/reset handling,
-   independent watchdog, timing budget, and fault-safe PWM behavior.
-3. BMI088 initialization/readback, SPI dummy cycles or I2C transport, data-ready
-   sampling, timestamps, scaling/saturation detection, stationary gyro calibration,
-   and verified sensor-axis transform.
-4. BME280 calibration coefficients/compensation, timing/freshness/plausibility,
-   and launch-pad pressure/altitude reference.
+1. Vendor hwdef pin map is recorded. Still required: startup/off behavior for
+   every pin an image actually drives, and I2C1 internal pull-ups for BME280.
+2. Clock/FPU setup (16 MHz HSE per hwdef), complete interrupt vectors,
+   brownout/reset handling, independent watchdog, timing budget, and fault-safe PWM.
+3. BMI088 on SPI1 (accel CS `PC8`, gyro CS `PC7`, Mode 3), dummy cycles,
+   data-ready sampling, timestamps, scaling/saturation detection, stationary gyro
+   calibration, and a bench-checked sensor-axis transform (`ROLL_180_YAW_90` in hwdef).
+4. BME280 on I2C1 with STM32 internal pull-ups, chip-id `0x60`, addresses `0x76`/`0x77`,
+   calibration/compensation, timing/freshness/plausibility, and pad pressure reference.
 5. USB CDC descriptors and bounded nonblocking queues. Drop telemetry when the
    host is slow. USB must not delay control or be required during flight.
 6. Servo timers, power supply, endpoints, physical direction, and reset/stall/
@@ -79,9 +81,10 @@ Do not set `hardware_verified=true` merely because an image builds. Complete:
    previous valid record. Return true from persistence only after verification;
    never erase/write while armed.
 
-BMI088/BME280 files currently perform **identity probes only**. NOR and microSD
-logging are absent. The overwriting 32-record RAM ring is diagnostic, not a
-flight recorder. The only executable MCU image remains the no-I/O blank image.
+BMI088/BME280 files currently perform **identity probes only**. NOR (SPI2) and
+microSD (SPI3) logging are absent. The overwriting 32-record RAM ring is
+diagnostic, not a flight recorder. The only executable MCU image remains the
+no-I/O blank image.
 
 ## Mac Studio
 

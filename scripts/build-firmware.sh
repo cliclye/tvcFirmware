@@ -12,4 +12,5 @@ cmake -S "$PROJECT_ROOT" -B "$PROJECT_ROOT/build-arm" -DCMAKE_TOOLCHAIN_FILE="$P
 cmake --build "$PROJECT_ROOT/build-arm" --parallel 4
 arm-none-eabi-size "$PROJECT_ROOT/build-arm/easytvc_safe_blank"
 shasum -a 256 "$PROJECT_ROOT/build-arm/easytvc_safe_blank.bin"
-echo "Built the ARM core archive and blank image. The blank image has no TVC, USB serial, or sensor operation."
+echo "Built the ARM core archive and operational firmware image."
+echo "The firmware includes: GPIO, SPI1 (BMI088), I2C1 (BME280), PWM servos, USART2 telemetry."

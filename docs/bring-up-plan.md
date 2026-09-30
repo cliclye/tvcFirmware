@@ -3,18 +3,20 @@
 Each gate must pass on USB power only before the next begins. No LiPo, e-match,
 charge, or flight hardware is permitted during these gates.
 
-1. Obtain continuity measurements and complete the pin-map evidence register.
+1. Pin-map evidence is the vendor hwdef (`board/easytvc.hwdef`). Optional
+   continuity checks remain useful; they are no longer blocking for mapping.
 2. Build and inspect the command-line `easytvc_safe_blank` baseline without
    connecting the board.
-3. Add an early safe-output routine for
-   confirmed pyro control nets only. Keep every unknown GPIO at reset state.
+3. Do **not** initialize pyro, `PA13`, or `PA14` in early images (SWD overlap,
+   vendor-untested pyro). Keep unused GPIO at reset state.
 4. Build a status-only image. Review its size, address, SHA-256, and DFU write
    command; obtain explicit approval before flashing with verification.
 5. Verify a benign RGB status indication over USB power.
 6. Verify USB serial telemetry, then sensor identities, one device at a time.
 7. Verify one servo with an unloaded bench servo.
-8. Verify pyro logic only with a dummy LED-and-resistor load, a confirmed
-   physical arming arrangement, and independent timing observation.
+8. Verify pyro logic only with a dummy LED-and-resistor load, never with
+   pyrotechnics, a confirmed physical arming arrangement, and independent
+   timing observation. Vendor has not fully tested pyro or continuity.
 
 The flight state machine, TVC control loop, and flight logging are integration
 work after the individual hardware gates pass.

@@ -54,7 +54,8 @@ No physical DFU write/read-back, USB CDC enumeration, sensor acquisition,
 stationary calibration, PWM output, watchdog reset, brownout behavior, power-loss
 storage recovery, servo direction, loaded actuator response, flight, or weather
 qualification has been performed. The board driver needed for these operations
-does not exist; pin assignments and actuator details remain missing.
+does not exist. Pin assignments are recorded from the 2026-09-29 vendor hwdef
+and have not been exercised on hardware.
 
 Host tests and an ARM compile do not establish flightworthiness. A functioning
 board image and measured bench results remain necessary before considering flight.

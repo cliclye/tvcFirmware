@@ -10,8 +10,8 @@ It does only three things after reset:
 
 It deliberately does **not** enable any peripheral clock or write any GPIO,
 timer, USART, I2C, SPI, USB, flash, SD, or pyro register. GPIO therefore stays
-in STM32 reset state. This is the only safe behaviour while the pin map is
-empty.
+in STM32 reset state. The vendor pin map is recorded in `board_pins.h` but is
+not applied by this image.
 
 ## Offline build
 

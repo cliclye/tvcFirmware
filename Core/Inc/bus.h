@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 /*
- * Abstract register bus. Hardware SPI/I2C adapters must not be added until
- * chip-select, address, and pin nets are confirmed. Host tests inject fakes.
+ * Abstract register bus. Pin nets are in board_pins.h (vendor hwdef). SPI/I2C
+ * adapters still must not write GPIO from the blank image. Host tests inject fakes.
  */
 typedef struct EasyTVCBus EasyTVCBus;
 

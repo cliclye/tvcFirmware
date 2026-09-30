@@ -6,10 +6,11 @@ No account, cloud service, npm, or Python packages are required. The app needs P
 3.9+; the Python installation already present on this Mac is supported.
 
 **This is a working tuning/simulation application and tested portable controller,
-not completed flight firmware for the physical board.** The photos identify
-EasyTVC v0.1 / STM32F405RGT6, but do not establish its electrical pin map.
-There is no operational sensor/servo/USB board adapter yet. No board was flashed.
-Do not upload the blank image expecting working TVC.
+not completed flight firmware for the physical board.** EasyTVC v0.1 pin nets
+from Brian Wong's hwdef are in `board/easytvc.hwdef` and `Core/Inc/board_pins.h`.
+There is still no operational sensor/servo/USB board adapter. No board was flashed.
+Do not upload the blank image expecting working TVC. BME280 needs STM32 I2C
+pull-ups. Pyro is untested by the vendor and remains compiled out.
 
 ## What you can use now
 
@@ -51,16 +52,13 @@ toolchain containing newlib. The Homebrew compiler alone lacks those headers.
 
 ## What is needed to finish the physical firmware
 
-1. The EasyTVC v0.1 schematic or a continuity-verified map of sensor buses/chip
-   selects, servo pins/timers, clock, USB, arm input, and output-off states.
+1. A board adapter that programs the vendor pin map: 16 MHz HSE, SPI1 BMI088,
+   I2C1 BME280 with internal pull-ups, USART2/UART4, USB FS, and TIM3/TIM4 PWM.
+   Leave pyro and SWD pins (`PA13`/`PA14`) untouched until a dedicated gate.
 2. Servo model, channels, measured pulse endpoints, linkage direction, gimbal
-   geometry, and board orientation in the vehicle.
-3. Board-specific sensor acquisition, USB CDC, PWM, watchdog, calibration, and
-   power-loss-safe settings storage, followed by powered bench tests.
-
-Photos alone cannot establish these nets. The manufacturer's public ArduPilot
-fork did not contain an EasyTVC target when checked on 2026-09-27; the older
-Megadingus FC2.1 uses an RP2040 and its pin map is not applicable.
+   geometry, and a bench check of `ROLL_180_YAW_90`.
+3. USB CDC, watchdog, calibration, power-loss-safe settings storage, and
+   powered bench tests. SW's electrical function is still unknown.
 
 Pyro outputs are compiled out. This project is **not a validated recovery system**.
 

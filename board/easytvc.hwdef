@@ -1,0 +1,161 @@
+# hw definition file for processing by chibios_pins.py
+# for easytvc
+#
+# Source: Brian Wong, 2026-09-29. ArduPilot-format pin list for EasyTVC.
+# This file is the vendor I/O definition; it is not processed by this firmware
+# build. C mappings live in Core/Inc/board_pins.h.
+
+# MCU class and specific type
+MCU STM32F4xx STM32F405xx
+
+# board ID for firmware load
+APJ_BOARD_ID 1013
+
+# crystal frequency, setup to use external oscillator
+OSCILLATOR_HZ 16000000
+
+FLASH_SIZE_KB 1024
+# env OPTIMIZE -Os
+
+# bootloader takes first sector
+FLASH_RESERVE_START_KB 64
+
+define HAL_STORAGE_SIZE 15360
+STORAGE_FLASH_PAGE 1
+
+# ChibiOS system timer
+STM32_ST_USE_TIMER 5
+define CH_CFG_ST_RESOLUTION 32
+
+# USB
+PA11 OTG_FS_DM OTG1
+PA12 OTG_FS_DP OTG1
+
+# SPI1 for IMU1 (BMI088)
+PA5 SPI1_SCK SPI1
+PA6 SPI1_MISO SPI1
+PA7 SPI1_MOSI SPI1
+PC7 BMI088_G_CS CS
+PC8 BMI088_A_CS CS
+
+# SPI2 for W25Q128JVS Flash
+PC5 FLASH_CS CS
+PB13 SPI2_SCK SPI2
+PB14 SPI2_MISO SPI2
+PB15 SPI2_MOSI SPI2
+
+# SPI3 for MicroSD Card Slot
+PC6 SD_CS CS
+PC10 SPI3_SCK SPI3
+PC11 SPI3_MISO SPI3
+PC12 SPI3_MOSI SPI3
+
+# two I2C bus
+I2C_ORDER I2C1 I2C2
+
+# I2C1
+PB6 I2C1_SCL I2C1 PULLUP
+PB7 I2C1_SDA I2C1 PULLUP
+
+# I2C2
+PB10 I2C2_SCL I2C2
+PB11 I2C2_SDA I2C2
+
+# ADC
+PA4 BATT_VOLTAGE_SENS ADC1 SCALE(1)
+
+# LED
+# green LED1 marked as B/E
+# blue LED0 marked as ACT
+define AP_NOTIFY_GPIO_LED_2_ENABLED 1
+
+PB5 LED0 OUTPUT LOW GPIO(90) # blue
+PB4 LED1 OUTPUT LOW GPIO(91) # green
+PB3 LED2 OUTPUT LOW GPIO(92) # red
+define HAL_GPIO_R_LED_PIN 92
+define HAL_GPIO_A_LED_PIN 91
+define HAL_GPIO_B_LED_PIN 90
+
+# order of UARTs (and USB)
+SERIAL_ORDER OTG1 USART2 UART4
+
+# USART2 (telem1)
+PA3 USART2_RX USART2
+PA2 USART2_TX USART2
+
+# UART4 (RC input)
+PA0 UART4_TX UART4
+PA1 UART4_RX UART4
+
+define DEFAULT_SERIAL1_PROTOCOL SerialProtocol_MAVLink2
+define DEFAULT_SERIAL1_BAUD 115
+
+define DEFAULT_SERIAL2_PROTOCOL SerialProtocol_RCIN
+define DEFAULT_SERIAL2_BAUD 115
+
+# Motors
+PB0  TIM3_CH3 TIM3  PWM(1)  GPIO(50)
+PB1  TIM3_CH4 TIM3  PWM(2)  GPIO(51)
+PB8  TIM4_CH3  TIM4  PWM(3)  GPIO(52)
+PB9  TIM4_CH4  TIM4  PWM(4)  GPIO(53)
+
+#Pyro channels
+PB2 PINIO1 OUTPUT GPIO(81) LOW PULLDOWN #pyro1
+PA13 PINIO3 OUTPUT GPIO(83) LOW PULLDOWN #pyro2
+PC3 PINIO5 OUTPUT GPIO(85) LOW PULLDOWN #pyro3
+
+#Pyro continuity detection
+PB12 PINIO2 INPUT GPIO(82)
+PC4 PINIO4 INPUT GPIO(84)
+PC2 PINIO6 INPUT GPIO(86)
+
+# Buzzer
+PA8 BUZZER OUTPUT LOW PULLDOWN GPIO(32)
+#define HAL_BUZZER_PIN 32
+#define HAL_BUZZER_ON 1
+#define HAL_BUZZER_OFF 0
+#define HAL_PWM_ALT_ALARM
+
+PA14 PINIO10 OUTPUT GPIO(99) #dfu pin
+
+#DMA_PRIORITY S*
+
+define HAL_STORAGE_SIZE 15360
+define HAL_BARO_ALLOW_INIT_NO_BARO
+
+# use last 2 pages for flash storage
+# H743 has 16 pages of 128k each
+STORAGE_FLASH_PAGE 1
+
+# spi devices
+SPIDEV bmi088_a       SPI1 DEVID2  BMI088_A_CS     MODE3  10*MHZ 10*MHZ
+SPIDEV bmi088_g       SPI1 DEVID3  BMI088_G_CS     MODE3  10*MHZ 10*MHZ
+SPIDEV dataflash      SPI2 DEVID1  FLASH_CS        MODE3  32*MHZ 32*MHZ
+
+#DMA_NOSHARE SPI1* SPI4*
+
+define HAL_LOGGING_DATAFLASH_ENABLED 1
+
+# no built-in compass, but probe the i2c bus for all possible
+# external compass types
+define ALLOW_ARM_NO_COMPASS
+define HAL_PROBE_EXTERNAL_I2C_COMPASSES
+define HAL_I2C_INTERNAL_MASK 1
+define HAL_COMPASS_AUTO_ROT_DEFAULT 2
+
+IMU BMI088 SPI:bmi088_a SPI:bmi088_g ROTATION_ROLL_180_YAW_90
+
+#define HAL_DEFAULT_INS_FAST_SAMPLE 1
+
+# Probe for BME280
+BARO BMP280 I2C:1:0x77
+BARO BMP280 I2C:0:0x76
+BARO BMP280 I2C:0:0x77
+
+# define HAL_OS_FATFS_IO 1
+
+# save some flash
+define HAL_RUNCAM_ENABLED 0
+define HAL_BUTTON_ENABLED 0
+
+include ../include/minimize_fpv_osd.inc

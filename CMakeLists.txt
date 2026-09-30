@@ -20,6 +20,13 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/controller.c
     Core/Src/protocol.c
     Core/Src/runtime.c
+    Core/Src/stm32f4xx.c
+    Core/Src/gpio_init.c
+    Core/Src/spi_driver.c
+    Core/Src/i2c_driver.c
+    Core/Src/pwm_driver.c
+    Core/Src/uart_driver.c
+    Core/Src/hardware_bus.c
 )
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
@@ -34,9 +41,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
     set(EASYTVC_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/ld/stm32f405rg.ld)
 
     add_executable(${EASYTVC_TARGET}
-        Core/Src/easytvc_safety.c
         Core/Src/main.c
         Core/Src/startup_stm32f405rg.c
+        Core/Src/easytvc_safety.c
     )
 
     target_include_directories(${EASYTVC_TARGET} PRIVATE Core/Inc)
@@ -54,6 +61,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         -Wextra
         -Werror
     )
+    target_link_libraries(${EASYTVC_TARGET} PRIVATE easytvc_core)
     target_link_options(${EASYTVC_TARGET} PRIVATE
         -mcpu=cortex-m4
         -mthumb

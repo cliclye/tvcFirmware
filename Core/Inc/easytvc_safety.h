@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 /*
- * This source is deliberately independent of STM32 HAL while pin tracing is
- * incomplete. It cannot configure or write any physical GPIO.
+ * Policy only. Pin nets exist in board_pins.h; this file still does not
+ * configure or write any physical GPIO. Vendor pyro nets are untested.
  */
 #define EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0
 
