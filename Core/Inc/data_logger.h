@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Binary telemetry record - packed for flash storage */
+/* Binary telemetry record - packed for SD card storage */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp;       /* Milliseconds since boot */
     int16_t accel_x;          /* Accelerometer X (mg) */
@@ -18,24 +18,25 @@ typedef struct __attribute__((packed)) {
     uint8_t flags;           /* Status flags */
 } TelemetryRecord;
 
-/* Logger state for flash memory */
+/* Logger state for SD card */
 typedef struct {
     bool initialized;
     uint32_t record_count;
-    uint32_t current_address;  /* Current flash write address */
-    uint32_t sector_count;     /* 4KB sectors used */
+    uint32_t current_sector;  /* Current SD card sector */
+    uint16_t sector_offset;   /* Offset within sector (bytes) */
+    uint8_t sector_buffer[512];  /* Buffer for SD card writes */
 } DataLogger;
 
-/* Initialize data logger to flash memory */
+/* Initialize data logger to SD card */
 bool DataLogger_Init(DataLogger *logger);
 
-/* Log sensor data to flash */
+/* Log sensor data to SD card */
 bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record);
+
+/* Flush remaining data to SD card */
+bool DataLogger_Flush(DataLogger *logger);
 
 /* Get current record count */
 uint32_t DataLogger_GetRecordCount(DataLogger *logger);
-
-/* Get current flash address */
-uint32_t DataLogger_GetCurrentAddress(DataLogger *logger);
 
 #endif // DATA_LOGGER_H

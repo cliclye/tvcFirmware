@@ -102,7 +102,7 @@ int main(void)
     EasyTVC_Bmi088Init(&bmi088, EasyTVC_GetBMI088_AccelBus(), EasyTVC_GetBMI088_GyroBus());
     EasyTVC_Bme280Init(&bme280, EasyTVC_GetBME280Bus());
     
-    /* Initialize flash data logger */
+    /* Initialize SD card data logger */
     bool logger_ok = DataLogger_Init(&logger);
     
     /* Probe sensors */
@@ -119,7 +119,7 @@ int main(void)
     /* Set LED status */
     EasyTVC_GPIO_LedSet(0, bmi088_ok);
     EasyTVC_GPIO_LedSet(1, bme280_ok);
-    EasyTVC_GPIO_LedSet(2, logger_ok);  /* Red = flash status */
+    EasyTVC_GPIO_LedSet(2, logger_ok);  /* Red = SD card status */
     
     /* Initial delay */
     volatile uint32_t counter;
@@ -150,7 +150,7 @@ int main(void)
             }
         }
         
-        /* Log to flash every 100ms (10 Hz) */
+        /* Log to SD card every 100ms (10 Hz) */
         if (loop_count % 10 == 0 && logger_ok) {
             TelemetryRecord record;
             record.timestamp = timestamp;
