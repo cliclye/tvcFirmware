@@ -8,14 +8,17 @@
 #include "hardware_bus.h"
 #include "bmi088.h"
 #include "bme280.h"
+#include "data_logger.h"
 #include <string.h>
 
 /* Sensor instances */
 static EasyTVCBmi088 bmi088;
 static EasyTVCBme280 bme280;
+static DataLogger logger;
 
 /* Telemetry buffer */
 static char telemetry_buffer[256];
+static char temp_str[16];
 
 /* Simple string functions */
 static size_t my_strlen(const char *str) {
@@ -99,6 +102,9 @@ int main(void)
     EasyTVC_Bmi088Init(&bmi088, EasyTVC_GetBMI088_AccelBus(), EasyTVC_GetBMI088_GyroBus());
     EasyTVC_Bme280Init(&bme280, EasyTVC_GetBME280Bus());
     
+    /* Initialize flash data logger */
+    bool logger_ok = DataLogger_Init(&logger);
+    
     /* Probe sensors */
     bool bmi088_ok = EasyTVC_Bmi088Probe(&bmi088);
     bool bme280_ok = EasyTVC_Bme280Probe(&bme280);
@@ -113,12 +119,21 @@ int main(void)
     /* Set LED status */
     EasyTVC_GPIO_LedSet(0, bmi088_ok);
     EasyTVC_GPIO_LedSet(1, bme280_ok);
-    EasyTVC_GPIO_LedSet(2, false);
+    EasyTVC_GPIO_LedSet(2, logger_ok);  /* Red = flash status */
+    
+    /* Initial delay */
+    volatile uint32_t counter;
+    for (counter = 0; counter < 400000; counter++) {
+        __asm volatile ("nop");
+    }
     
     /* Main loop */
     uint32_t loop_count = 0;
+    uint32_t timestamp = 0;
+    
     while (1) {
         loop_count++;
+        timestamp += 10;  /* 10ms per loop */
         
         /* Read sensors */
         if (bmi088_ok) {
@@ -135,37 +150,52 @@ int main(void)
             }
         }
         
-        /* Send telemetry every 100ms */
-        if (loop_count % 10 == 0) {
+        /* Log to flash every 100ms (10 Hz) */
+        if (loop_count % 10 == 0 && logger_ok) {
+            TelemetryRecord record;
+            record.timestamp = timestamp;
+            record.accel_x = (int16_t)(bmi088.accel_x * 1000);
+            record.accel_y = (int16_t)(bmi088.accel_y * 1000);
+            record.accel_z = (int16_t)(bmi088.accel_z * 1000);
+            record.gyro_x = (int16_t)(bmi088.gyro_x * 100);
+            record.gyro_y = (int16_t)(bmi088.gyro_y * 100);
+            record.gyro_z = (int16_t)(bmi088.gyro_z * 100);
+            record.temperature = (int16_t)(bme280.temperature * 100);
+            record.pressure = bme280.pressure;
+            record.flags = (bmi088_ok ? 0x01 : 0) | (bme280_ok ? 0x02 : 0);
+            
+            DataLogger_Log(&logger, &record);
+        }
+        
+        /* Send serial telemetry every 500ms */
+        if (loop_count % 50 == 0) {
             my_strcpy(telemetry_buffer, "EasyTVC: ");
             
             if (bmi088_ok) {
                 append_str(telemetry_buffer, "Accel=");
-                char accel_str[16];
-                int32_to_float_str(bmi088.accel_x, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.accel_x, temp_str);
+                append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, ",");
-                int32_to_float_str(bmi088.accel_y, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.accel_y, temp_str);
+                append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, ",");
-                int32_to_float_str(bmi088.accel_z, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.accel_z, temp_str);
+                append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, " Gyro=");
-                int32_to_float_str(bmi088.gyro_x, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.gyro_x, temp_str);
+                append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, ",");
-                int32_to_float_str(bmi088.gyro_y, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.gyro_y, temp_str);
+                append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, ",");
-                int32_to_float_str(bmi088.gyro_z, accel_str);
-                append_str(telemetry_buffer, accel_str);
+                int32_to_float_str(bmi088.gyro_z, temp_str);
+                append_str(telemetry_buffer, temp_str);
             } else {
                 append_str(telemetry_buffer, "IMU=FAIL");
             }
             
             if (bme280_ok) {
                 append_str(telemetry_buffer, " Temp=");
-                char temp_str[16];
                 int32_to_float_str(bme280.temperature, temp_str);
                 append_str(telemetry_buffer, temp_str);
                 append_str(telemetry_buffer, "C Press=");
@@ -175,6 +205,10 @@ int main(void)
             } else {
                 append_str(telemetry_buffer, " Baro=FAIL");
             }
+            
+            append_str(telemetry_buffer, " Logs=");
+            uint32_to_str(DataLogger_GetRecordCount(&logger), temp_str);
+            append_str(telemetry_buffer, temp_str);
             
             append_str(telemetry_buffer, "\r\n");
             
@@ -196,7 +230,6 @@ int main(void)
         EasyTVC_PWM_SetChannel(4, 1500);
         
         /* 10ms delay */
-        volatile uint32_t counter;
         for (counter = 0; counter < 40000; counter++) {
             __asm volatile ("nop");
         }

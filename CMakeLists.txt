@@ -27,6 +27,7 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/pwm_driver.c
     Core/Src/uart_driver.c
     Core/Src/hardware_bus.c
+    Core/Src/data_logger.c
 )
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")

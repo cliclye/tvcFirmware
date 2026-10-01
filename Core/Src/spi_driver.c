@@ -154,3 +154,63 @@ void EasyTVC_SPI3_CS_SD_Set(bool state)
         gpio->BSRR = (1U << 6) << 16;  /* PC6 low (active) */
     }
 }
+
+/* Single-byte transfer for SD card */
+uint8_t EasyTVC_SPI3_TransferByte(uint8_t data)
+{
+    STM32_SPI_TypeDef *spi = STM32_SPI3;
+    uint8_t rx_data;
+    
+    /* Wait for TX buffer empty */
+    while (!(spi->SR & STM32_SPI_SR_TXE)) {
+        /* Wait */
+    }
+    
+    /* Write data */
+    spi->DR = data;
+    
+    /* Wait for RX buffer not empty */
+    while (!(spi->SR & STM32_SPI_SR_RXNE)) {
+        /* Wait */
+    }
+    
+    /* Read data */
+    rx_data = (uint8_t)(spi->DR);
+    
+    /* Wait for SPI not busy */
+    while (spi->SR & STM32_SPI_SR_BSY) {
+        /* Wait */
+    }
+    
+    return rx_data;
+}
+
+/* Single-byte transfer for flash card */
+uint8_t EasyTVC_SPI2_TransferByte(uint8_t data)
+{
+    STM32_SPI_TypeDef *spi = STM32_SPI2;
+    uint8_t rx_data;
+    
+    /* Wait for TX buffer empty */
+    while (!(spi->SR & STM32_SPI_SR_TXE)) {
+        /* Wait */
+    }
+    
+    /* Write data */
+    spi->DR = data;
+    
+    /* Wait for RX buffer not empty */
+    while (!(spi->SR & STM32_SPI_SR_RXNE)) {
+        /* Wait */
+    }
+    
+    /* Read data */
+    rx_data = (uint8_t)(spi->DR);
+    
+    /* Wait for SPI not busy */
+    while (spi->SR & STM32_SPI_SR_BSY) {
+        /* Wait */
+    }
+    
+    return rx_data;
+}
