@@ -17,10 +17,10 @@ static SD_Card *current_sd = NULL;
 /* SD card response */
 #define SD_R1_IDLE_STATE (1 << 0)
 
-/* Simple delay */
+/* Simple delay (adjusted for 168 MHz) */
 static void delay_ms(uint32_t ms) {
     volatile uint32_t counter;
-    for (counter = 0; counter < (ms * 4000); counter++) {
+    for (counter = 0; counter < (ms * 42000); counter++) {
         __asm volatile ("nop");
     }
 }

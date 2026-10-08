@@ -11,6 +11,7 @@
 #define STM32_AHB2PERIPH_BASE       (STM32_PERIPH_BASE + 0x50000000UL)
 
 #define STM32_RCC_BASE              (STM32_AHB1PERIPH_BASE + 0x3800UL)
+#define STM32_FLASH_BASE            (STM32_AHB1PERIPH_BASE + 0x3C00UL)
 #define STM32_GPIOA_BASE            (STM32_AHB1PERIPH_BASE + 0x0000UL)
 #define STM32_GPIOB_BASE            (STM32_AHB1PERIPH_BASE + 0x0400UL)
 #define STM32_GPIOC_BASE            (STM32_AHB1PERIPH_BASE + 0x0800UL)
@@ -70,6 +71,30 @@ typedef struct {
     volatile uint32_t LCKR;
     volatile uint32_t AFR[2];
 } STM32_GPIO_TypeDef;
+
+/* FLASH registers */
+typedef struct {
+    volatile uint32_t ACR;
+    volatile uint32_t KEY;
+    volatile uint32_t OPTKEYR;
+    volatile uint32_t SR;
+    volatile uint32_t CR;
+    volatile uint32_t OPTCR;
+    volatile uint32_t OPTCR1;
+} STM32_FLASH_TypeDef;
+
+/* FLASH ACR bits */
+#define STM32_FLASH_ACR_LATENCY        (0x1F << 0)
+#define STM32_FLASH_ACR_PRFTEN         (1 << 8)
+#define STM32_FLASH_ACR_ICEN           (1 << 9)
+#define STM32_FLASH_ACR_DCEN           (1 << 10)
+
+/* RCC PLLCFGR bits */
+#define STM32_RCC_PLLCFGR_PLLM        (0x3F << 0)
+#define STM32_RCC_PLLCFGR_PLLN        (0x1FF << 6)
+#define STM32_RCC_PLLCFGR_PLLP        (0x3 << 16)
+#define STM32_RCC_PLLCFGR_PLLSRC_HSI  (0 << 22)
+#define STM32_RCC_PLLCFGR_PLLSRC_HSE  (1 << 22)
 
 /* SPI registers */
 typedef struct {
@@ -252,8 +277,6 @@ typedef struct {
 #define STM32_RCC_CR_PLLON       (1U << 24)
 #define STM32_RCC_CR_PLLRDY      (1U << 25)
 
-#define STM32_RCC_PLLCFGR_PLLSRC_HSE   (1U << 22)
-#define STM32_RCC_PLLCFGR_PLLSRC_HSI   (0U << 22)
 #define STM32_RCC_PLLCFGR_PLLM_SHIFT   0
 #define STM32_RCC_PLLCFGR_PLLN_SHIFT   6
 #define STM32_RCC_PLLCFGR_PLLP_SHIFT   16
@@ -272,6 +295,8 @@ typedef struct {
 #define STM32_RCC_AHB1ENR_DMA1EN    (1U << 21)
 #define STM32_RCC_AHB1ENR_DMA2EN    (1U << 22)
 #define STM32_RCC_AHB2ENR_OTGFSEN   (1U << 7)
+
+#define STM32_FLASH                ((STM32_FLASH_TypeDef *) STM32_FLASH_BASE)
 
 #define STM32_RCC_APB1ENR_TIM3EN    (1U << 1)
 #define STM32_RCC_APB1ENR_TIM4EN    (1U << 2)

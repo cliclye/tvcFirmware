@@ -130,12 +130,14 @@ int main(void)
     /* Main loop */
     uint32_t loop_count = 0;
     uint32_t timestamp = 0;
+    uint32_t sample_count = 0;  /* For downsampling SD card writes */
     
     while (1) {
         loop_count++;
-        timestamp += 10;  /* 10ms per loop */
+        timestamp += 10;  /* 10ms per loop (100 Hz) */
+        sample_count++;
         
-        /* Read sensors */
+        /* Read sensors at 100 Hz */
         if (bmi088_ok) {
             if (!EasyTVC_Bmi088Read(&bmi088)) {
                 bmi088_ok = false;
@@ -150,8 +152,8 @@ int main(void)
             }
         }
         
-        /* Log to SD card every 100ms (10 Hz) */
-        if (loop_count % 10 == 0 && logger_ok) {
+        /* Log to SD card every 10th sample (10 Hz for storage) */
+        if (sample_count % 10 == 0 && logger_ok) {
             TelemetryRecord record;
             record.timestamp = timestamp;
             record.accel_x = (int16_t)(bmi088.accel_x * 1000);
@@ -167,8 +169,8 @@ int main(void)
             DataLogger_Log(&logger, &record);
         }
         
-        /* Send serial telemetry every 500ms */
-        if (loop_count % 50 == 0) {
+        /* Send serial telemetry every 500ms (50 samples) */
+        if (sample_count % 50 == 0) {
             my_strcpy(telemetry_buffer, "EasyTVC: ");
             
             if (bmi088_ok) {
@@ -216,8 +218,8 @@ int main(void)
             EasyTVC_USART2_Send((const uint8_t*)telemetry_buffer, len);
         }
         
-        /* Toggle blue LED every second (heartbeat) */
-        if (loop_count % 100 == 0) {
+        /* Toggle blue LED every second (100 samples) */
+        if (sample_count % 100 == 0) {
             static bool led_state = false;
             led_state = !led_state;
             EasyTVC_GPIO_LedSet(0, led_state);
@@ -229,8 +231,13 @@ int main(void)
         EasyTVC_PWM_SetChannel(3, 1500);
         EasyTVC_PWM_SetChannel(4, 1500);
         
-        /* 10ms delay */
-        for (counter = 0; counter < 40000; counter++) {
+        /* Flush any remaining data to SD card every 1 second */
+        if (sample_count % 100 == 0 && logger_ok) {
+            DataLogger_Flush(&logger);
+        }
+        
+        /* 10ms delay at 168 MHz */
+        for (counter = 0; counter < 420000; counter++) {
             __asm volatile ("nop");
         }
     }

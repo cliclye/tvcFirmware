@@ -4,10 +4,31 @@ This system allows you to log sensor data to a microSD card and read it back for
 
 ## Overview
 
-- **Firmware**: Logs sensor data to microSD card at 10 Hz
-- **SD Card**: microSD on SPI3
+- **Firmware**: Logs sensor data to microSD card at 10 Hz (downsampled from 100 Hz sensor rate)
+- **SD Card**: microSD on SPI3 at 21 MHz
+- **System Clock**: 168 MHz (maximum performance)
 - **Data Format**: Binary telemetry records (raw sectors, no file system)
 - **Viewer**: Python script to visualize data
+
+## Performance
+
+### System Clock
+- **CPU**: 168 MHz (PLL from HSI)
+- **AHB**: 168 MHz
+- **APB1**: 42 MHz (SPI3, I2C, UART)
+- **APB2**: 84 MHz (SPI1)
+
+### Sensor Reading
+- **Accelerometer/Gyroscope**: 100 Hz (every 10ms)
+- **Barometer**: 100 Hz (every 10ms)
+- **TVC Control**: 100 Hz (maximum responsiveness)
+
+### SD Card Logging
+- **Logging Rate**: 10 Hz (every 10th sensor sample)
+- **Downsampling**: 10:1 (100 Hz sensors → 10 Hz storage)
+- **SPI3 Speed**: 21 MHz (maximum stable speed)
+- **Buffer**: 512-byte sector buffer with auto-flush
+- **Auto-flush**: Every 1 second to prevent data loss on power-off
 
 ## Telemetry Data Format
 
@@ -119,11 +140,13 @@ This will display graphs for:
 
 ### Logging Behavior
 
-- **Frequency**: 10 Hz (every 100ms)
+- **Sensor reading**: 100 Hz (every 10ms)
+- **SD card storage**: 10 Hz (every 10th sample, downsampling)
 - **Format**: Binary packed structs (raw sectors)
 - **Sector size**: 512 bytes
 - **Start sector**: 1024 (512KB offset)
 - **Sector management**: Auto-flush when sector full
+- **Periodic flush**: Every 1 second to prevent data loss
 - **No file system**: Raw binary data (no FAT32 needed)
 
 ### SD Card Capacity
@@ -131,8 +154,10 @@ This will display graphs for:
 - **Data per record**: 23 bytes
 - **Records per sector**: ~22 records (512 bytes)
 - **Records per MB**: ~45,000 records
-- **At 10 Hz**: ~75 minutes per GB
+- **At 10 Hz logging**: ~75 minutes per MB
 - **32 GB card**: ~38 hours of logging
+- **Sensors read at 100 Hz**: Full-resolution data for TVC control
+- **SD card stores at 10 Hz**: Downsampled for storage efficiency
 
 ## Troubleshooting
 

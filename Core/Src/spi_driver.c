@@ -55,7 +55,7 @@ void EasyTVC_SPI3_Init(void)
     STM32_RCC->APB1RSTR |= (1U << 15);
     STM32_RCC->APB1RSTR &= ~(1U << 15);
 
-    /* Configure SPI3: Master, Mode 3, for SD card */
+    /* Configure SPI3: Master, Mode 3, for SD card at 21 MHz */
     /* APB1 clock = 42 MHz, use 21 MHz => prescaler = 4 */
     spi->CR1 = STM32_SPI_CR1_MSTR |
                STM32_SPI_CR1_CPOL_HIGH |
