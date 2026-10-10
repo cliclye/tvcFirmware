@@ -10,12 +10,13 @@ void EasyTVC_SPI1_Init(void)
     STM32_RCC->APB2RSTR |= (1U << 12);
     STM32_RCC->APB2RSTR &= ~(1U << 12);
 
-    /* Configure SPI1: Master, Mode 3 (CPOL=1, CPHA=1), 10 MHz */
-    /* APB2 clock = 84 MHz, need 10 MHz => prescaler = 8 */
+    /* Configure SPI1: Master, Mode 3 (CPOL=1, CPHA=1).
+     * APB2 = 84 MHz. /8 would be 10.5 MHz, just over the BMI088's 10 MHz limit; /16 = 5.25 MHz
+     * is plenty for 200 Hz reads of a dozen bytes. */
     spi->CR1 = STM32_SPI_CR1_MSTR |
                STM32_SPI_CR1_CPOL_HIGH |
                STM32_SPI_CR1_CPHA_2EDGE |
-               STM32_SPI_CR1_BR_DIV8 |
+               STM32_SPI_CR1_BR_DIV16 |
                STM32_SPI_CR1_SSM |
                STM32_SPI_CR1_SSI;
 
@@ -34,8 +35,8 @@ void EasyTVC_SPI2_Init(void)
     STM32_RCC->APB1RSTR |= (1U << 14);
     STM32_RCC->APB1RSTR &= ~(1U << 14);
 
-    /* Configure SPI2: Master, Mode 3, 32 MHz */
-    /* APB1 clock = 42 MHz, need 32 MHz => prescaler = 2 */
+    /* Configure SPI2: Master, Mode 3. APB1 = 42 MHz, so /2 = 21 MHz is the fastest this bus can
+     * go (the hwdef's 32 MHz is not reachable from APB1). The NOR flash is not used yet. */
     spi->CR1 = STM32_SPI_CR1_MSTR |
                STM32_SPI_CR1_CPOL_HIGH |
                STM32_SPI_CR1_CPHA_2EDGE |
@@ -55,12 +56,11 @@ void EasyTVC_SPI3_Init(void)
     STM32_RCC->APB1RSTR |= (1U << 15);
     STM32_RCC->APB1RSTR &= ~(1U << 15);
 
-    /* Configure SPI3: Master, Mode 3, for SD card at 21 MHz */
-    /* APB1 clock = 42 MHz, use 21 MHz => prescaler = 4 */
+    /* Configure SPI3 for the microSD card: Master, Mode 0, start SLOW.
+     * SD cards must be initialised at 100-400 kHz. 42 MHz / 128 = 328 kHz.
+     * Call EasyTVC_SPI3_SetFast(true) once SD_Raw_Init has finished. */
     spi->CR1 = STM32_SPI_CR1_MSTR |
-               STM32_SPI_CR1_CPOL_HIGH |
-               STM32_SPI_CR1_CPHA_2EDGE |
-               STM32_SPI_CR1_BR_DIV4 |
+               STM32_SPI_CR1_BR_DIV128 |
                STM32_SPI_CR1_SSM |
                STM32_SPI_CR1_SSI;
 
@@ -68,36 +68,49 @@ void EasyTVC_SPI3_Init(void)
     spi->CR1 |= STM32_SPI_CR1_SPE;
 }
 
+void EasyTVC_SPI3_SetFast(bool fast)
+{
+    STM32_SPI_TypeDef *spi = STM32_SPI3;
+    uint32_t guard = 100000U;
+    while ((spi->SR & STM32_SPI_SR_BSY) && guard--) {
+    }
+    /* BR[2:0] may only be changed while the peripheral is disabled. */
+    spi->CR1 &= ~STM32_SPI_CR1_SPE;
+    spi->CR1 = (spi->CR1 & ~(7U << 3)) | (fast ? STM32_SPI_CR1_BR_DIV4 : STM32_SPI_CR1_BR_DIV128);
+    spi->CR1 |= STM32_SPI_CR1_SPE;   /* 42/4 = 10.5 MHz when fast */
+}
+
+#define SPI_WAIT_LIMIT 200000U
+
+static int spi_wait(STM32_SPI_TypeDef *spi, uint32_t mask, bool set)
+{
+    uint32_t guard = SPI_WAIT_LIMIT;
+    while (((spi->SR & mask) != 0U) != set) {
+        if (guard-- == 0U) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int spi_transfer(STM32_SPI_TypeDef *spi, uint8_t *tx_data, uint8_t *rx_data, size_t length)
 {
     for (size_t i = 0; i < length; i++) {
-        /* Wait for TX buffer empty */
-        while (!(spi->SR & STM32_SPI_SR_TXE)) {
-            /* Wait */
+        if (spi_wait(spi, STM32_SPI_SR_TXE, true) != 0) {
+            return -1;
         }
-
-        /* Write data */
         spi->DR = (tx_data != NULL) ? tx_data[i] : 0xFFU;
 
-        /* Wait for RX buffer not empty */
-        while (!(spi->SR & STM32_SPI_SR_RXNE)) {
-            /* Wait */
+        if (spi_wait(spi, STM32_SPI_SR_RXNE, true) != 0) {
+            return -1;
         }
-
-        /* Read data */
+        const uint8_t byte = (uint8_t)spi->DR;   /* also clears RXNE */
         if (rx_data != NULL) {
-            rx_data[i] = (uint8_t)(spi->DR);
-        } else {
-            (void)spi->DR;  /* Clear RXNE */
+            rx_data[i] = byte;
         }
     }
 
-    /* Wait for SPI not busy */
-    while (spi->SR & STM32_SPI_SR_BSY) {
-        /* Wait */
-    }
-
-    return 0;
+    return spi_wait(spi, STM32_SPI_SR_BSY, false);
 }
 
 int EasyTVC_SPI1_Transfer(uint8_t *tx_data, uint8_t *rx_data, size_t length)
@@ -155,62 +168,27 @@ void EasyTVC_SPI3_CS_SD_Set(bool state)
     }
 }
 
-/* Single-byte transfer for SD card */
-uint8_t EasyTVC_SPI3_TransferByte(uint8_t data)
+static uint8_t spi_transfer_byte(STM32_SPI_TypeDef *spi, uint8_t data)
 {
-    STM32_SPI_TypeDef *spi = STM32_SPI3;
-    uint8_t rx_data;
-    
-    /* Wait for TX buffer empty */
-    while (!(spi->SR & STM32_SPI_SR_TXE)) {
-        /* Wait */
+    uint8_t rx = 0xFFU;   /* a dead bus reads as idle-high */
+    if (spi_wait(spi, STM32_SPI_SR_TXE, true) != 0) {
+        return rx;
     }
-    
-    /* Write data */
     spi->DR = data;
-    
-    /* Wait for RX buffer not empty */
-    while (!(spi->SR & STM32_SPI_SR_RXNE)) {
-        /* Wait */
+    if (spi_wait(spi, STM32_SPI_SR_RXNE, true) != 0) {
+        return rx;
     }
-    
-    /* Read data */
-    rx_data = (uint8_t)(spi->DR);
-    
-    /* Wait for SPI not busy */
-    while (spi->SR & STM32_SPI_SR_BSY) {
-        /* Wait */
-    }
-    
-    return rx_data;
+    rx = (uint8_t)spi->DR;
+    (void)spi_wait(spi, STM32_SPI_SR_BSY, false);
+    return rx;
 }
 
-/* Single-byte transfer for flash card */
+uint8_t EasyTVC_SPI3_TransferByte(uint8_t data)
+{
+    return spi_transfer_byte(STM32_SPI3, data);
+}
+
 uint8_t EasyTVC_SPI2_TransferByte(uint8_t data)
 {
-    STM32_SPI_TypeDef *spi = STM32_SPI2;
-    uint8_t rx_data;
-    
-    /* Wait for TX buffer empty */
-    while (!(spi->SR & STM32_SPI_SR_TXE)) {
-        /* Wait */
-    }
-    
-    /* Write data */
-    spi->DR = data;
-    
-    /* Wait for RX buffer not empty */
-    while (!(spi->SR & STM32_SPI_SR_RXNE)) {
-        /* Wait */
-    }
-    
-    /* Read data */
-    rx_data = (uint8_t)(spi->DR);
-    
-    /* Wait for SPI not busy */
-    while (spi->SR & STM32_SPI_SR_BSY) {
-        /* Wait */
-    }
-    
-    return rx_data;
+    return spi_transfer_byte(STM32_SPI2, data);
 }

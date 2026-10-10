@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EasyTVC Telemetry Viewer
-Reads binary telemetry data from flash memory and displays graphs
+Reads a raw SD card sector dump (see read-sd-data.sh) and displays graphs
 """
 
 import struct
@@ -10,56 +10,75 @@ import numpy as np
 import sys
 import os
 
-# Telemetry record structure (matches firmware)
-TELEMETRY_RECORD_FORMAT = '<I6hHIB'  # timestamp, 6 int16, uint16, uint32, uint8
+# Telemetry record structure (matches Core/Inc/data_logger.h, 23 bytes, packed, little-endian):
+# timestamp u32, accel xyz i16 (mg), gyro xyz i16 (0.1 deg/s), temperature i16 (0.01 degC),
+# pressure u32 (Pa), flags u8
+TELEMETRY_RECORD_FORMAT = '<I6hhIB'
 TELEMETRY_RECORD_SIZE = struct.calcsize(TELEMETRY_RECORD_FORMAT)
+SECTOR_SIZE = 512
+RECORDS_PER_SECTOR = SECTOR_SIZE // TELEMETRY_RECORD_SIZE  # 22; the last 6 bytes are 0xFF padding
+FLAG_MARKER_MASK = 0xE0
+FLAG_MARKER = 0xA0
 
 class TelemetryRecord:
     def __init__(self, data):
-        # Unpack binary data
-        (self.timestamp, 
+        (self.timestamp,
          self.accel_x, self.accel_y, self.accel_z,
          self.gyro_x, self.gyro_y, self.gyro_z,
          self.temperature, self.pressure, self.flags) = struct.unpack(TELEMETRY_RECORD_FORMAT, data)
-        
+
         # Convert to physical units
         self.accel_x_mg = self.accel_x  # Already in mg
         self.accel_y_mg = self.accel_y
         self.accel_z_mg = self.accel_z
-        self.gyro_x_deg = self.gyro_x / 100.0  # Convert to deg/s
-        self.gyro_y_deg = self.gyro_y / 100.0
-        self.gyro_z_deg = self.gyro_z / 100.0
-        self.temp_c = self.temperature / 100.0  # Convert to °C
-        self.pressure_pa = self.pressure  # Pa
-        self.pressure_hpa = self.pressure / 100.0  # hPa
+        self.gyro_x_deg = self.gyro_x / 10.0  # 0.1 deg/s units
+        self.gyro_y_deg = self.gyro_y / 10.0
+        self.gyro_z_deg = self.gyro_z / 10.0
+        self.temp_c = self.temperature / 100.0
+        self.pressure_pa = self.pressure
+        self.pressure_hpa = self.pressure / 100.0
+
+    @property
+    def valid(self):
+        return (self.flags & FLAG_MARKER_MASK) == FLAG_MARKER
 
 def read_telemetry_file(filename):
-    """Read binary telemetry file and return list of records"""
+    """Read a raw sector dump and return the records in time order.
+
+    Records are packed per 512-byte sector (22 each, then padding), not back to back. Sectors
+    past the end of the log hold whatever was on the card before, so parsing stops at the first
+    sector that has no valid record or whose timestamps go backwards.
+    """
     records = []
-    
+
     try:
         with open(filename, 'rb') as f:
             data = f.read()
-            
-        # Parse records
-        num_records = len(data) // TELEMETRY_RECORD_SIZE
-        print(f"Reading {num_records} telemetry records...")
-        
-        for i in range(num_records):
-            offset = i * TELEMETRY_RECORD_SIZE
-            record_data = data[offset:offset + TELEMETRY_RECORD_SIZE]
-            record = TelemetryRecord(record_data)
-            records.append(record)
-            
-        print(f"Successfully read {len(records)} records")
-        return records
-        
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found")
         return None
-    except Exception as e:
+    except OSError as e:
         print(f"Error reading file: {e}")
         return None
+
+    last_timestamp = -1
+    for sector_start in range(0, len(data) - SECTOR_SIZE + 1, SECTOR_SIZE):
+        sector_records = []
+        for slot in range(RECORDS_PER_SECTOR):
+            offset = sector_start + slot * TELEMETRY_RECORD_SIZE
+            record = TelemetryRecord(data[offset:offset + TELEMETRY_RECORD_SIZE])
+            if not record.valid or record.timestamp < last_timestamp:
+                break
+            last_timestamp = record.timestamp
+            sector_records.append(record)
+        records.extend(sector_records)
+        if len(sector_records) < RECORDS_PER_SECTOR:
+            # A partial sector is either the final (flushed) sector or the end of the log.
+            if not sector_records:
+                break
+
+    print(f"Read {len(records)} telemetry records")
+    return records
 
 def plot_telemetry(records):
     """Create graphs for all sensor data"""
@@ -98,7 +117,7 @@ def plot_telemetry(records):
     axes[1].plot(time_s, gyro_x, label='X', color='red')
     axes[1].plot(time_s, gyro_y, label='Y', color='green')
     axes[1].plot(time_s, gyro_z, label='Z', color='blue')
-    axes[1].set_ylabel('Angular Rate (deg/s)')
+    axes[1].set_ylabel('Angular Rate (deg/s, bias-corrected)')
     axes[1].set_title('Gyroscope')
     axes[1].legend()
     axes[1].grid(True)

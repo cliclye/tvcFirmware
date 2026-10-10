@@ -20,6 +20,11 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/controller.c
     Core/Src/protocol.c
     Core/Src/runtime.c
+)
+
+# STM32F405 register-level drivers. These touch memory-mapped peripherals and inline
+# Cortex-M asm, so they are built for the MCU only and never for the host tests.
+set(EASYTVC_HW_SOURCES
     Core/Src/stm32f4xx.c
     Core/Src/gpio_init.c
     Core/Src/spi_driver.c
@@ -39,6 +44,13 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
     target_compile_features(easytvc_core PUBLIC c_std_11)
     target_compile_options(easytvc_core PRIVATE -mcpu=cortex-m4 -mthumb -mfloat-abi=hard
         -mfpu=fpv4-sp-d16 -ffreestanding -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
+    add_library(easytvc_hw STATIC ${EASYTVC_HW_SOURCES})
+    target_include_directories(easytvc_hw PUBLIC Core/Inc)
+    target_compile_features(easytvc_hw PUBLIC c_std_11)
+    target_compile_options(easytvc_hw PRIVATE -mcpu=cortex-m4 -mthumb -mfloat-abi=hard
+        -mfpu=fpv4-sp-d16 -ffreestanding -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
+    target_link_libraries(easytvc_hw PUBLIC easytvc_core)
+
     set(EASYTVC_TARGET easytvc_safe_blank)
     set(EASYTVC_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/ld/stm32f405rg.ld)
 
@@ -63,14 +75,15 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         -Wextra
         -Werror
     )
-    target_link_libraries(${EASYTVC_TARGET} PRIVATE easytvc_core)
+    target_link_libraries(${EASYTVC_TARGET} PRIVATE easytvc_hw easytvc_core m)
     target_link_options(${EASYTVC_TARGET} PRIVATE
         -mcpu=cortex-m4
         -mthumb
         -mfloat-abi=hard
         -mfpu=fpv4-sp-d16
         -nostartfiles
-        -nostdlib
+        --specs=nano.specs
+        --specs=nosys.specs
         -Wl,--gc-sections
         -Wl,-T,${EASYTVC_LINKER_SCRIPT}
         -Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/${EASYTVC_TARGET}.map
@@ -104,6 +117,15 @@ else()
     target_link_libraries(easytvc_test_reliability PRIVATE easytvc_core)
     target_compile_options(easytvc_test_reliability PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
+    add_executable(easytvc_test_drivers tests/test_drivers.c)
+    target_link_libraries(easytvc_test_drivers PRIVATE easytvc_core)
+    target_compile_options(easytvc_test_drivers PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
+    # The SD logger is hardware-independent apart from sd_raw, which the test replaces.
+    add_executable(easytvc_test_logger tests/test_logger.c Core/Src/data_logger.c)
+    target_include_directories(easytvc_test_logger PRIVATE Core/Inc)
+    target_compile_options(easytvc_test_logger PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
     add_executable(easytvc_sim tests/sim_flight.c)
     target_link_libraries(easytvc_sim PRIVATE easytvc_core)
 
@@ -113,4 +135,6 @@ else()
     enable_testing()
     add_test(NAME easytvc_test_core COMMAND easytvc_test_core)
     add_test(NAME easytvc_test_reliability COMMAND easytvc_test_reliability)
+    add_test(NAME easytvc_test_drivers COMMAND easytvc_test_drivers)
+    add_test(NAME easytvc_test_logger COMMAND easytvc_test_logger)
 endif()

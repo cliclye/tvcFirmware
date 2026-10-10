@@ -3,7 +3,7 @@
 ## Firmware Status
 
 The firmware has been successfully built with the following hardware support:
-- **System**: STM32F405RG @ 168 MHz, FPU enabled
+- **System**: STM32F405RG @ 168 MHz (HSE PLL), FPU enabled, 250 ms watchdog, **monitor-only** (cannot arm; servos stay centred)
 - **GPIO**: All pins configured per vendor hwdef
 - **SPI1**: BMI088 IMU (accel + gyro) with chip select control and data reading
 - **I2C1**: BME280 barometer with internal pull-ups and data reading
@@ -42,6 +42,10 @@ The EasyTVC board needs to be in DFU (Device Firmware Upgrade) mode to accept ne
 
 1. **Power off the board** (disconnect USB)
 2. **Short the DFU pin to ground**:
+   - **Unverified:** the hwdef calls PA14 a "dfu pin", but on the STM32F405 PA14 is SWCLK and the
+     ROM DFU bootloader is entered by holding **BOOT0 high** during reset. Check the board silk /
+     schematic for a BOOT0 pad or button before grounding anything. This firmware no longer
+     reconfigures PA14, so SWD stays usable.
    - The DFU pin is PA14 (marked on board)
    - Use a jumper wire or momentary switch to connect PA14 to GND
 3. **Connect USB cable** while holding DFU pin grounded

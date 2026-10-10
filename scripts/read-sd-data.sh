@@ -8,10 +8,10 @@ echo "================================"
 echo ""
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <sd_card_device>"
+    echo "Usage: $0 <sd_card_device> [sector_count]"
     echo ""
     echo "Example:"
-    echo "  $0 /dev/disk2"
+    echo "  $0 /dev/disk2 [sector_count]"
     echo ""
     echo "To find your SD card device:"
     echo "  diskutil list"
@@ -22,7 +22,7 @@ fi
 SD_DEVICE=$1
 OUTPUT_FILE="telemetry_data.bin"
 SECTOR_START=1024  # Start at sector 1024 (512KB offset)
-SECTOR_COUNT=2048  # Read 1MB (2048 sectors * 512 bytes)
+SECTOR_COUNT=${2:-2048}  # Default 1MB (2048 sectors * 512 bytes); 22 records per sector, 10 Hz => ~2.2 s per sector
 
 echo "Reading from: $SD_DEVICE"
 echo "Start sector: $SECTOR_START"

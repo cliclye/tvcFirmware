@@ -28,9 +28,7 @@ void EasyTVC_GPIO_Init(void)
     pupdr = gpio->PUPDR;
     pupdr &= ~(0x3U << (11 * 2));
     pupdr &= ~(0x3U << (12 * 2));
-    pupdr |= (0x1U << (11 * 2));   /* Pullup */
-    pupdr |= (0x1U << (12 * 2));   /* Pullup */
-    gpio->PUPDR = pupdr;
+    gpio->PUPDR = pupdr;           /* USB FS: no GPIO pull resistors */
 
     /* Set alternate function AF10 for USB */
     gpio->AFR[1] &= ~(0xFU << ((11 - 8) * 4));
@@ -231,6 +229,9 @@ void EasyTVC_GPIO_Init(void)
     pupdr |= (0x1U << (7 * 2));   /* Pullup */
     gpio->PUPDR = pupdr;
 
+    /* I2C lines are open-drain. Push-pull fights the bus and the other devices. */
+    gpio->OTYPER |= (1U << 6) | (1U << 7);
+
     /* Set alternate function AF4 for I2C1 */
     gpio->AFR[0] &= ~(0xFU << (6 * 4));
     gpio->AFR[0] &= ~(0xFU << (7 * 4));
@@ -257,6 +258,8 @@ void EasyTVC_GPIO_Init(void)
     pupdr &= ~(0x3U << (10 * 2));
     pupdr &= ~(0x3U << (11 * 2));
     gpio->PUPDR = pupdr;
+
+    gpio->OTYPER |= (1U << 10) | (1U << 11);
 
     /* Set alternate function AF4 for I2C2 */
     gpio->AFR[1] &= ~(0xFU << ((10 - 8) * 4));
@@ -424,29 +427,36 @@ void EasyTVC_GPIO_Init(void)
     /* Set buzzer LOW (off) */
     gpio->BSRR = ((1U << 8) << 16);
 
-    /* Configure DFU pin (PA14) as GPIO output, start LOW */
-    gpio = STM32_GPIOA;
+    /* PA13 (SWDIO) and PA14 (SWCLK) are deliberately left alone: the hwdef lists PA14 as a
+     * "dfu pin" and PA13 as pyro2, but reconfiguring either removes SWD access. */
+
+    /* Pyro outputs PB2 (pyro1) and PC3 (pyro3): drive LOW so a floating gate cannot fire.
+     * Nothing in this image ever drives them high (EASYTVC_PYRO_OUTPUTS_COMPILED_IN is 0).
+     * PA13 (pyro2) is SWDIO, which resets to a pulled-up input: that net cannot be
+     * guaranteed low from firmware, so do not connect an e-match to channel 2. */
+    gpio = STM32_GPIOB;
+    gpio->BSRR = (1U << 2) << 16;
     moder = gpio->MODER;
-    moder &= ~(0x3U << (14 * 2));
-    moder |= (0x1U << (14 * 2));  /* PA14 output */
+    moder &= ~(0x3U << (2 * 2));
+    moder |= (0x1U << (2 * 2));
     gpio->MODER = moder;
-
-    ospeedr = gpio->OSPEEDR;
-    ospeedr &= ~(0x3U << (14 * 2));
-    ospeedr |= (0x2U << (14 * 2));  /* Medium speed */
-    gpio->OSPEEDR = ospeedr;
-
     pupdr = gpio->PUPDR;
-    pupdr &= ~(0x3U << (14 * 2));
-    pupdr |= (0x2U << (14 * 2));   /* Pulldown */
+    pupdr &= ~(0x3U << (2 * 2));
+    pupdr |= (0x2U << (2 * 2));
     gpio->PUPDR = pupdr;
 
-    /* Set DFU pin LOW (inactive) */
-    gpio->BSRR = ((1U << 14) << 16);
+    gpio = STM32_GPIOC;
+    gpio->BSRR = (1U << 3) << 16;
+    moder = gpio->MODER;
+    moder &= ~(0x3U << (3 * 2));
+    moder |= (0x1U << (3 * 2));
+    gpio->MODER = moder;
+    pupdr = gpio->PUPDR;
+    pupdr &= ~(0x3U << (3 * 2));
+    pupdr |= (0x2U << (3 * 2));
+    gpio->PUPDR = pupdr;
 
-    /* Pyro channels - leave as input (default) per safety requirements */
-    /* PB2, PA13, PC3 outputs - not configured */
-    /* PB12, PC4, PC2 inputs - not configured */
+    /* Continuity sense PB12, PC4, PC2 stay inputs (reset default). */
 }
 
 void EasyTVC_GPIO_LedSet(uint8_t led, bool state)

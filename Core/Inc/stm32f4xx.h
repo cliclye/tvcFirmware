@@ -8,7 +8,7 @@
 #define STM32_APB1PERIPH_BASE       (STM32_PERIPH_BASE + 0x00000UL)
 #define STM32_APB2PERIPH_BASE       (STM32_PERIPH_BASE + 0x10000UL)
 #define STM32_AHB1PERIPH_BASE       (STM32_PERIPH_BASE + 0x20000UL)
-#define STM32_AHB2PERIPH_BASE       (STM32_PERIPH_BASE + 0x50000000UL)
+#define STM32_AHB2PERIPH_BASE       0x50000000UL
 
 #define STM32_RCC_BASE              (STM32_AHB1PERIPH_BASE + 0x3800UL)
 #define STM32_FLASH_BASE            (STM32_AHB1PERIPH_BASE + 0x3C00UL)
@@ -27,6 +27,8 @@
 #define STM32_UART4_BASE            (STM32_APB1PERIPH_BASE + 0x4C00UL)
 #define STM32_ADC1_BASE             (STM32_APB2PERIPH_BASE + 0x4100UL)
 #define STM32_OTG_FS_BASE           (STM32_AHB2PERIPH_BASE + 0x00000UL)
+#define STM32_IWDG_BASE             (STM32_APB1PERIPH_BASE + 0x3000UL)
+#define STM32_DBGMCU_APB1_FZ        (*(volatile uint32_t *)0xE0042008UL)
 
 /* RCC registers */
 typedef struct {
@@ -352,12 +354,17 @@ typedef struct {
 #define STM32_I2C_CR1_START        (1U << 8)
 #define STM32_I2C_CR1_STOP         (1U << 9)
 #define STM32_I2C_CR1_ACK         (1U << 10)
+#define STM32_I2C_CR1_POS         (1U << 11)
+#define STM32_I2C_CR1_SWRST       (1U << 15)
 
 #define STM32_I2C_SR1_SB           (1U << 0)
 #define STM32_I2C_SR1_ADDR        (1U << 1)
 #define STM32_I2C_SR1_BTF          (1U << 2)
 #define STM32_I2C_SR1_TXE          (1U << 7)
 #define STM32_I2C_SR1_RXNE         (1U << 6)
+#define STM32_I2C_SR1_BERR         (1U << 8)
+#define STM32_I2C_SR1_ARLO         (1U << 9)
+#define STM32_I2C_SR1_AF           (1U << 10)
 
 #define STM32_I2C_SR2_MSL          (1U << 0)
 #define STM32_I2C_SR2_BUSY         (1U << 1)
@@ -387,7 +394,32 @@ typedef struct {
 #define STM32_ADC_CR2_SWSTART      (1U << 30)
 #define STM32_ADC_SR_EOC           (1U << 1)
 
+/* IWDG */
+typedef struct {
+    volatile uint32_t KR;
+    volatile uint32_t PR;
+    volatile uint32_t RLR;
+    volatile uint32_t SR;
+} STM32_IWDG_TypeDef;
+#define STM32_IWDG                 ((STM32_IWDG_TypeDef *) STM32_IWDG_BASE)
+
+/* RCC CFGR prescaler encodings (RM0090): HPRE bits 7:4, PPRE1 12:10, PPRE2 15:13 */
+#define STM32_RCC_CFGR_HPRE_DIV1   (0U << 4)
+#define STM32_RCC_CFGR_PPRE1_DIV4  (5U << 10)   /* 0b101 = /4 (0b100 would be /2) */
+#define STM32_RCC_CFGR_PPRE2_DIV2  (4U << 13)   /* 0b100 = /2 (0b010 is NOT divided) */
+
+/* Clock tree that STM32_SystemInit() builds. Peripheral drivers derive from these. */
+#define STM32_SYSCLK_HZ            168000000UL
+#define STM32_APB1_HZ              42000000UL    /* SPI2/3, I2C, USART2, UART4 */
+#define STM32_APB2_HZ              84000000UL    /* SPI1 */
+#define STM32_TIM_APB1_HZ          84000000UL    /* APB1 timers run at 2x when PPRE1 != 1 */
+
 /* Function prototypes */
-void STM32_SystemInit(void);
+bool STM32_SystemInit(void);            /* false => PLL failed, clocks are NOT at 168 MHz */
 void STM32_DelayMicroseconds(uint32_t us);
 void STM32_DelayMilliseconds(uint32_t ms);
+uint32_t STM32_Millis(void);
+uint32_t STM32_Micros(void);
+void STM32_WatchdogStart(void);
+void STM32_WatchdogFeed(void);
+void STM32_SystemReset(void);

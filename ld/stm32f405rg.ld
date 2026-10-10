@@ -48,4 +48,15 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
+
+    /* newlib's _sbrk (nosys) grows the heap upward from `end` toward the stack. */
+    . = ALIGN(8);
+    end = .;
+    _end = .;
+
+    /DISCARD/ :
+    {
+        *(.ARM.exidx*)
+        *(.ARM.extab*)
+    }
 }

@@ -7,6 +7,8 @@
 void EasyTVC_SPI1_Init(void);
 void EasyTVC_SPI2_Init(void);
 void EasyTVC_SPI3_Init(void);
+/* SPI3 powers up at ~328 kHz for SD card init; switch to ~10.5 MHz afterwards. */
+void EasyTVC_SPI3_SetFast(bool fast);
 
 int EasyTVC_SPI1_Transfer(uint8_t *tx_data, uint8_t *rx_data, size_t length);
 int EasyTVC_SPI2_Transfer(uint8_t *tx_data, uint8_t *rx_data, size_t length);

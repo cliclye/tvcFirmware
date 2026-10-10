@@ -4,31 +4,37 @@ This system allows you to log sensor data to a microSD card and read it back for
 
 ## Overview
 
-- **Firmware**: Logs sensor data to microSD card at 10 Hz (downsampled from 100 Hz sensor rate)
-- **SD Card**: microSD on SPI3 at 21 MHz
-- **System Clock**: 168 MHz (maximum performance)
+- **Firmware**: Logs sensor data to microSD card at 10 Hz (downsampled from the 200 Hz control loop)
+- **SD Card**: microSD on SPI3: ~328 kHz during card init, then ~10.5 MHz
+- **System Clock**: 168 MHz (16 MHz HSE -> PLL, HSI fallback)
+
+> **Use a dedicated card.** Logging is raw, starting at sector 1024. If the card holds a FAT
+> filesystem (any card straight from the shop does) its FAT/data at that offset is overwritten
+> and the card will need re-formatting afterwards.
 - **Data Format**: Binary telemetry records (raw sectors, no file system)
 - **Viewer**: Python script to visualize data
 
 ## Performance
 
 ### System Clock
-- **CPU**: 168 MHz (PLL from HSI)
+- **CPU**: 168 MHz (PLL from the 16 MHz HSE; falls back to HSI if the crystal does not start)
 - **AHB**: 168 MHz
-- **APB1**: 42 MHz (SPI3, I2C, UART)
+- **APB1**: 42 MHz (SPI2/3, I2C, USART2, UART4); APB1 timers (TIM3/4) run at 84 MHz
 - **APB2**: 84 MHz (SPI1)
+- If the PLL fails to lock the firmware refuses to run and blinks the red LED.
 
-### Sensor Reading
-- **Accelerometer/Gyroscope**: 100 Hz (every 10ms)
-- **Barometer**: 100 Hz (every 10ms)
-- **TVC Control**: 100 Hz (maximum responsiveness)
+### Control Loop
+- **Loop rate**: 200 Hz, timed from SysTick (not a delay loop), watchdog-supervised (~250 ms)
+- **IMU**: BMI088 +-24 g / +-2000 dps, read every loop (accel 400 Hz ODR, gyro 400 Hz / 47 Hz filter)
+- **Barometer**: BME280 at 50 Hz
+- **Image behaviour**: *monitor only*. The estimator and flight state machine run on real data,
+  but arming is hard-wired off, so the servos stay centred and pyro outputs are never driven.
 
 ### SD Card Logging
-- **Logging Rate**: 10 Hz (every 10th sensor sample)
-- **Downsampling**: 10:1 (100 Hz sensors → 10 Hz storage)
-- **SPI3 Speed**: 21 MHz (maximum stable speed)
-- **Buffer**: 512-byte sector buffer with auto-flush
-- **Auto-flush**: Every 1 second to prevent data loss on power-off
+- **Logging Rate**: 10 Hz (every 20th loop)
+- **Writes never block the loop**: a sector is handed to the card in ~0.5 ms and polled until done.
+  If the card is still busy when the next sector fills, the record is dropped and counted.
+- **Flush**: the partly filled sector is written every second and keeps filling afterwards.
 
 ## Telemetry Data Format
 
@@ -40,14 +46,19 @@ typedef struct __attribute__((packed)) {
     int16_t accel_x;          /* Accelerometer X (mg) */
     int16_t accel_y;          /* Accelerometer Y (mg) */
     int16_t accel_z;          /* Accelerometer Z (mg) */
-    int16_t gyro_x;           /* Gyroscope X (deg/s * 100) */
-    int16_t gyro_y;           /* Gyroscope Y (deg/s * 100) */
-    int16_t gyro_z;           /* Gyroscope Z (deg/s * 100) */
+    int16_t gyro_x;           /* Gyroscope X (0.1 deg/s, bias-corrected) */
+    int16_t gyro_y;           /* Gyroscope Y (0.1 deg/s) */
+    int16_t gyro_z;           /* Gyroscope Z (0.1 deg/s) */
     int16_t temperature;      /* Temperature (0.01°C) */
     uint32_t pressure;        /* Pressure (Pa) */
-    uint8_t flags;           /* Status flags */
+    uint8_t flags;           /* bits 7:5 = 0b101 marker; bit0 IMU ok, bit1 baro ok, bit2 gyro cal ok,
+                                bit3 accel saturated, bit4 gyro saturated */
 } TelemetryRecord;
 ```
+
+Records are packed **per sector**: 22 records (506 bytes) then 6 bytes of 0xFF padding. The flag
+marker lets the viewer tell real records from stale card contents. Accel/gyro are in the sensor
+frame; the `ROLL_180_YAW_90` mounting rotation is not applied yet.
 
 ## Usage
 
@@ -70,9 +81,10 @@ Power on the board and let it run. The firmware will:
 - Show record count in serial telemetry
 - Red LED = SD card status
 
-**Serial output shows:**
+**Serial output (USART2, 115200 8N1, non-blocking) shows two kinds of line:**
 ```
-EasyTVC: Accel=0.12,0.01,9.87 Gyro=0.02,-0.01,0.00 Temp=24.50C Press=1013hPa Logs=1234
+now_ms,state,roll_mrad,pitch_mrad,yaw_mrad,alt_mm,vspeed_mm_s,pitch_cmd_milli,yaw_cmd_milli,tvc,arm,pyro_lock   (10 Hz)
+S,imu_ok,baro_ok,sd_ok,gyro_cal_ok,records,dropped,write_errors                                              (1 Hz)
 ```
 
 ### 4. Remove SD Card
@@ -123,9 +135,9 @@ This will display graphs for:
 
 ## LED Indicators
 
-- **Blue LED**: Heartbeat (toggles every second)
-- **Green LED**: BME280 barometer detected
-- **Red LED**: SD card logging status
+- **Blue LED**: Heartbeat (toggles every second, only while the IMU is working)
+- **Green LED**: BME280 barometer data fresh
+- **Red LED**: ON = SD logging working with no write errors (OFF = no card / init failed / write errors). Fast blinking = PLL failed.
 
 ## SD Card Details
 
@@ -140,13 +152,13 @@ This will display graphs for:
 
 ### Logging Behavior
 
-- **Sensor reading**: 100 Hz (every 10ms)
-- **SD card storage**: 10 Hz (every 10th sample, downsampling)
+- **Sensor reading**: 200 Hz (every 5 ms)
+- **SD card storage**: 10 Hz (every 20th sample, downsampling)
 - **Format**: Binary packed structs (raw sectors)
 - **Sector size**: 512 bytes
 - **Start sector**: 1024 (512KB offset)
-- **Sector management**: Auto-flush when sector full
-- **Periodic flush**: Every 1 second to prevent data loss
+- **Sector management**: sector is handed to the card when full
+- **Periodic flush**: partial sector rewritten every second (same sector, no data lost)
 - **No file system**: Raw binary data (no FAT32 needed)
 
 ### SD Card Capacity
@@ -166,7 +178,7 @@ This will display graphs for:
 - Check Red LED: If OFF, SD card not detected
 - Ensure SD card is properly inserted
 - Try a different SD card
-- Verify SD card is formatted (FAT32 recommended)
+- The card needs no formatting; any existing filesystem will be overwritten from sector 1024
 
 ### No data in file
 
@@ -200,10 +212,11 @@ This will display graphs for:
 ### SD Card Initialization
 
 The firmware performs basic SD card initialization:
-- CMD0: Go idle state
-- CMD8: Check voltage compatibility
-- CMD55 + ACMD41: Initialize card
-- CMD24: Write single block
+- >=74 clocks with CS high at ~328 kHz, CMD0 (go idle), CMD8 (v2 check)
+- CMD55 + ACMD41 (HCS for v2 cards) until ready, 1 s timeout
+- CMD58 reads the OCR: SDHC/SDXC use sector addressing, SDSC cards use byte addressing (+CMD16)
+- Then SPI3 is switched to ~10.5 MHz. Every wait has a timeout; a missing/failed card disables
+  logging instead of hanging the flight loop.
 
 ## Advantages of SD Card Logging
 
