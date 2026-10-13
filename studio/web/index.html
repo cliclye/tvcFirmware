@@ -6,24 +6,63 @@
   <title>EasyTVC Studio</title>
   <link rel="stylesheet" href="/style.css">
   <script defer src="/app.js"></script>
+  <script defer src="/launch.js"></script>
 </head>
 <body>
   <aside class="sidebar">
-    <div class="brand"><span class="brand-mark">↗</span><div>EasyTVC<span>STUDIO / 01</span></div></div>
+    <div class="brand"><span class="brand-mark">↗</span><div>EasyTVC<span>STUDIO / 02</span></div></div>
     <nav aria-label="Workspace">
-      <button class="nav-item selected" data-tab="tune">⌁ <span>Tuning lab</span></button>
-      <button class="nav-item" data-tab="device">⇄ <span>Board connection</span></button>
-      <button class="nav-item" data-tab="guide">⊞ <span>USB &amp; setup</span></button>
+      <button class="nav-item selected" data-tab="rocket">⚙ <span>Rocket setup</span></button>
+      <button class="nav-item" data-tab="tune">⌁ <span>Tuning lab</span></button>
+      <button class="nav-item" data-tab="flash">⇩ <span>Build &amp; flash</span></button>
+      <button class="nav-item" data-tab="live">◉ <span>Live board</span></button>
+      <button class="nav-item" data-tab="checklist">✓ <span>Launch checklist</span></button>
+      <button class="nav-item" data-tab="logs">≋ <span>Flight logs</span></button>
+      <button class="nav-item" data-tab="guide">⊞ <span>Guide</span></button>
     </nav>
-    <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Local tools. Your profiles stay with you.</p></div>
+    <div class="sidebar-go" id="sidebar-go"><span class="go-light"></span><div><strong>NO-GO</strong><p>Open the launch checklist.</p></div></div>
+    <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Nothing leaves this computer.</p></div>
     <button id="quit" class="quiet">Quit Studio ↗</button>
   </aside>
   <main>
-    <header><span class="eyebrow">FLIGHT SYSTEMS / EASYTVC v0.1</span><span id="connection-badge" class="badge">OFFLINE · SIMULATION</span></header>
+    <header><span class="eyebrow">FLIGHT SYSTEMS / EASYTVC v0.1</span><span id="connection-badge" class="badge">BOARD · NOT CONNECTED</span></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <section id="tune" class="tab">
+
+    <section id="rocket" class="tab">
+      <div class="page-title"><div><h1>Your rocket.</h1><p>Everything the firmware needs to know, written straight into <code>Core/Inc/vehicle_config.h</code>.</p></div>
+        <div class="title-actions"><span id="rocket-dirty" class="chip" hidden>Unsaved changes</span><button id="rocket-revert" class="quiet">Revert</button><button id="rocket-save" class="primary">Save to firmware <span>↗</span></button></div></div>
+      <div id="rocket-banner" class="banner"><strong>Loading</strong><span>Reading vehicle_config.h…</span></div>
+      <div class="workspace-grid">
+        <div class="controls">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">01 / MOUNTING</span><h2>IMU &amp; TVC servos</h2></div><span class="chip">Bench-checked</span></div>
+            <p class="help">Nose axis: the sensor axis that points at the nose. Get it from <em>Live board</em> with the rocket standing nose-up. Servo A tilts the motor about body X, servo B about body Y. Set MIN/MAX at the gimbal's mechanical stops.</p>
+            <div id="cfg-mount"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">02 / CONTROL</span><h2>Controller gains</h2></div><span class="chip">Both axes</span></div>
+            <p class="help">Output is a fraction of full gimbal travel per radian of tilt. Try changes in the Tuning lab first.</p>
+            <div id="cfg-control" class="field-grid"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">03 / LAUNCH</span><h2>Arming &amp; launch detection</h2></div></div>
+            <p class="help">The flight image arms after standing vertical and still for the hold time, and disarms if it's tipped past the disarm angle.</p>
+            <div id="cfg-launch" class="field-grid"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">04 / RECOVERY</span><h2>Parachute release servo</h2></div></div>
+            <p class="help">It opens at detected apogee, or at the backup time after launch at the latest. Set the backup from the apogee estimate on the right. Channel 0 means no servo (motor ejection).</p>
+            <div id="cfg-recovery" class="field-grid"></div></article>
+        </div>
+        <div class="results">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">05 / VEHICLE</span><h2>Mass, thrust &amp; apogee</h2></div><span class="chip">Planning only</span></div>
+            <p class="help">Weigh the real parts and replace these numbers. The motor preset is approximate, so check the motor's published data (e.g. thrustcurve.org).</p>
+            <div id="vehicle-motor" class="field-grid"></div>
+            <h3 class="sub">Parts (grams)</h3><div id="vehicle-parts" class="parts"></div><button id="part-add" class="quiet">+ Add part</button>
+            <div id="vehicle-results" class="metrics wide"></div>
+            <div id="vehicle-checks"></div>
+            <button id="use-backup" class="quiet">Use estimated apogee time + 0.5 s as parachute backup</button></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">06 / FIRMWARE</span><h2>Build status</h2></div></div>
+            <div id="rocket-build" class="assessment">—</div><button data-goto="flash" class="quiet">Go to Build &amp; flash ↗</button></article>
+        </div>
+      </div>
+    </section>
+    <section id="tune" class="tab" hidden>
       <div class="page-title"><div><h1>Find your balance.</h1><p>Tune two gimbal axes. Explore disturbances. Keep the limits in view.</p></div><button id="run" class="primary">Run simulation <span>↗</span></button></div>
-      <div class="banner"><strong>Development workspace</strong><span>The board pin map is still unverified. Simulation works now; physical TVC and USB settings need a board-specific firmware adapter.</span></div>
+      <div class="banner"><strong>Model, not flight evidence</strong><span>Gains and servo limits here start from your rocket setup. When a response looks right, copy it back with <em>Use in rocket setup</em>, then save and rebuild.</span><button id="tune-to-rocket" class="primary small">Use in rocket setup ↗</button></div>
       <div class="profile-bar"><label>PROFILE <input id="profile-name" maxlength="80" aria-label="Profile name"></label><div><button id="import">Import</button><button id="export">Save profile ↓</button><button id="reset" class="quiet">Reset</button></div><input id="file" type="file" accept="application/json,.json" hidden></div>
       <div class="workspace-grid">
         <div class="controls">
@@ -37,17 +76,79 @@
         </div>
       </div>
     </section>
-    <section id="device" class="tab" hidden>
-      <div class="page-title"><div><h1>A direct connection.</h1><p>Read and verify settings over USB serial once the board adapter is complete.</p></div></div>
-      <div class="banner"><strong>Adapter required</strong><span>The included blank STM32 image does not expose a serial port. The ST DFU bootloader is for programming; it cannot stream telemetry or change tuning.</span></div>
-      <article class="card"><h2>USB serial device</h2><div class="connection-controls"><select id="port" aria-label="Serial port"><option value="">No USB serial devices</option></select><button id="refresh">Refresh</button><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div><p id="device-status">Disconnected. Simulation and profile editing remain available.</p><div class="actions"><button id="read" disabled>Read tuning from board</button><button id="write" disabled>Save tuning to board</button></div><p class="help">Saving requires verified hardware, idle state, and the physical arm input off. Studio waits for storage acknowledgement and verifies the complete packet by reading it back.</p></article>
-      <article class="card"><div class="card-heading"><h2>Live telemetry</h2><button id="telemetry-export" disabled>Export CSV ↓</button></div><p id="telemetry-status">No sensor data received.</p><div class="telemetry-grid" id="telemetry-values"></div><p class="help">Telemetry display uses the core’s CSV format. It is diagnostic data, not a safety interlock. A stale stream is marked explicitly.</p></article>
+
+    <section id="flash" class="tab" hidden>
+      <div class="page-title"><div><h1>Code to board.</h1><p>Build both images from your saved setup, then flash over USB-C. Every byte is read back to verify.</p></div></div>
+      <div class="flash-grid">
+        <article class="card"><span class="eyebrow">STEP 1</span><h2>Build firmware</h2>
+          <div id="build-status" class="assessment">—</div>
+          <div id="images"></div>
+          <button id="build" class="primary">Build bench + flight images <span>↗</span></button>
+          <details><summary>Build log</summary><pre id="build-log" class="log">No build run yet.</pre></details></article>
+        <article class="card"><span class="eyebrow">STEP 2</span><h2>Put the board in DFU mode</h2>
+          <ol class="steps"><li>Disconnect the LiPo.</li><li>Hold <strong>BOOT</strong>.</li><li>Plug in USB-C, or tap <strong>RST</strong>.</li><li>Let go of BOOT.</li></ol>
+          <div id="dfu-status" class="assessment">Not checked yet.</div>
+          <button id="dfu-refresh">Look for the board</button></article>
+        <article class="card"><span class="eyebrow">STEP 3</span><h2>Flash</h2>
+          <p class="help">Always flash the <strong>bench</strong> image first and pass every bench check before you flash the <strong>flight</strong> image.</p>
+          <div class="actions"><button id="flash-bench">Flash bench image</button><button id="flash-flight" class="primary">Flash flight image</button></div>
+          <div id="flash-status" class="assessment">—</div>
+          <details><summary>Flash log</summary><pre id="flash-log" class="log">—</pre></details>
+          <p class="help">Afterwards, <strong>unplug USB and the battery</strong> to power-cycle. A red LED with the parachute servo open means safe mode; power-cycle again with the board at rest.</p></article>
+      </div>
     </section>
+
+    <section id="live" class="tab" hidden>
+      <div class="page-title"><div><h1>Live board.</h1><p>Read the board's telemetry through a 3.3 V USB-UART adapter: adapter RX → <strong>TX2</strong>, TX → <strong>RX2</strong>, GND → GND.</p></div></div>
+      <article class="card"><div class="connection-controls"><select id="live-port" aria-label="Serial port"></select><button id="live-refresh">Refresh</button><button id="live-connect" class="primary">Connect</button><button id="live-disconnect" disabled>Disconnect</button></div><p id="live-state" class="help">Not connected. Read-only: Studio never sends anything to the board.</p></article>
+      <div class="live-grid">
+        <article class="card"><div class="card-heading"><div><span class="eyebrow">STATUS · 1 Hz</span><h2 id="live-headline">—</h2></div><span id="live-age" class="chip">no data</span></div><div id="live-tiles" class="telemetry-grid"></div></article>
+        <article class="card"><div class="card-heading"><div><span class="eyebrow">ATTITUDE</span><h2>Tilt from vertical</h2></div><span class="chip" id="live-mode">—</span></div>
+          <div class="bubble-wrap"><canvas id="bubble" width="260" height="260" aria-label="Tilt display"></canvas><div id="live-servos"></div></div>
+          <div id="nose-suggest" class="assessment">Stand the rocket nose-up with the bench image running to detect the nose axis.</div>
+          <button id="nose-apply" class="primary" hidden>Use this nose axis</button></article>
+      </div>
+      <article class="card"><details><summary>Raw lines</summary><pre id="live-lines" class="log">—</pre></details></article>
+    </section>
+
+    <section id="checklist" class="tab" hidden>
+      <div class="page-title"><div><h1>Go / no-go.</h1><p>Work down the list. Your ticks are saved on this Mac.</p></div><div class="title-actions"><button id="check-reset-flight" class="quiet">New flight (clear prep &amp; pad)</button><button id="check-reset-all" class="quiet">Clear everything</button></div></div>
+      <div id="go-banner" class="go-banner"></div>
+      <div id="checklists" class="check-grid"></div>
+    </section>
+
+    <section id="logs" class="tab" hidden>
+      <div class="page-title"><div><h1>What happened.</h1><p>Read a session straight from the microSD card, or open a saved <code>session_N.bin</code>.</p></div></div>
+      <article class="card"><div class="connection-controls"><select id="disk" aria-label="Card reader"></select><button id="disk-refresh">Refresh</button><label class="inline">Session <input id="session-number" type="number" min="0" placeholder="latest"></label><button id="sd-read" class="primary">Read from SD card</button><button id="log-import">Open file…</button><input id="log-file" type="file" accept=".bin" hidden></div>
+        <p class="help" id="logs-help">macOS may ask for your password: raw card access needs it. The card is only read, never written. Each session read is saved to <code>~/Documents/EasyTVC Flights</code>.</p></article>
+      <div id="log-result" hidden>
+        <div class="metrics wide" id="log-summary"></div>
+        <div class="log-grid">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">TIMELINE</span><h2 id="log-title">Session</h2></div><div><select id="log-range"><option value="flight">Flight (arm → +30 s)</option><option value="all">Whole session</option></select> <button id="log-csv" class="quiet">CSV ↓</button></div></div><ol id="log-events" class="events"></ol><p id="log-header" class="help mono"></p><div id="log-sessions"></div></article>
+          <div id="log-charts"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="guide" class="tab" hidden>
-      <div class="page-title"><div><h1>From code to board.</h1><p>A USB-C connector provides transport. The firmware still needs the exact board wiring.</p></div></div>
-      <article class="card guide"><h2>What is ready</h2><p>Profile editing, simulation using the C controller, CRC-protected settings, serial transport, and a USB DFU utility. The core is host tested. The available MCU image is a blank bring-up image and does not operate TVC.</p><h2>What is needed for physical TVC</h2><ol><li>EasyTVC v0.1 schematic or verified pin map: sensor bus pins and chip selects, servo timer pins, clock, USB, and arm input.</li><li>Servo model, measured endpoints, linkage direction, gimbal geometry, and the board-to-rocket orientation.</li><li>Board drivers for sensors, USB CDC, PWM, watchdog, and atomic settings storage; then powered bench validation.</li></ol><h2>USB-C upload workflow</h2><ol><li>Use a data-capable USB-C cable. Keep motors, ignition, and recovery charges disconnected during bring-up.</li><li>Enter the STM32 ROM bootloader using the board’s BOOT/RST controls. Confirm the exact sequence with the board documentation.</li><li>List the DFU device with <code>python3 scripts/dfu.py list</code>.</li><li>Inspect an appropriate image with <code>python3 scripts/dfu.py inspect path/to/firmware.bin</code>. Confirm the board, image purpose, address, and hash.</li><li>The explicit <code>flash</code> command downloads and reads back the bytes for verification. See <code>docs/usb-and-studio.md</code> for the command. Studio does not flash from a browser.</li></ol><h2>Weather and reliability</h2><p>Increasing PID gains can produce oscillation or saturate a servo. Wind tolerance depends on available thrust and torque, inertia, aerodynamics, servo speed, structural limits, and the actual flight conditions. Simulation is a tool for exploring those relationships; measured bench and flight evidence establishes usable limits.</p><p>This workspace does not implement a flight recovery system. Pyro outputs remain disabled. Do not use it as the sole flight or recovery computer.</p><h2>References</h2><p>Board specification: <a href="https://mr-wongs-shenanigans.com/products/easytvc" target="_blank" rel="noreferrer">Mr Wong’s EasyTVC</a>. Control reference: <a href="https://github.com/ArduPilot/ardupilot/blob/master/libraries/AC_PID/AC_PID.cpp" target="_blank" rel="noreferrer">ArduPilot PID</a>. Programming: <a href="https://dfu-util.sourceforge.net/dfu-util.1.html" target="_blank" rel="noreferrer">dfu-util</a>. External source code has not been copied into this project.</p></article>
+      <div class="page-title"><div><h1>From setup to landing.</h1><p>The short version of <code>docs/flight-guide.md</code>.</p></div></div>
+      <article class="card guide">
+        <h2>The workflow</h2>
+        <ol><li><strong>Rocket setup.</strong> Enter your servos, endpoints and parts, and estimate apogee. Save.</li>
+          <li><strong>Build &amp; flash</strong> the <em>bench</em> image. Power-cycle.</li>
+          <li><strong>Live board</strong> with a USB-UART: detect the nose axis, then do the tilt test. When the nose leans one way, the nozzle must swing the opposite way. Fix channels and directions in Rocket setup, save, rebuild, reflash.</li>
+          <li><strong>Launch checklist:</strong> finish the bench section, then flash the <em>flight</em> image.</li>
+          <li>At the pad: power on, hands off. Solid green and a chirp every second means ARMED. Red, or a long beep every 2 s, means don't launch.</li>
+          <li><strong>Flight logs:</strong> put the SD card in your Mac and read the session.</li></ol>
+        <h2>Safety</h2>
+        <p>Use 2S LiPo only (the servo rail is a linear 5 V regulator). Never connect pyro channel P2. Nothing here has flown before your first flight, so treat it as a test flight: clear area, low wind, a stand that holds the rocket vertical.</p>
+        <h2>Tools you'll need on the Mac</h2>
+        <p><code>brew install cmake dfu-util</code>. The ARM compiler is in the project's <code>.tools</code> folder.</p>
+      </article>
     </section>
-    <footer>EasyTVC Studio <span>LOCAL DEVELOPMENT BUILD · HARDWARE UNVERIFIED</span></footer>
+
+    <div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title"></h2><div id="modal-body"></div><div class="actions"><button id="modal-cancel">Cancel</button><button id="modal-ok" class="primary">Continue</button></div></div></div>
+    <footer>EasyTVC Studio <span>LOCAL · FIRMWARE NOT YET FLIGHT-PROVEN</span></footer>
   </main>
 </body>
 </html>

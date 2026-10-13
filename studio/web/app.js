@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const token = location.hash.slice(1) || sessionStorage.getItem("easytvc-session");
 if (token) sessionStorage.setItem("easytvc-session", token);
 history.replaceState(null, "", "/");
-let profile, rows = [], telemetry = [], connected = false, pollTimer, busy = false, revision = 0, runRevision = -1;
+let profile, rows = [], busy = false, revision = 0, runRevision = -1;
 const axisFields = ["kp", "ki", "kd", "integrator_limit", "output_limit", "output_rate_limit", "derivative_cutoff_hz"];
 
 function notice(message) { $("notice").textContent = message; $("notice").hidden = false; }
@@ -130,42 +130,15 @@ function draw(hover = null) {
     $("chart-caption").textContent = `${r[0].toFixed(2)} s · X ${r[1].toFixed(2)}° · Y ${r[2].toFixed(2)}° · command ${r[3].toFixed(2)}, ${r[4].toFixed(2)}`;
   }
 }
-function showPorts(list) {
-  const old = $("port").value; $("port").replaceChildren();
-  if (!list.length) { const option = textNode("option", "No USB serial devices — DFU is a different mode"); option.value = ""; $("port").append(option); }
-  list.forEach(path => { const option = textNode("option", path); option.value = path; $("port").append(option); });
-  if (list.includes(old)) $("port").value = old;
-}
-function deviceState(state) {
-  connected = !!state.connected;
-  $("connection-badge").textContent = connected ? "USB SERIAL · CONNECTED" : "OFFLINE · SIMULATION";
-  $("connect").disabled = connected; $("disconnect").disabled = !connected; $("read").disabled = !connected;
-  $("write").disabled = !connected || !state.hardware_verified || state.physical_arm || state.state !== "IDLE";
-  $("device-status").textContent = connected ? `${state.port} · ${state.state} · Physical arm ${state.physical_arm ? "ON" : "OFF"} · Hardware ${state.hardware_verified ? "verified" : "UNVERIFIED"}` : "Disconnected. Simulation and profile editing remain available.";
-  if (state.telemetry) telemetry = state.telemetry;
-  if (!connected) { telemetry = []; $("telemetry-values").replaceChildren(); }
-  $("telemetry-export").disabled = !telemetry.length;
-  const age = state.telemetry_age_s;
-  $("telemetry-status").textContent = !connected ? "No live connection." : age == null ? "Connected; no telemetry received." : age > 1 ? `STALE — last data ${age.toFixed(1)} seconds ago.` : "Receiving sensor telemetry.";
-  if (telemetry.length) {
-    const t = telemetry.at(-1); $("telemetry-values").replaceChildren();
-    [["Body X tilt",`${(t[2]/1000*180/Math.PI).toFixed(1)}°`], ["Body Y tilt",`${(t[3]/1000*180/Math.PI).toFixed(1)}°`],
-      ["Altitude",`${(t[5]/1000).toFixed(1)} m`], ["Vertical speed",`${(t[6]/1000).toFixed(1)} m/s`], ["Command X",(t[7]/1000).toFixed(3)], ["Command Y",(t[8]/1000).toFixed(3)]]
-      .forEach(([label,value]) => { const tile = textNode("div",label); tile.append(textNode("strong",value)); $("telemetry-values").append(tile); });
-  }
-}
-async function poll() {
-  clearTimeout(pollTimer);
-  if (!connected) return;
-  try { deviceState(await api("status",{})); }
-  catch (error) { deviceState({connected:false}); notice(error.message); }
-  if (connected) pollTimer = setTimeout(poll,500);
-}
 
-document.querySelectorAll("[data-tab]").forEach(button => button.onclick = () => {
-  document.querySelectorAll(".tab").forEach(tab => tab.hidden = tab.id !== button.dataset.tab);
-  document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("selected",item === button)); draw();
-});
+function showTab(id) {
+  document.querySelectorAll(".tab").forEach(tab => tab.hidden = tab.id !== id);
+  document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("selected", item.dataset.tab === id));
+  draw();
+  if (window.onTabShown) window.onTabShown(id);
+}
+document.querySelectorAll("[data-tab]").forEach(button => button.onclick = () => showTab(button.dataset.tab));
+document.querySelectorAll("[data-goto]").forEach(button => button.onclick = () => showTab(button.dataset.goto));
 $("chart").addEventListener("mousemove",event => draw(event.offsetX));
 $("chart").addEventListener("mouseleave",() => { $("chart-caption").textContent = "Tilt · degrees / time · seconds"; draw(); });
 new ResizeObserver(() => draw()).observe($("chart"));
@@ -183,12 +156,6 @@ $("file").onchange = async () => {
   } catch(error) { notice(error.message); } finally { $("file").value = ""; }
 };
 action("csv",() => { if (runRevision !== revision) throw new Error("Run the model again before exporting."); download("easytvc-simulation.csv","text/csv","seconds,tilt_x_deg,tilt_y_deg,command_x,command_y,pulse_x_us,pulse_y_us,wind_m_s,fault\n"+rows.map(r=>r.join(",")).join("\n")); });
-action("refresh",async () => showPorts((await api("ports",{})).ports));
-action("connect",async () => { $("connect").disabled = true; try { deviceState(await api("connect",{port:$("port").value})); poll(); } finally { $("connect").disabled = connected; } });
-action("disconnect",async () => { clearTimeout(pollTimer); deviceState(await api("disconnect",{})); });
-action("read",async () => { const settings = await api("read",{}); Object.assign(profile,settings); changed(); render(); notice("Read tuning from the board. Weather and model assumptions remain local to this profile."); });
-action("write",async () => { $("write").disabled = true; try { const result = await api("write",profile); notice(result.message); } finally { if(connected) deviceState(await api("status",{})); } });
-action("telemetry-export",() => download("easytvc-telemetry.csv","text/csv","ms,state,roll_mrad,pitch_mrad,yaw_mrad,altitude_mm,vertical_speed_mm_s,command_x_milli,command_y_milli,tvc_enabled,physical_arm,pyro_locked\n"+telemetry.map(r=>r.join(",")).join("\n")));
-action("quit",async () => { clearTimeout(pollTimer); const result = await api("quit",{}); deviceState({connected:false}); notice(result.message); document.querySelectorAll("button").forEach(b=>b.disabled=true); });
+action("quit",async () => { const result = await api("quit",{}); notice(result.message); document.querySelectorAll("button").forEach(b=>b.disabled=true); });
 window.addEventListener("beforeunload",event => { if(revision > 0) { event.preventDefault(); event.returnValue=""; } });
-(async () => { try { const initial = await api("defaults"); profile = initial.profile; showPorts(initial.ports); render(); await run(); } catch(error) { notice(error.message + " Open Studio using its launcher to create a valid local session."); } })();
+window.studioReady = (async () => { try { const initial = await api("defaults"); profile = initial.profile; render(); } catch(error) { notice(error.message + " Open Studio using its launcher to create a valid local session."); } })();
