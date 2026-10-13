@@ -108,7 +108,7 @@ else()
     target_link_libraries(easytvc_core PUBLIC m)
     set_target_properties(easytvc_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-    add_library(easytvc_studio SHARED Core/Src/studio_sim.c)
+    add_library(easytvc_studio SHARED Core/Src/studio_sim.c Core/Src/flight_sim3d.c)
     target_link_libraries(easytvc_studio PRIVATE easytvc_core)
     target_compile_options(easytvc_studio PRIVATE -Wall -Wextra -Werror)
 
@@ -133,6 +133,10 @@ else()
     target_link_libraries(easytvc_test_flight PRIVATE easytvc_core)
     target_compile_options(easytvc_test_flight PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
+    add_executable(easytvc_test_sim3d tests/test_sim3d.c Core/Src/flight_sim3d.c)
+    target_link_libraries(easytvc_test_sim3d PRIVATE easytvc_core)
+    target_compile_options(easytvc_test_sim3d PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
     add_executable(easytvc_sim tests/sim_flight.c)
     target_link_libraries(easytvc_sim PRIVATE easytvc_core)
 
@@ -145,4 +149,5 @@ else()
     add_test(NAME easytvc_test_drivers COMMAND easytvc_test_drivers)
     add_test(NAME easytvc_test_logger COMMAND easytvc_test_logger)
     add_test(NAME easytvc_test_flight COMMAND easytvc_test_flight)
+    add_test(NAME easytvc_test_sim3d COMMAND easytvc_test_sim3d)
 endif()

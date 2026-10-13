@@ -19,7 +19,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
     cp "$PROJECT_ROOT/studio/studio.py" "$PROJECT_ROOT/studio/launch.py" \
         "$PROJECT_ROOT/scripts/telemetry_viewer.py" "$APP_DIR/Contents/Resources/"
     cp "$PROJECT_ROOT/build-host/libeasytvc_studio.dylib" "$APP_DIR/Contents/Resources/"
-    cp "$PROJECT_ROOT/studio/web/index.html" "$PROJECT_ROOT/studio/web/app.js" "$PROJECT_ROOT/studio/web/launch.js" \
+    cp "$PROJECT_ROOT/studio/web/index.html" "$PROJECT_ROOT/studio/web/app.js" "$PROJECT_ROOT/studio/web/launch.js" "$PROJECT_ROOT/studio/web/sim3d.js" "$PROJECT_ROOT/studio/web/gimbal.js" \
         "$PROJECT_ROOT/studio/web/style.css" "$APP_DIR/Contents/Resources/web/"
     codesign --force --sign - "$APP_DIR"
     echo "Ready: $APP_DIR"

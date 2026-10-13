@@ -3,7 +3,7 @@
  * Shares $, api, action, notice, download, textNode, grid, profile, render and showTab with app.js. */
 
 let cfg = null, savedCfg = null, buildInfo = null, appState = {}, vehicle = null;
-let liveTimer = null, liveStatus = null, logData = null, validateTimer = null;
+let liveTimer = null, liveStatus = null, logData = null, validateTimer = null, rocketModel = null, modelTimer = null;
 const COLORS = ["#7655e8", "#288471", "#c07a1a"];
 const AXES = ["POS_X", "NEG_X", "POS_Y", "NEG_Y", "POS_Z", "NEG_Z"];
 
@@ -59,7 +59,9 @@ function renderRocket() {
   const top = grid();
   top.append(cfgSelect("NOSE_AXIS", "Nose axis (sensor)", AXES.map(a => [a, a.replace("_", " ")])),
              cfgSelect("SERVO_RATE_HZ", "Servo frame rate", [[50, "50 Hz (any servo)"], [100, "100 Hz"], [125, "125 Hz"], [200, "200 Hz (digital)"], [250, "250 Hz (digital)"]]));
-  mount.append(top);
+  const led = el("input", {type: "checkbox"}); led.checked = cfg.LED_ACTIVE_LOW === 1;
+  led.onchange = () => { cfg.LED_ACTIVE_LOW = led.checked ? 1 : 0; cfgChanged(); };
+  mount.append(top, el("label", {class: "check"}, led, " Status LED is active-low (power-up shows red → green → blue one at a time; untick if you see the opposite)"));
   for (const s of ["A", "B"]) {
     const block = el("div", {class: "servo-block"}, el("h3", {text: `Servo ${s} · tilts about body ${s === "A" ? "X" : "Y"}`}));
     const g = grid();
@@ -109,7 +111,8 @@ async function loadRocket() {
     const result = await api("rocket/load", {});
     cfg = result.config; savedCfg = structuredClone(cfg); buildInfo = result.build; appState = result.state || {};
     appState.project = result.project;
-    vehicle = appState.vehicle || defaultVehicle();
+    const upgraded = await api("rocket/model", {vehicle: appState.vehicle || {}});
+    vehicle = upgraded.vehicle; rocketModel = upgraded.model;
     setRocketBanner(null); renderRocket(); syncTuningFromRocket(); renderImages(); renderChecklists();
   } catch (error) {
     $("rocket-banner").className = "banner bad";
@@ -149,15 +152,14 @@ action("tune-to-rocket", async () => {
 });
 
 /* ------------------------------------------------------------------ vehicle calculator */
-function defaultVehicle() {
-  return {motor: {name: "Estes E12-0 (approx.)", avg_thrust_n: 12, burn_s: 2.5, total_mass_g: 58, prop_mass_g: 36},
-    parts: [["EasyTVC board", 20], ["2S LiPo 300 mAh", 22], ["TVC servos ×2", 26], ["Parachute servo", 9], ["Gimbal & motor mount", 40],
-      ["Airframe & nose cone", 110], ["Parachute & shock cord", 25], ["Wiring & hardware", 15]],
-    diameter_mm: 60, cd: 0.6, chute_diameter_cm: 45, chute_cd: 0.8};
-}
 let vehicleSaveTimer = null;
 function vehicleChanged() {
   renderVehicleResults();
+  clearTimeout(modelTimer);
+  modelTimer = setTimeout(async () => {
+    try { rocketModel = (await api("rocket/model", {vehicle})).model; $("model-stats").classList.remove("stale"); renderModel(); }
+    catch (error) { $("model-stats").replaceChildren(el("div", {class: "check-line bad", text: error.message})); }
+  }, 250);
   clearTimeout(vehicleSaveTimer);
   vehicleSaveTimer = setTimeout(() => saveState({vehicle}).catch(e => notice(e.message)), 600);
 }
@@ -173,18 +175,76 @@ function renderVehicle() {
   $("vehicle-motor").replaceChildren(vField(m, "name", "Motor"), vField(m, "avg_thrust_n", "Avg thrust · N", .5), vField(m, "burn_s", "Burn time · s", .1),
     vField(m, "total_mass_g", "Motor mass · g"), vField(m, "prop_mass_g", "Propellant · g"), vField(vehicle, "diameter_mm", "Body diameter · mm"),
     vField(vehicle, "cd", "Body drag coeff.", .05), vField(vehicle, "chute_diameter_cm", "Parachute · cm"), vField(vehicle, "chute_cd", "Chute drag coeff.", .05));
+  const b = vehicle.body, shape = el("select", {"aria-label": "Nose cone shape"});
+  ["ogive", "conical", "parabolic", "elliptical"].forEach(n => { const o = el("option", {text: n}); o.value = n; shape.append(o); });
+  shape.value = b.nose_shape; shape.onchange = () => { b.nose_shape = shape.value; vehicleChanged(); };
+  $("vehicle-body").replaceChildren(vField(vehicle, "diameter_mm", "Body outer diameter", .1), vField(b, "length_mm", "Body tube length", 1),
+    vField(b, "nose_length_mm", "Nose cone length", 1), el("label", {class: "field"}, el("span", {text: "Nose cone shape"}), shape),
+    vField(m, "diameter_mm", "Motor diameter", .1), vField(m, "length_mm", "Motor length", .5),
+    vField(b, "motor_overhang_mm", "Motor sticks out of tube", .5), vField(b, "pivot_from_nozzle_mm", "Gimbal pivot above nozzle", .5));
   const parts = $("vehicle-parts"); parts.replaceChildren();
   vehicle.parts.forEach((part, i) => {
     const name = el("input", {type: "text", "aria-label": "Part"}); name.value = part[0];
-    const grams = el("input", {type: "number", step: 1, min: 0, "aria-label": `${part[0]} grams`}); grams.value = part[1];
     name.oninput = () => { part[0] = name.value; vehicleChanged(); };
-    grams.oninput = () => { part[1] = Number(grams.value); vehicleChanged(); };
-    parts.append(el("div", {class: "part-row"}, name, grams, el("button", {class: "quiet", "aria-label": "Remove", text: "×",
-      onclick: () => { vehicle.parts.splice(i, 1); renderVehicle(); vehicleChanged(); }})));
+    const num = (index, label, step) => { const input = el("input", {type: "number", step, min: 0, "aria-label": `${part[0]} ${label}`});
+      input.value = part[index]; input.oninput = () => { part[index] = Number(input.value); vehicleChanged(); }; return input; };
+    parts.append(el("div", {class: "part-row"}, name, num(1, "grams", 1), num(2, "position mm", 1), num(3, "length mm", 1),
+      el("button", {class: "quiet", "aria-label": "Remove", text: "×", onclick: () => { vehicle.parts.splice(i, 1); renderVehicle(); vehicleChanged(); }})));
   });
   renderVehicleResults();
+  renderModel();
 }
-$("part-add").onclick = () => { vehicle.parts.push(["New part", 0]); renderVehicle(); vehicleChanged(); };
+function renderModel() {
+  const m = rocketModel; if (!m) return;
+  const tile = (label, value, cls = "") => el("div", {class: cls}, el("span", {text: label}), el("strong", {text: value}));
+  $("model-stats").replaceChildren(
+    tile("LENGTH", `${m.length_mm.toFixed(0)} mm`), tile("LIFTOFF MASS", `${m.mass_wet_g.toFixed(0)} g`),
+    tile("CG (WET → DRY)", `${m.cg_wet_mm.toFixed(1)} → ${m.cg_dry_mm.toFixed(1)} mm`), tile("CP (BARROWMAN)", `${m.cp_mm.toFixed(1)} mm`),
+    tile("STABILITY", `${m.stability_cal.toFixed(2)} cal`, m.stability_cal < -4.5 ? "bad" : ""),
+    tile("PIVOT → CG", `${m.gimbal_arm_mm.toFixed(1)} mm`), tile("CG → CP", `${m.cp_ahead_mm.toFixed(1)} mm`),
+    tile("PITCH INERTIA", `${(m.inertia_wet * 1e4).toFixed(1)} kg·cm²`));
+  drawSideView();
+}
+function drawSideView() {
+  const canvas = $("side-view"), m = rocketModel; if (!canvas || !m || !vehicle) return;
+  const rect = canvas.getBoundingClientRect(); if (!rect.width) return;
+  const k = window.devicePixelRatio || 1; canvas.width = rect.width * k; canvas.height = rect.height * k;
+  const ctx = canvas.getContext("2d"); ctx.scale(k, k);
+  const W = rect.width, H = rect.height, pad = 24, D = vehicle.diameter_mm, b = vehicle.body, mo = vehicle.motor;
+  const s = Math.min((W - 2 * pad) / m.length_mm, (H - 70) / (D * 1.6)), cy = 30 + D * s * 0.8;
+  const X = mm => pad + mm * s, R = D / 2 * s, Ln = b.nose_length_mm;
+  const noseR = x => { const t = x / Ln;
+    if (b.nose_shape === "conical") return R * t;
+    if (b.nose_shape === "parabolic") return R * (2 * t - t * t);
+    if (b.nose_shape === "elliptical") return R * Math.sqrt(Math.max(0, 1 - (1 - t) ** 2));
+    const rho = (R * R + (Ln * s) ** 2) / (2 * R), xx = (Ln - x) * s; return Math.sqrt(Math.max(0, rho * rho - xx * xx)) + R - rho; };
+  ctx.font = "10px -apple-system, sans-serif"; ctx.lineWidth = 1;
+  /* body outline */
+  ctx.beginPath(); ctx.moveTo(X(0), cy);
+  for (let x = 0; x <= Ln; x += Ln / 40) ctx.lineTo(X(x), cy - noseR(x));
+  ctx.lineTo(X(Ln + b.length_mm), cy - R); ctx.lineTo(X(Ln + b.length_mm), cy + R); ctx.lineTo(X(Ln), cy + R);
+  for (let x = Ln; x >= 0; x -= Ln / 40) ctx.lineTo(X(x), cy + noseR(x));
+  ctx.closePath(); ctx.fillStyle = "#f1eefc"; ctx.fill(); ctx.strokeStyle = "#6a4ce5"; ctx.stroke();
+  /* parts */
+  vehicle.parts.forEach((p, i) => { const x0 = X(p[2] - p[3] / 2), w = Math.max(2, p[3] * s), h = R * 1.2;
+    ctx.fillStyle = `hsla(${(i * 47) % 360},55%,60%,0.35)`; ctx.fillRect(x0, cy - h / 2, w, h); });
+  /* motor */
+  const mr = mo.diameter_mm / 2 * s;
+  ctx.fillStyle = "#8a8a99"; ctx.fillRect(X(m.motor_top_mm), cy - mr, mo.length_mm * s, 2 * mr);
+  /* markers */
+  const marker = (mm, color, label, below) => { const x = X(mm); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.beginPath();
+    ctx.moveTo(x, cy - R - 8); ctx.lineTo(x, cy + R + 8); ctx.stroke(); ctx.beginPath(); ctx.arc(x, cy, 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillText(label, x - 14, below ? cy + R + 20 : cy - R - 12); };
+  marker(m.cp_mm, "#c0392b", `CP ${m.cp_mm.toFixed(0)}`, false);
+  marker(m.cg_wet_mm, "#1f6fb2", `CG ${m.cg_wet_mm.toFixed(0)}`, true);
+  marker(m.pivot_mm, "#e0661b", `pivot ${m.pivot_mm.toFixed(0)}`, false);
+  /* scale */
+  ctx.strokeStyle = "#90909b"; ctx.fillStyle = "#90909b"; const y = H - 14;
+  ctx.beginPath(); ctx.moveTo(X(0), y); ctx.lineTo(X(m.length_mm), y); ctx.stroke();
+  for (let mm = 0; mm <= m.length_mm; mm += 100) { ctx.beginPath(); ctx.moveTo(X(mm), y - 4); ctx.lineTo(X(mm), y + 2); ctx.stroke(); ctx.fillText(`${mm}`, X(mm) - 8, y - 6); }
+  ctx.fillText(`${m.length_mm.toFixed(0)} mm`, X(m.length_mm) - 40, y + 12);
+}
+$("part-add").onclick = () => { vehicle.parts.push(["New part", 0, 300, 20]); renderVehicle(); vehicleChanged(); };
 $("use-backup").onclick = () => {
   const e = estimate(); if (!e || !isFinite(e.apogee_t)) { notice("No apogee estimate yet."); return; }
   cfg.CHUTE_BACKUP_MS = Math.round((e.apogee_t + 0.5) * 10) * 100;
@@ -388,6 +448,7 @@ function drawBubble(tx, ty) {
 const CHECKLIST = [
   {id: "bench", title: "1 · Bench (bench image)", items: [
     ["b-flash", "Bench image flashed; board power-cycled"],
+    ["b-led", "Power-up LED test shows red, then green, then blue (otherwise flip the LED setting)"],
     ["b-sweep", "Power-up sweep: servo A moves, then B, then the parachute servo. Nothing binds at the ends"],
     ["b-nose", "Nose axis correct: green LED solid (and Live board agrees) with the rocket nose-up"],
     ["b-tilt-a", "Tilt test, servo A: when the nose leans, the nozzle swings to the opposite side"],
@@ -586,5 +647,5 @@ window.onTabShown = id => {
   if (id === "flash") api("build/status", {}).then(b => { buildInfo = b; renderImages(); }).catch(e => notice(e.message));
   if (id === "logs" && logData) drawLogCharts();
 };
-window.addEventListener("resize", () => { if (logData && !$("logs").hidden) drawLogCharts(); });
+window.addEventListener("resize", () => { if (logData && !$("logs").hidden) drawLogCharts(); if (!$("rocket").hidden) drawSideView(); });
 (async () => { await window.studioReady; await loadRocket(); drawBubble(null, null); })();
