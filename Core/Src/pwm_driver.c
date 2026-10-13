@@ -1,9 +1,13 @@
 #include "pwm_driver.h"
 #include "stm32f4xx.h"
 #include "board_pins.h"
+#include "vehicle_config.h"
 
-/* Servo PWM: 50 Hz, 1 us resolution. */
-#define PWM_PERIOD_US       20000U
+/* Servo PWM: EASYTVC_SERVO_RATE_HZ (50 Hz default), 1 us resolution. */
+#if EASYTVC_SERVO_RATE_HZ < 50 || EASYTVC_SERVO_RATE_HZ > 333 || (1000000 % EASYTVC_SERVO_RATE_HZ) != 0
+#error "EASYTVC_SERVO_RATE_HZ must be 50..333 and divide 1 MHz evenly"
+#endif
+#define PWM_PERIOD_US       (1000000U / EASYTVC_SERVO_RATE_HZ)
 #define PWM_MAX_PULSE_US    2000U
 #define PWM_MIN_PULSE_US    1000U
 #define PWM_CENTER_US       1500U

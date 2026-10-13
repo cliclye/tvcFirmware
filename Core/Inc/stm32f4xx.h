@@ -423,3 +423,6 @@ uint32_t STM32_Micros(void);
 void STM32_WatchdogStart(void);
 void STM32_WatchdogFeed(void);
 void STM32_SystemReset(void);
+/* True when the last reset was a watchdog, fault (software) or low-power reset rather than
+ * power-on or the reset button. Reads and clears the RCC reset flags; call once at boot. */
+bool STM32_ResetWasAbnormal(void);

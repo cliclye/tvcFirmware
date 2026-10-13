@@ -1,183 +1,157 @@
 #!/usr/bin/env python3
 """
-EasyTVC Telemetry Viewer
-Reads a raw SD card sector dump (see read-sd-data.sh) and displays graphs
+EasyTVC flight log viewer.
+
+Reads one session copied by scripts/read-sd-data.sh and plots it, or exports CSV.
+
+    python3 scripts/telemetry_viewer.py session_3.bin
+    python3 scripts/telemetry_viewer.py session_3.bin --csv flight.csv     (no matplotlib needed)
+
+Format: Core/Inc/data_logger.h. Sector 0 of the session is a header ("ETVCLOG2", session number,
+record size, settings text); then 32-byte records, 16 per sector, body frame.
 """
 
+import argparse
+import csv
 import struct
-import matplotlib.pyplot as plt
-import numpy as np
 import sys
-import os
 
-# Telemetry record structure (matches Core/Inc/data_logger.h, 23 bytes, packed, little-endian):
-# timestamp u32, accel xyz i16 (mg), gyro xyz i16 (0.1 deg/s), temperature i16 (0.01 degC),
-# pressure u32 (Pa), flags u8
-TELEMETRY_RECORD_FORMAT = '<I6hhIB'
-TELEMETRY_RECORD_SIZE = struct.calcsize(TELEMETRY_RECORD_FORMAT)
-SECTOR_SIZE = 512
-RECORDS_PER_SECTOR = SECTOR_SIZE // TELEMETRY_RECORD_SIZE  # 22; the last 6 bytes are 0xFF padding
-FLAG_MARKER_MASK = 0xE0
-FLAG_MARKER = 0xA0
+SECTOR = 512
+RECORD_FORMAT = '<I3h3h2h2HhhBBBB'
+RECORD_SIZE = struct.calcsize(RECORD_FORMAT)
+MARKER = 0xA5
+STATES = ['IDLE', 'ARMED', 'BOOST', 'COAST', 'APOGEE', 'DESCENT', 'LANDED', 'FAULT']
+FLAGS = ['imu_ok', 'baro_ok', 'gyro_cal_ok', 'accel_sat', 'gyro_sat', 'tvc_active',
+         'ctrl_fault', 'chute_open']
+assert RECORD_SIZE == 32
 
-class TelemetryRecord:
-    def __init__(self, data):
-        (self.timestamp,
-         self.accel_x, self.accel_y, self.accel_z,
-         self.gyro_x, self.gyro_y, self.gyro_z,
-         self.temperature, self.pressure, self.flags) = struct.unpack(TELEMETRY_RECORD_FORMAT, data)
 
-        # Convert to physical units
-        self.accel_x_mg = self.accel_x  # Already in mg
-        self.accel_y_mg = self.accel_y
-        self.accel_z_mg = self.accel_z
-        self.gyro_x_deg = self.gyro_x / 10.0  # 0.1 deg/s units
-        self.gyro_y_deg = self.gyro_y / 10.0
-        self.gyro_z_deg = self.gyro_z / 10.0
-        self.temp_c = self.temperature / 100.0
-        self.pressure_pa = self.pressure
-        self.pressure_hpa = self.pressure / 100.0
+def parse_session(data):
+    """Parse one session dump. Returns (session, header_text, rows); raises ValueError."""
+    if len(data) < SECTOR or data[:8] != b'ETVCLOG2':
+        raise ValueError("not an EasyTVC session (expected an ETVCLOG2 header)")
+    session, record_size = struct.unpack_from('<II', data, 8)
+    if record_size != RECORD_SIZE:
+        raise ValueError(f"record size {record_size}, this reader expects {RECORD_SIZE}")
+    header_text = data[16:SECTOR].split(b'\0', 1)[0].decode('ascii', 'replace')
 
-    @property
-    def valid(self):
-        return (self.flags & FLAG_MARKER_MASK) == FLAG_MARKER
+    rows = []
+    last_ts = -1
+    for offset in range(SECTOR, len(data) - RECORD_SIZE + 1, RECORD_SIZE):
+        f = struct.unpack_from(RECORD_FORMAT, data, offset)
+        ts, ax, ay, az, gx, gy, gz, tx, ty, sa, sb, alt, vs, tag, state, flags, marker = f
+        # Stop at the end of this session: an unwritten record, an older session's leftovers,
+        # or time going backwards.
+        if marker != MARKER or tag != (session & 0xFF) or ts < last_ts:
+            break
+        last_ts = ts
+        row = {
+            't_s': ts / 1000.0,
+            'state': STATES[state] if state < len(STATES) else str(state),
+            'accel_x_g': ax / 1000.0, 'accel_y_g': ay / 1000.0, 'accel_z_g': az / 1000.0,
+            'gyro_x_dps': gx / 10.0, 'gyro_y_dps': gy / 10.0, 'gyro_z_dps': gz / 10.0,
+            'tilt_x_deg': tx / 100.0, 'tilt_y_deg': ty / 100.0,
+            'servo_a_us': sa, 'servo_b_us': sb,
+            'baro_alt_m': alt / 10.0, 'vspeed_m_s': vs / 100.0,
+        }
+        for bit, name in enumerate(FLAGS):
+            row[name] = (flags >> bit) & 1
+        rows.append(row)
+    return session, header_text, rows
 
-def read_telemetry_file(filename):
-    """Read a raw sector dump and return the records in time order.
 
-    Records are packed per 512-byte sector (22 each, then padding), not back to back. Sectors
-    past the end of the log hold whatever was on the card before, so parsing stops at the first
-    sector that has no valid record or whose timestamps go backwards.
-    """
-    records = []
-
+def read_session(path):
+    with open(path, 'rb') as f:
+        data = f.read()
     try:
-        with open(filename, 'rb') as f:
-            data = f.read()
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found")
-        return None
-    except OSError as e:
-        print(f"Error reading file: {e}")
-        return None
+        return parse_session(data)
+    except ValueError as error:
+        sys.exit(f"{path}: {error}")
 
-    last_timestamp = -1
-    for sector_start in range(0, len(data) - SECTOR_SIZE + 1, SECTOR_SIZE):
-        sector_records = []
-        for slot in range(RECORDS_PER_SECTOR):
-            offset = sector_start + slot * TELEMETRY_RECORD_SIZE
-            record = TelemetryRecord(data[offset:offset + TELEMETRY_RECORD_SIZE])
-            if not record.valid or record.timestamp < last_timestamp:
-                break
-            last_timestamp = record.timestamp
-            sector_records.append(record)
-        records.extend(sector_records)
-        if len(sector_records) < RECORDS_PER_SECTOR:
-            # A partial sector is either the final (flushed) sector or the end of the log.
-            if not sector_records:
-                break
 
-    print(f"Read {len(records)} telemetry records")
-    return records
-
-def plot_telemetry(records):
-    """Create graphs for all sensor data"""
-    if not records:
-        print("No records to plot")
+def summarize(session, header_text, rows):
+    print(f"Session {session}: {len(rows)} records")
+    print(f"  settings: {header_text}")
+    if not rows:
         return
-    
-    # Extract data arrays
-    timestamps = [r.timestamp for r in records]
-    accel_x = [r.accel_x_mg for r in records]
-    accel_y = [r.accel_y_mg for r in records]
-    accel_z = [r.accel_z_mg for r in records]
-    gyro_x = [r.gyro_x_deg for r in records]
-    gyro_y = [r.gyro_y_deg for r in records]
-    gyro_z = [r.gyro_z_deg for r in records]
-    temperature = [r.temp_c for r in records]
-    pressure = [r.pressure_hpa for r in records]
-    
-    # Convert timestamps to seconds
-    time_s = [t / 1000.0 for t in timestamps]
-    
-    # Create figure with subplots
-    fig, axes = plt.subplots(4, 1, figsize=(12, 10))
-    fig.suptitle('EasyTVC Telemetry Data', fontsize=16)
-    
-    # Accelerometer
-    axes[0].plot(time_s, accel_x, label='X', color='red')
-    axes[0].plot(time_s, accel_y, label='Y', color='green')
-    axes[0].plot(time_s, accel_z, label='Z', color='blue')
-    axes[0].set_ylabel('Acceleration (mg)')
-    axes[0].set_title('Accelerometer')
-    axes[0].legend()
-    axes[0].grid(True)
-    
-    # Gyroscope
-    axes[1].plot(time_s, gyro_x, label='X', color='red')
-    axes[1].plot(time_s, gyro_y, label='Y', color='green')
-    axes[1].plot(time_s, gyro_z, label='Z', color='blue')
-    axes[1].set_ylabel('Angular Rate (deg/s, bias-corrected)')
-    axes[1].set_title('Gyroscope')
-    axes[1].legend()
-    axes[1].grid(True)
-    
-    # Temperature
-    axes[2].plot(time_s, temperature, color='orange')
-    axes[2].set_ylabel('Temperature (°C)')
-    axes[2].set_title('Temperature')
-    axes[2].grid(True)
-    
-    # Pressure
-    axes[3].plot(time_s, pressure, color='purple')
-    axes[3].set_ylabel('Pressure (hPa)')
-    axes[3].set_xlabel('Time (s)')
-    axes[3].set_title('Pressure')
-    axes[3].grid(True)
-    
+    print(f"  duration {rows[-1]['t_s'] - rows[0]['t_s']:.1f} s")
+    previous = None
+    for r in rows:
+        if r['state'] != previous:
+            print(f"  {r['t_s']:8.2f} s  {r['state']}")
+            previous = r['state']
+    opened = next((r['t_s'] for r in rows if r['chute_open']), None)
+    if opened is not None:
+        print(f"  {opened:8.2f} s  parachute servo opened")
+    flight = [r for r in rows if r['state'] in ('BOOST', 'COAST', 'APOGEE', 'DESCENT')]
+    if flight:
+        print(f"  max baro altitude {max(r['baro_alt_m'] for r in rows):.1f} m")
+        boost = [r for r in rows if r['state'] == 'BOOST']
+        if boost:
+            worst = max(boost, key=lambda r: abs(r['tilt_x_deg']) + abs(r['tilt_y_deg']))
+            print(f"  worst tilt in boost: X {worst['tilt_x_deg']:.1f} deg, "
+                  f"Y {worst['tilt_y_deg']:.1f} deg at {worst['t_s']:.2f} s")
+    if any(r['ctrl_fault'] for r in rows):
+        t = next(r['t_s'] for r in rows if r['ctrl_fault'])
+        print(f"  WARNING: controller fault at {t:.2f} s (tilt limit or bad sensor data)")
+
+
+def plot(rows, title):
+    import matplotlib.pyplot as plt
+    t = [r['t_s'] for r in rows]
+    fig, ax = plt.subplots(5, 1, figsize=(12, 12), sharex=True)
+    fig.suptitle(title)
+    for key, label in (('tilt_x_deg', 'X'), ('tilt_y_deg', 'Y')):
+        ax[0].plot(t, [r[key] for r in rows], label=label)
+    ax[0].set_ylabel('tilt (deg)')
+    for key, label in (('servo_a_us', 'A'), ('servo_b_us', 'B')):
+        ax[1].plot(t, [r[key] for r in rows], label=label)
+    ax[1].set_ylabel('servo (us)')
+    for key, label in (('gyro_x_dps', 'X'), ('gyro_y_dps', 'Y'), ('gyro_z_dps', 'Z')):
+        ax[2].plot(t, [r[key] for r in rows], label=label)
+    ax[2].set_ylabel('rate (deg/s)')
+    for key, label in (('accel_x_g', 'X'), ('accel_y_g', 'Y'), ('accel_z_g', 'Z')):
+        ax[3].plot(t, [r[key] for r in rows], label=label)
+    ax[3].set_ylabel('accel (g)')
+    ax[4].plot(t, [r['baro_alt_m'] for r in rows], label='baro alt (m)')
+    ax[4].plot(t, [r['vspeed_m_s'] for r in rows], label='v speed (m/s)')
+    ax[4].set_xlabel('time since power-up (s)')
+    previous = None
+    for r in rows:
+        if r['state'] != previous:
+            for a in ax:
+                a.axvline(r['t_s'], color='grey', lw=0.5, ls=':')
+            ax[0].annotate(r['state'], (r['t_s'], 0), fontsize=7, rotation=90)
+            previous = r['state']
+    for a in ax:
+        a.grid(True)
+        a.legend(loc='upper right')
     plt.tight_layout()
     plt.show()
-    
-    # Print statistics
-    print("\n=== Telemetry Statistics ===")
-    print(f"Number of records: {len(records)}")
-    print(f"Duration: {time_s[-1]:.2f} seconds")
-    print(f"Sample rate: {len(records) / time_s[-1]:.2f} Hz")
-    print(f"\nAccelerometer (mg):")
-    print(f"  X: {np.mean(accel_x):.2f} ± {np.std(accel_x):.2f}")
-    print(f"  Y: {np.mean(accel_y):.2f} ± {np.std(accel_y):.2f}")
-    print(f"  Z: {np.mean(accel_z):.2f} ± {np.std(accel_z):.2f}")
-    print(f"\nGyroscope (deg/s):")
-    print(f"  X: {np.mean(gyro_x):.2f} ± {np.std(gyro_x):.2f}")
-    print(f"  Y: {np.mean(gyro_y):.2f} ± {np.std(gyro_y):.2f}")
-    print(f"  Z: {np.mean(gyro_z):.2f} ± {np.std(gyro_z):.2f}")
-    print(f"\nTemperature: {np.mean(temperature):.2f} ± {np.std(temperature):.2f} °C")
-    print(f"Pressure: {np.mean(pressure):.2f} ± {np.std(pressure):.2f} hPa")
+
 
 def main():
-    if len(sys.argv) < 2:
-        print("EasyTVC Telemetry Viewer")
-        print("========================")
-        print("Usage: python telemetry_viewer.py <telemetry_file.bin>")
-        print("")
-        print("Example:")
-        print("  python telemetry_viewer.py telemetry_data.bin")
-        sys.exit(1)
-    
-    filename = sys.argv[1]
-    
-    if not os.path.exists(filename):
-        print(f"Error: File '{filename}' not found")
-        sys.exit(1)
-    
-    print(f"Reading telemetry from: {filename}")
-    records = read_telemetry_file(filename)
-    
-    if records:
-        plot_telemetry(records)
-    else:
-        print("Failed to read telemetry data")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('session_file')
+    parser.add_argument('--csv', help='write all records to this CSV file instead of plotting')
+    args = parser.parse_args()
 
-if __name__ == "__main__":
+    session, header_text, rows = read_session(args.session_file)
+    summarize(session, header_text, rows)
+    if not rows:
+        sys.exit(1)
+    if args.csv:
+        with open(args.csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"wrote {args.csv}")
+    else:
+        try:
+            plot(rows, f"EasyTVC session {session}")
+        except ImportError:
+            sys.exit("matplotlib is not installed: pip3 install matplotlib, or use --csv")
+
+
+if __name__ == '__main__':
     main()

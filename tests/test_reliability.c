@@ -159,9 +159,44 @@ static void app_rejects_bad_sample(void)
     in.now_ms = 5;
     in.gyro_rad_s[0] = NAN;
     EasyTVCAppOutput out = EasyTVC_AppStep(&app, &in);
-    assert(out.flight.state == EASYTVC_FLIGHT_FAULT && !out.control.enabled);
+    /* Pre-launch: disarm, do not latch. */
+    assert(out.flight.state == EASYTVC_FLIGHT_IDLE && !out.control.enabled && !out.control.fault);
     assert(isfinite(out.euler.roll_rad) && isfinite(out.nav.altitude_m));
-    assert(!EasyTVC_AppApplySettings(&app, &app.settings, false));
+    assert(!EasyTVC_AppApplySettings(&app, &app.settings, true));
+}
+
+/* Regression: one stale/slow sample on the pad used to latch the controller fault forever, so the
+ * vehicle went to FAULT with a centred gimbal the moment it launched. */
+static void pad_glitch_does_not_disable_tvc_in_flight(void)
+{
+    EasyTVCApp app;
+    EasyTVC_AppInit(&app, 0);
+    EasyTVCAppInput in = {.accel_m_s2 = {0, 0, 9.80665f}, .dt_s = 0.005f, .sensors_healthy = true};
+    uint32_t t = 0;
+    for (; t < 100; t += 5) {
+        in.now_ms = t;
+        (void)EasyTVC_AppStep(&app, &in);
+    }
+    in.now_ms = t;
+    in.dt_s = 0.065f;            /* a slow barometer retry */
+    in.sensor_age_ms = 60;       /* and a stale IMU sample */
+    (void)EasyTVC_AppStep(&app, &in);
+    in.dt_s = 0.005f;
+    in.sensor_age_ms = 0;
+    in.physical_arm_qualified = true;
+    in.software_arm_request = true;
+    for (t += 5; t < 300; t += 5) {
+        in.now_ms = t;
+        assert(EasyTVC_AppStep(&app, &in).flight.state == EASYTVC_FLIGHT_ARMED);
+    }
+    in.accel_m_s2[2] = 4.0f * 9.80665f;
+    EasyTVCAppOutput out = {0};
+    for (; t < 600; t += 5) {
+        in.now_ms = t;
+        out = EasyTVC_AppStep(&app, &in);
+    }
+    assert(out.flight.state == EASYTVC_FLIGHT_BOOST);
+    assert(out.control.enabled && !out.control.fault);
 }
 
 static void runtime_applies_only_persisted_disarmed_settings(void)
@@ -191,6 +226,7 @@ int main(void)
     pid_saturation_and_invalid();
     protocol_guards();
     app_rejects_bad_sample();
+    pad_glitch_does_not_disable_tvc_in_flight();
     runtime_applies_only_persisted_disarmed_settings();
     puts("Reliability tests passed: CRC, config, axes, stale/invalid samples, faults, PID, protocol.");
     return 0;

@@ -20,6 +20,7 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/controller.c
     Core/Src/protocol.c
     Core/Src/runtime.c
+    Core/Src/pad_arm.c
 )
 
 # STM32F405 register-level drivers. These touch memory-mapped peripherals and inline
@@ -51,52 +52,54 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         -mfpu=fpv4-sp-d16 -ffreestanding -ffunction-sections -fdata-sections -Wall -Wextra -Werror)
     target_link_libraries(easytvc_hw PUBLIC easytvc_core)
 
-    set(EASYTVC_TARGET easytvc_safe_blank)
     set(EASYTVC_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/ld/stm32f405rg.ld)
 
-    add_executable(${EASYTVC_TARGET}
-        Core/Src/main.c
-        Core/Src/startup_stm32f405rg.c
-        Core/Src/easytvc_safety.c
-    )
+    # Two images from the same source: the bench image never arms and lets the gimbal follow the
+    # board by hand; the flight image arms on the pad and runs TVC during boost.
+    function(easytvc_image name bench_mode)
+        add_executable(${name}
+            Core/Src/main.c
+            Core/Src/startup_stm32f405rg.c
+            Core/Src/easytvc_safety.c
+        )
+        target_include_directories(${name} PRIVATE Core/Inc)
+        target_compile_features(${name} PRIVATE c_std_11)
+        target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode})
+        target_compile_options(${name} PRIVATE
+            -mcpu=cortex-m4
+            -mthumb
+            -mfloat-abi=hard
+            -mfpu=fpv4-sp-d16
+            -ffreestanding
+            -fdata-sections
+            -ffunction-sections
+            -fno-common
+            -Wall
+            -Wextra
+            -Werror
+        )
+        target_link_libraries(${name} PRIVATE easytvc_hw easytvc_core m)
+        target_link_options(${name} PRIVATE
+            -mcpu=cortex-m4
+            -mthumb
+            -mfloat-abi=hard
+            -mfpu=fpv4-sp-d16
+            -nostartfiles
+            --specs=nano.specs
+            --specs=nosys.specs
+            -Wl,--gc-sections
+            -Wl,-T,${EASYTVC_LINKER_SCRIPT}
+            -Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/${name}.map
+        )
+        add_custom_command(TARGET ${name} POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${name}> ${CMAKE_CURRENT_BINARY_DIR}/${name}.hex
+            COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${name}> ${CMAKE_CURRENT_BINARY_DIR}/${name}.bin
+            COMMENT "Writing ${name}.hex and ${name}.bin"
+        )
+    endfunction()
 
-    target_include_directories(${EASYTVC_TARGET} PRIVATE Core/Inc)
-    target_compile_features(${EASYTVC_TARGET} PRIVATE c_std_11)
-    target_compile_options(${EASYTVC_TARGET} PRIVATE
-        -mcpu=cortex-m4
-        -mthumb
-        -mfloat-abi=hard
-        -mfpu=fpv4-sp-d16
-        -ffreestanding
-        -fdata-sections
-        -ffunction-sections
-        -fno-common
-        -Wall
-        -Wextra
-        -Werror
-    )
-    target_link_libraries(${EASYTVC_TARGET} PRIVATE easytvc_hw easytvc_core m)
-    target_link_options(${EASYTVC_TARGET} PRIVATE
-        -mcpu=cortex-m4
-        -mthumb
-        -mfloat-abi=hard
-        -mfpu=fpv4-sp-d16
-        -nostartfiles
-        --specs=nano.specs
-        --specs=nosys.specs
-        -Wl,--gc-sections
-        -Wl,-T,${EASYTVC_LINKER_SCRIPT}
-        -Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/${EASYTVC_TARGET}.map
-    )
-    add_custom_command(TARGET ${EASYTVC_TARGET} POST_BUILD
-        COMMAND ${CMAKE_OBJCOPY} -O ihex
-                $<TARGET_FILE:${EASYTVC_TARGET}>
-                ${CMAKE_CURRENT_BINARY_DIR}/${EASYTVC_TARGET}.hex
-        COMMAND ${CMAKE_OBJCOPY} -O binary
-                $<TARGET_FILE:${EASYTVC_TARGET}>
-                ${CMAKE_CURRENT_BINARY_DIR}/${EASYTVC_TARGET}.bin
-        COMMENT "Writing Intel HEX and raw binary artifacts"
-    )
+    easytvc_image(easytvc_bench 1)
+    easytvc_image(easytvc_flight 0)
 else()
     add_library(easytvc_core STATIC ${EASYTVC_CORE_SOURCES})
     target_include_directories(easytvc_core PUBLIC Core/Inc)
@@ -126,6 +129,10 @@ else()
     target_include_directories(easytvc_test_logger PRIVATE Core/Inc)
     target_compile_options(easytvc_test_logger PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
+    add_executable(easytvc_test_flight tests/test_flight.c)
+    target_link_libraries(easytvc_test_flight PRIVATE easytvc_core)
+    target_compile_options(easytvc_test_flight PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
     add_executable(easytvc_sim tests/sim_flight.c)
     target_link_libraries(easytvc_sim PRIVATE easytvc_core)
 
@@ -137,4 +144,5 @@ else()
     add_test(NAME easytvc_test_reliability COMMAND easytvc_test_reliability)
     add_test(NAME easytvc_test_drivers COMMAND easytvc_test_drivers)
     add_test(NAME easytvc_test_logger COMMAND easytvc_test_logger)
+    add_test(NAME easytvc_test_flight COMMAND easytvc_test_flight)
 endif()

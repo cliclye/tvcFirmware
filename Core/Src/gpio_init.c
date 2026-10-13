@@ -2,6 +2,12 @@
 #include "stm32f4xx.h"
 #include "board_pins.h"
 
+/* TIM1 sits on APB2 (84 MHz, /2 prescaler) so its kernel clock is 168 MHz. */
+#define BUZZER_TIM          ((STM32_TIM_TypeDef *)(STM32_APB2PERIPH_BASE + 0x0000UL))
+#define BUZZER_TIM_RCC_EN   (1U << 0)
+#define BUZZER_TIM_HZ       (2UL * STM32_APB2_HZ)
+#define BUZZER_PERIOD_US    370U   /* ~2.7 kHz, typical transducer resonance */
+
 void EasyTVC_GPIO_Init(void)
 {
     STM32_GPIO_TypeDef *gpio;
@@ -407,25 +413,31 @@ void EasyTVC_GPIO_Init(void)
     gpio->AFR[1] |= (0x2U << ((8 - 8) * 4));  /* AF2 */
     gpio->AFR[1] |= (0x2U << ((9 - 8) * 4));  /* AF2 */
 
-    /* Configure buzzer pin (PA8) as GPIO output, start LOW */
+    /* Buzzer (PA8). The board's transducer may be passive (no internal oscillator), so drive it
+     * with a ~2.7 kHz tone from TIM1_CH1 (AF1) instead of a DC level; an active buzzer sounds
+     * the same way. Output is held low (CCR1 = 0) until EasyTVC_GPIO_BuzzerSet(true). */
     gpio = STM32_GPIOA;
-    moder = gpio->MODER;
-    moder &= ~(0x3U << (8 * 2));
-    moder |= (0x1U << (8 * 2));   /* PA8 output */
-    gpio->MODER = moder;
-
-    ospeedr = gpio->OSPEEDR;
-    ospeedr &= ~(0x3U << (8 * 2));
-    ospeedr |= (0x2U << (8 * 2));  /* Medium speed */
-    gpio->OSPEEDR = ospeedr;
-
+    gpio->BSRR = ((1U << 8) << 16);
     pupdr = gpio->PUPDR;
     pupdr &= ~(0x3U << (8 * 2));
-    pupdr |= (0x2U << (8 * 2));   /* Pulldown */
+    pupdr |= (0x2U << (8 * 2));   /* Pulldown while the timer is not driving */
     gpio->PUPDR = pupdr;
-
-    /* Set buzzer LOW (off) */
-    gpio->BSRR = ((1U << 8) << 16);
+    gpio->AFR[1] &= ~(0xFU << ((8 - 8) * 4));
+    gpio->AFR[1] |= (0x1U << ((8 - 8) * 4));  /* AF1 = TIM1_CH1 */
+    STM32_RCC->APB2ENR |= BUZZER_TIM_RCC_EN;
+    BUZZER_TIM->CR1 = 0;
+    BUZZER_TIM->PSC = (BUZZER_TIM_HZ / 1000000UL) - 1UL;   /* 1 MHz */
+    BUZZER_TIM->ARR = BUZZER_PERIOD_US - 1U;
+    BUZZER_TIM->CCR[0] = 0;
+    BUZZER_TIM->CCMR1 = (6U << 4) | (1U << 3);             /* OC1 PWM1, preload */
+    BUZZER_TIM->CCER = 1U;                                  /* CC1E */
+    BUZZER_TIM->BDTR = 1UL << 15;                           /* MOE: advanced timer output on */
+    BUZZER_TIM->EGR = 1U;
+    BUZZER_TIM->CR1 = (1U << 7) | 1U;                       /* ARPE | CEN */
+    moder = gpio->MODER;
+    moder &= ~(0x3U << (8 * 2));
+    moder |= (0x2U << (8 * 2));   /* PA8 AF */
+    gpio->MODER = moder;
 
     /* PA13 (SWDIO) and PA14 (SWCLK) are deliberately left alone: the hwdef lists PA14 as a
      * "dfu pin" and PA13 as pyro2, but reconfiguring either removes SWD access. */
@@ -480,10 +492,5 @@ void EasyTVC_GPIO_LedSet(uint8_t led, bool state)
 
 void EasyTVC_GPIO_BuzzerSet(bool state)
 {
-    STM32_GPIO_TypeDef *gpio = STM32_GPIOA;
-    if (state) {
-        gpio->BSRR = (1U << 8);
-    } else {
-        gpio->BSRR = (1U << 8) << 16;
-    }
+    BUZZER_TIM->CCR[0] = state ? BUZZER_PERIOD_US / 2U : 0U;
 }

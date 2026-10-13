@@ -23,6 +23,8 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+import launch  # noqa: E402  (rocket config, build/flash, live board, flight logs)
 AXIS_FIELDS = ("kp", "ki", "kd", "integrator_limit", "output_limit", "output_rate_limit", "derivative_cutoff_hz")
 PLANT_FIELDS = ("inertia_x", "inertia_y", "thrust_n", "thrust_arm_m", "gimbal_deg", "servo_tau_s",
                 "wind_m_s", "gust_m_s", "temperature_c", "area_m2", "drag_coefficient", "cp_arm_m", "initial_tilt_deg")
@@ -331,8 +333,11 @@ class Device:
 
 class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, address, native):
+    def __init__(self, address, native, project=None):
         self.native, self.device, self.token = native, Device(), secrets.token_urlsafe(32)
+        self.project = launch.find_project(project)
+        self.monitor = launch.Monitor()
+        self.build_lock = threading.Lock()
         super().__init__(address, Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
 
@@ -366,6 +371,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_content(403, {"error": "Invalid host."}); return
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  "/launch.js": ("launch.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if self.path in static:
             name, kind = static[self.path]
@@ -374,8 +380,67 @@ class Handler(BaseHTTPRequestHandler):
             self.send_content(200, {"profile": defaults(), "ports": ports()})
         else: self.send_content(404, {"error": "Not found."})
 
+    def project(self):
+        if self.server.project is None:
+            raise ValueError("Firmware folder not found. Keep EasyTVC Studio.app inside the EasyTVC-Firmware folder.")
+        return self.server.project
+
+    def launch_route(self, data):
+        """Rocket/launch endpoints. Returns None if the path is not one of them."""
+        server, path = self.server, self.path
+        if path == "/api/rocket/load":
+            project = self.project()
+            return {"config": launch.read_config(project), "project": str(project),
+                    "build": launch.image_info(project), "state": launch.load_state()}
+        if path == "/api/rocket/save":
+            return {"config": launch.write_config(self.project(), data.get("config")),
+                    "build": launch.image_info(self.project())}
+        if path == "/api/rocket/validate":
+            return {"config": launch.validate_config(data.get("config"))}
+        if path == "/api/state":
+            return {"state": launch.save_state(data)}
+        if path == "/api/build/status":
+            return launch.image_info(self.project())
+        if path == "/api/build/run":
+            if not server.build_lock.acquire(blocking=False): raise ValueError("A build is already running.")
+            try: return launch.build(self.project())
+            finally: server.build_lock.release()
+        if path == "/api/dfu/list":
+            return launch.dfu_devices(self.project())
+        if path == "/api/dfu/flash":
+            if not server.build_lock.acquire(blocking=False): raise ValueError("Wait for the build to finish.")
+            try:
+                result = launch.flash(self.project(), data.get("image"), data.get("sha256"), data.get("serial"))
+                launch.save_state({"flashed": {"image": result["image"], "sha256": result["sha256"], "time": time.time()}})
+                return result
+            finally: server.build_lock.release()
+        if path == "/api/monitor/connect":
+            server.device.close()
+            return server.monitor.connect(data.get("port"))
+        if path == "/api/monitor/disconnect":
+            server.monitor.disconnect(); return server.monitor.status()
+        if path == "/api/monitor/status":
+            return server.monitor.status()
+        if path == "/api/logs/disks":
+            return {"disks": launch.external_disks(), "folder": str(launch.flights_dir(create=False))}
+        if path == "/api/logs/read-sd":
+            return launch.read_sd(server.project, data.get("disk"), data.get("session"))
+        return None
+
     def do_POST(self):
         if not self.authorized(): self.send_content(403, {"error": "Invalid session."}); return
+        if self.path == "/api/logs/upload":
+            try:
+                if self.headers.get("Content-Type") != "application/octet-stream": raise ValueError("Expected a session file.")
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 512 <= size <= 9 * 1024 * 1024: raise ValueError("That is not an EasyTVC session file (expected up to 8 MB).")
+                self.connection.settimeout(30)
+                raw = self.rfile.read(size)
+                if len(raw) != size: raise ValueError("Incomplete upload.")
+                self.send_content(200, launch.summarize_session(self.server.project, raw, "imported file"))
+            except (ValueError, OSError, struct.error) as error:
+                self.send_content(400, {"error": str(error)})
+            return
         try:
             if self.headers.get("Content-Type") != "application/json": raise ValueError("Expected JSON.")
             size = int(self.headers.get("Content-Length", "0"))
@@ -386,7 +451,9 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number.")))
             if not isinstance(data, dict): raise ValueError("Expected an object.")
             native, device = self.server.native, self.server.device
-            if self.path == "/api/simulate": result = native.simulate(data)
+            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
+            if launch_result is not None: result = launch_result
+            elif self.path == "/api/simulate": result = native.simulate(data)
             elif self.path == "/api/validate":
                 native.validate(data); result = {"profile": data, "weather": weather_assessment(data)}
             elif self.path == "/api/ports": result = {"ports": ports()}
@@ -396,6 +463,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/read": result = device.read_settings(native)
             elif self.path == "/api/write": result = device.write_settings(data, native)
             elif self.path == "/api/quit":
+                self.server.monitor.disconnect()
                 result = {"message": "Studio closed. You can close this tab."}
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             else: self.send_content(404, {"error": "Not found."}); return
@@ -408,19 +476,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--project", help="EasyTVC-Firmware folder (found automatically when omitted)")
     args = parser.parse_args()
     try:
-        server = StudioServer(("127.0.0.1", args.port), NativeController())
+        server = StudioServer(("127.0.0.1", args.port), NativeController(), args.project)
     except (OSError, RuntimeError) as error:
         parser.exit(1, f"EasyTVC Studio: {error}\n")
     url = server.origin + "/#" + server.token
     print(f"EasyTVC Studio: {url}", flush=True)
-    print("Local simulation and tuning. Hardware firmware is not yet implemented for this board.", flush=True)
+    print(f"Firmware folder: {server.project or 'NOT FOUND'}", flush=True)
     if not args.no_browser: webbrowser.open(url)
     try: server.serve_forever(poll_interval=.2)
     except KeyboardInterrupt: pass
     finally:
         server.device.close()
+        server.monitor.disconnect()
         server.server_close()
 
 

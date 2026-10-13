@@ -3,7 +3,7 @@
 ## Firmware Status
 
 The firmware has been successfully built with the following hardware support:
-- **System**: STM32F405RG @ 168 MHz (HSE PLL), FPU enabled, 250 ms watchdog, **monitor-only** (cannot arm; servos stay centred)
+- **System**: STM32F405RG @ 168 MHz (HSE PLL), FPU enabled, 250 ms watchdog. Two images: `easytvc_bench` (never arms) and `easytvc_flight` (arms on the pad). See docs/flight-guide.md
 - **GPIO**: All pins configured per vendor hwdef
 - **SPI1**: BMI088 IMU (accel + gyro) with chip select control and data reading
 - **I2C1**: BME280 barometer with internal pull-ups and data reading
@@ -16,8 +16,8 @@ The firmware has been successfully built with the following hardware support:
 
 ## Built Files
 
-- `build-arm/easytvc_safe_blank.bin` - Operational firmware binary
-- `build-arm/easytvc_safe_blank.hex` - Intel HEX format
+- `build-arm/easytvc_bench.bin` - bench image (flash first)
+- `build-arm/easytvc_flight.bin` - flight image (only after the bench checks in docs/flight-guide.md)
 - `build-arm/libeasytvc_core.a` - Core library archive
 
 ## Prerequisites
@@ -41,15 +41,9 @@ The firmware has been successfully built with the following hardware support:
 The EasyTVC board needs to be in DFU (Device Firmware Upgrade) mode to accept new firmware:
 
 1. **Power off the board** (disconnect USB)
-2. **Short the DFU pin to ground**:
-   - **Unverified:** the hwdef calls PA14 a "dfu pin", but on the STM32F405 PA14 is SWCLK and the
-     ROM DFU bootloader is entered by holding **BOOT0 high** during reset. Check the board silk /
-     schematic for a BOOT0 pad or button before grounding anything. This firmware no longer
-     reconfigures PA14, so SWD stays usable.
-   - The DFU pin is PA14 (marked on board)
-   - Use a jumper wire or momentary switch to connect PA14 to GND
-3. **Connect USB cable** while holding DFU pin grounded
-4. **Release DFU pin** after USB is connected
+2. **Hold the `boot` button** (next to `RST` on the front of the board)
+3. **Connect USB cable** (or press and release `RST`) while holding `boot`
+4. **Release `boot`**. Do not ground PA14: on the STM32F405 that is SWCLK, not a DFU pin
 
 The board should now be in DFU mode and ready for firmware upload.
 
@@ -79,10 +73,10 @@ Found DFU: [0483:df11]...
 
 ### 4. Flash the Firmware
 
-Navigate to the project directory and flash the firmware:
+From the project directory, flash with the verifying helper (it prints the hash to pass back):
 ```bash
-cd /Users/changhyunglee/Coding/EasyTVC-Firmware
-dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D build-arm/easytvc_safe_blank.bin
+python3 scripts/dfu.py inspect build-arm/easytvc_bench.bin
+python3 scripts/dfu.py flash build-arm/easytvc_bench.bin --board easytvc-v0.1 --sha256 <hash>
 ```
 
 Expected output:
@@ -129,51 +123,33 @@ minicom -D /dev/tty.usbserial-XXXX -b 115200
 
 ### 2. Expected Telemetry Output
 
-If the firmware is working correctly, you should see actual sensor readings like:
 ```
-EasyTVC: Accel=0.12,0.01,9.87 Gyro=0.02,-0.01,0.00 Temp=24.50C Press=1013hPa
-EasyTVC: Accel=0.11,0.02,9.88 Gyro=0.01,-0.02,0.01 Temp=24.51C Press=1013hPa
-EasyTVC: Accel=0.13,0.00,9.86 Gyro=0.03,-0.01,0.00 Temp=24.50C Press=1013hPa
-...
+S,imu,baro,sd,gyro_cal,records,dropped,write_errors,session,state,armed,recovery,chute   (1 Hz)
+B,ms,tiltX_cdeg,tiltY_cdeg,pulseA,pulseB,raw_ax_mg,raw_ay_mg,raw_az_mg,body_az_mg       (bench, 10 Hz)
+now_ms,state,roll,pitch,yaw,alt,vspeed,cmdA,cmdB,tvc,arm,pyro_lock (milli-units)      (flight, 10 Hz)
 ```
 
-- **Accel**: Accelerometer data in m/s² (X, Y, Z)
-- **Gyro**: Gyroscope data in degrees/second (X, Y, Z)
-- **Temp**: Temperature in Celsius (from BME280)
-- **Press**: Atmospheric pressure in hPa (from BME280)
+### 3. LED / Buzzer Status
 
-If sensors are not detected, you'll see:
-```
-EasyTVC: IMU=FAIL Baro=FAIL
-```
-
-### 3. LED Status Indicators
-
-- **Blue LED (PB5)**: Firmware heartbeat
-  - Toggles every second to show firmware is running
-  - Always toggles regardless of sensor status
-
-- **Green LED (PB4)**: Barometer status
-  - ON when BME280 is detected and working
-  - OFF if BME280 not detected
-
-- **Red LED (PB3)**: Error status
-  - Currently OFF (no error conditions implemented)
+- **Blue**: heartbeat (1 Hz blink)
+- **Green**: bench = gimbal active (solid when the rocket is near vertical). Flight = slow blink
+  waiting, fast blink qualifying, **solid = ARMED** (with a chirp every second)
+- **Red**: do not launch (IMU / SD / config error, FAULT, or recovery boot). Long beep every 2 s
 
 ### 4. Servo Outputs
 
-The firmware sets all servo outputs to center position (1500 µs pulse):
+Channels, endpoints and directions come from `Core/Inc/vehicle_config.h`:
 - **PWM1 (PB0)**: TIM3_CH3
 - **PWM2 (PB1)**: TIM3_CH4
 - **PWM3 (PB8)**: TIM4_CH3
 - **PWM4 (PB9)**: TIM4_CH4
 
-Connect servos to verify they move to center position.
+At power-up each TVC servo sweeps centre -> max -> min -> centre (servo A, then servo B).
 
 ## Troubleshooting
 
 ### Board not detected in DFU mode
-- Ensure DFU pin (PA14) is properly grounded when connecting USB
+- Hold `boot` while connecting USB or pressing `RST`
 - Try a different USB cable (some cables are power-only)
 - Check USB port on your computer
 
@@ -215,7 +191,7 @@ Connect servos to verify they move to center position.
 ## Safety Notes
 
 - **Pyro channels are disabled** in this firmware for safety
-- **Do not use for actual rocket flights** without extensive testing
+- **Do not fly** until every bench check in docs/flight-guide.md has passed
 - **This is development firmware** - not flight-qualified
 - **Always bench test** before any actual use
 - **Verify all sensor readings** are reasonable before trusting the system
@@ -248,7 +224,7 @@ To develop this firmware further:
 
 ## File Locations
 
-- **Firmware binary**: `build-arm/easytvc_safe_blank.bin`
+- **Firmware binaries**: `build-arm/easytvc_bench.bin`, `build-arm/easytvc_flight.bin`
 - **Hardware definitions**: `board/easytvc.hwdef`
 - **Pin mappings**: `Core/Inc/board_pins.h`
 - **Main application**: `Core/Src/main.c`
