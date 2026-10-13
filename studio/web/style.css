@@ -50,3 +50,20 @@ pre.log{background:#1f1d2b;color:#d9d6e8;font-size:10px;line-height:1.5;padding:
 @media(max-width:1150px){.flash-grid,.live-grid,.log-grid{grid-template-columns:1fr}}
 @media(max-width:750px){.sidebar-go{display:none}.part-row{grid-template-columns:1fr 70px 30px}}
 .card-heading{flex-wrap:wrap}
+
+/* ---- 3D flight sim ---- */
+.sim-grid{display:grid;grid-template-columns:minmax(300px,.62fr) 1.7fr;gap:22px;align-items:start}
+.sim-inputs-card .field-grid{grid-template-columns:repeat(2,1fr);gap:10px;margin-top:8px}.sim-main{display:grid;gap:16px}
+.sim-view{position:relative;padding:0;overflow:hidden}#sim-canvas{height:520px;cursor:grab;touch-action:none}#sim-canvas:active{cursor:grabbing}
+.sim-empty{position:absolute;inset:0 0 54px 0;display:grid;place-items:center;color:var(--muted);font-size:13px;pointer-events:none}
+.sim-controls{display:flex;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}.sim-controls input[type=range]{flex:1;margin:0}
+.sim-controls select{padding:6px}.sim-charts{display:grid;gap:16px;margin-top:6px}#sim-verdict{margin-top:6px}
+@media(max-width:1150px){.sim-grid{grid-template-columns:1fr}}
+
+/* ---- rocket model / gimbal ---- */
+.part-row{grid-template-columns:1fr 62px 72px 72px 30px}.part-head{font-size:9px;letter-spacing:.8px;color:var(--muted);font-weight:600;text-transform:uppercase}
+.part-head span{padding:0 4px}.side-view{height:190px;margin-top:6px;border:1px solid var(--line);border-radius:10px;background:#fcfcfe}
+#sim-model{margin-top:0}.gim-canvas{height:560px;cursor:grab;touch-action:none}.gim-sliders{display:grid;gap:14px;margin-top:12px}
+.gim-table{width:100%;border-collapse:collapse;font-size:11px;margin-top:12px}.gim-table th{text-align:left;color:var(--muted);font-weight:600;padding:6px 4px;border-bottom:1px solid var(--line)}
+.gim-table td{padding:8px 4px;border-bottom:1px solid #f2f2f4;font-variant-numeric:tabular-nums}.gim-table td.bad{color:#a33;font-weight:600}
+#gimbal .controls{grid-template-columns:1fr}

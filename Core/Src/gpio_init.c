@@ -1,6 +1,10 @@
 #include "gpio_init.h"
 #include "stm32f4xx.h"
 #include "board_pins.h"
+#include "vehicle_config.h"
+
+/* LED "off" level: high for an active-low (common-anode) RGB LED. */
+#define LED_OFF_SET(pin) ((EASYTVC_LED_ACTIVE_LOW) ? (1U << (pin)) : ((1U << (pin)) << 16))
 
 /* TIM1 sits on APB2 (84 MHz, /2 prescaler) so its kernel clock is 168 MHz. */
 #define BUZZER_TIM          ((STM32_TIM_TypeDef *)(STM32_APB2PERIPH_BASE + 0x0000UL))
@@ -313,8 +317,8 @@ void EasyTVC_GPIO_Init(void)
     pupdr |= (0x2U << (5 * 2));   /* Pulldown */
     gpio->PUPDR = pupdr;
 
-    /* Set LEDs LOW (off) */
-    gpio->BSRR = ((1U << 3) << 16) | ((1U << 4) << 16) | ((1U << 5) << 16);
+    /* LEDs off */
+    gpio->BSRR = LED_OFF_SET(3) | LED_OFF_SET(4) | LED_OFF_SET(5);
 
     /* Configure USART2 pins (PA2, PA3) as alternate function */
     gpio = STM32_GPIOA;
@@ -483,7 +487,8 @@ void EasyTVC_GPIO_LedSet(uint8_t led, bool state)
         default: return;
     }
 
-    if (state) {
+    const bool high = EASYTVC_LED_ACTIVE_LOW ? !state : state;
+    if (high) {
         gpio->BSRR = (1U << pin);
     } else {
         gpio->BSRR = (1U << pin) << 16;

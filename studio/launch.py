@@ -55,7 +55,7 @@ def tool_env():
 
 # (macro suffix, kind, low, high)   kinds: int, uint (U suffix), float (f suffix), axis
 CONFIG_FIELDS = (
-    ("NOSE_AXIS", "axis", None, None),
+    ("NOSE_AXIS", "axis", None, None), ("LED_ACTIVE_LOW", "int", 0, 1),
     ("SERVO_A_CHANNEL", "int", 1, 4), ("SERVO_A_MIN_US", "int", 1000, 2000),
     ("SERVO_A_CENTER_US", "int", 1000, 2000), ("SERVO_A_MAX_US", "int", 1000, 2000),
     ("SERVO_A_DIRECTION", "int", -1, 1),
@@ -533,7 +533,7 @@ def load_state() -> dict:
 
 
 def save_state(update: dict) -> dict:
-    allowed = {"checklist", "vehicle", "flashed", "packing"}
+    allowed = {"checklist", "vehicle", "flashed", "packing", "sim"}
     if not isinstance(update, dict) or not set(update) <= allowed:
         raise ValueError("Unsupported state fields.")
     if len(json.dumps(update)) > 65536:
@@ -544,3 +544,274 @@ def save_state(update: dict) -> dict:
     temporary.write_text(json.dumps(state, indent=1))
     os.replace(temporary, state_path())
     return state
+
+
+# --------------------------------------------------------------------------------------------
+# 3D flight simulation (Core/Src/flight_sim3d.c, real flight software in the loop)
+# --------------------------------------------------------------------------------------------
+
+SIM3D_PARAMS = (
+    "KP", "KI", "KD", "INTEGRATOR_LIMIT", "OUTPUT_RATE_LIMIT", "DERIVATIVE_CUTOFF", "MAX_TILT_DEG",
+    "SERVO_A_MIN_US", "SERVO_A_CENTER_US", "SERVO_A_MAX_US", "SERVO_A_DIRECTION",
+    "SERVO_B_MIN_US", "SERVO_B_CENTER_US", "SERVO_B_MAX_US", "SERVO_B_DIRECTION",
+    "SERVO_RATE_HZ", "LAUNCH_ACCEL_G", "LAUNCH_CONFIRM_MS", "TVC_ENABLE_DELAY_MS",
+    "chute_enabled", "CHUTE_BACKUP_MS", "ARM_HOLD_MS", "ARM_MAX_TILT_DEG", "DISARM_TILT_DEG",
+    "dry_mass_kg", "motor_mass_kg", "prop_mass_kg", "avg_thrust_n", "burn_s", "thrust_profile",
+    "diameter_m", "body_cd", "chute_diameter_m", "chute_cd",
+    "length_m", "gimbal_arm_m", "cp_ahead_m", "inertia", "cn_alpha", "linkage_ratio", "servo_speed_dps",
+    "wind_m_s", "gust_m_s", "wind_dir_deg", "pad_tilt_deg", "misalign_deg", "gyro_bias_dps", "noise",
+    "seed", "reverse_servo_a", "tower_m", "servo_deg_per_us", "gimbal_stop_deg", "cg_shift_m",
+    "inertia_burnout", "planform_area_m2", "planform_ahead_m", "ignition_s",
+)
+SIM3D_COLUMNS = ("t", "x", "y", "z", "qw", "qx", "qy", "qz", "speed", "vz", "tilt_x", "tilt_y",
+                 "gimbal_a", "gimbal_b", "state", "tvc", "chute", "thrust", "est_tilt_x", "est_tilt_y", "armed",
+                 "pulse_a", "pulse_b", "horn_a", "horn_b", "alpha")
+SIM3D_SUMMARY = ("apogee_m", "apogee_t", "max_speed", "max_boost_tilt", "drift_m", "landing_speed",
+                 "chute_t", "chute_speed", "armed_t", "launch_t", "tvc_fault", "saturation_pct",
+                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff")
+# (low, high, default) for the simulation-only inputs
+SIM_INPUTS = {
+    "cn_alpha": (0, 10, 2.0), "wind_m_s": (0, 25, 2), "gust_m_s": (0, 35, 4),
+    "wind_dir_deg": (0, 360, 30), "pad_tilt_deg": (0, 30, 1), "misalign_deg": (0, 5, 0.5),
+    "gyro_bias_dps": (0, 10, 0.5), "noise": (0, 3, 1), "seed": (0, 100000, 1),
+    "reverse_servo_a": (0, 1, 0), "tower_m": (0, 3, 0.3), "thrust_profile": (0, 1, 1),
+}
+
+
+def sim_defaults():
+    return {k: v[2] for k, v in SIM_INPUTS.items()}
+
+
+def sim_params(config: dict, vehicle: dict, sim: dict) -> list:
+    clean = validate_config(config)
+    if not isinstance(sim, dict) or set(sim) != set(SIM_INPUTS):
+        raise ValueError("Simulation inputs are incomplete.")
+    for key, (low, high, _) in SIM_INPUTS.items():
+        value = sim[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            raise ValueError(f"{key} must be between {low:g} and {high:g}.")
+    if sim["gust_m_s"] < sim["wind_m_s"]:
+        raise ValueError("Gusts must be at least the steady wind.")
+    model = rocket_model(vehicle)
+    v = model["vehicle"]
+    motor = v["motor"]
+    values = {
+        "dry_mass_kg": (model["mass_wet_g"] - float(motor["total_mass_g"])) / 1000,
+        "motor_mass_kg": float(motor["total_mass_g"]) / 1000, "prop_mass_kg": float(motor["prop_mass_g"]) / 1000,
+        "avg_thrust_n": _num(motor["avg_thrust_n"], 0.1, 10000, "Average thrust"),
+        "burn_s": _num(motor["burn_s"], 0.1, 20, "Burn time"),
+        "diameter_m": float(v["diameter_mm"]) / 1000, "body_cd": _num(v["cd"], 0.05, 3, "Body drag coefficient"),
+        "chute_diameter_m": _num(v["chute_diameter_cm"], 0, 1000, "Parachute diameter") / 100,
+        "chute_cd": _num(v["chute_cd"], 0.1, 3, "Parachute drag coefficient"),
+        "length_m": model["length_mm"] / 1000, "gimbal_arm_m": model["gimbal_arm_mm"] / 1000,
+        "cp_ahead_m": model["cp_ahead_mm"] / 1000, "inertia": model["inertia_wet"],
+        "inertia_burnout": model["inertia_dry"], "cg_shift_m": (model["cg_wet_mm"] - model["cg_dry_mm"]) / 1000,
+        "planform_area_m2": model["planform_m2"], "planform_ahead_m": (model["cg_wet_mm"] - model["planform_center_mm"]) / 1000,
+        "linkage_ratio": model["linkage_ratio"], "servo_speed_dps": model["servo_speed_dps"],
+        "servo_deg_per_us": model["servo_deg_per_us"], "gimbal_stop_deg": model["stop_deg"],
+    }
+    if model["gimbal_arm_mm"] <= 5:
+        raise ValueError("The gimbal pivot must be behind the CG: check part positions.")
+    values.update(clean)
+    values.update(sim)
+    values["chute_enabled"] = 1 if clean["CHUTE_CHANNEL"] else 0
+    values["ignition_s"] = clean["ARM_HOLD_MS"] / 1000 + 2.0
+    return [float(values[name]) for name in SIM3D_PARAMS]
+
+
+def sim_verdict(s: dict, config: dict) -> list:
+    out = []
+    add = lambda level, text: out.append({"level": level, "text": text})
+    if s["armed_t"] < 0:
+        add("bad", "Never armed on the pad: check pad tilt against the arming tilt limit. TVC did not run.")
+    if not s["liftoff"]:
+        add("bad", "Did not leave the stand: too heavy for the motor.")
+        return out
+    if s["launch_t"] < 0:
+        add("bad", "Launch was not detected, so TVC never switched on. Lower the launch threshold or make the rocket lighter.")
+    if s["tvc_fault"]:
+        add("bad", f"TVC gave up: tilt passed the {config['MAX_TILT_DEG']:g}° limit during boost. Raise the gains, gimbal travel or speed, or reduce instability (CP ahead of CG).")
+    elif s["max_boost_tilt"] > 10:
+        add("warn", f"Held, but tilted up to {s['max_boost_tilt']:.1f}° during boost.")
+    elif s["launch_t"] >= 0:
+        add("good", f"Stable boost: worst tilt {s['max_boost_tilt']:.1f}°.")
+    if s["saturation_pct"] > 10:
+        add("warn", f"The gimbal was at full travel {s['saturation_pct']:.0f}% of the burn: little margin left.")
+    if config["CHUTE_CHANNEL"]:
+        if s["chute_t"] < 0:
+            add("bad", "Parachute never opened.")
+        elif s["chute_speed"] > 20:
+            add("warn", f"Parachute opened at {s['chute_speed']:.0f} m/s (apogee was {s['apogee_t']:.1f} s after ignition). Set the backup closer to apogee.")
+        else:
+            add("good", f"Parachute opened at {s['chute_t']:.1f} s, {s['chute_speed']:.0f} m/s.")
+    if s["landing_speed"] > 0:
+        level = "good" if s["landing_speed"] < 6.5 and s["under_chute"] else "warn" if s["landing_speed"] < 9 else "bad"
+        add(level, f"Lands at {s['landing_speed']:.1f} m/s, {s['drift_m']:.0f} m from the pad.")
+    if s["est_error_deg"] > 3:
+        add("warn", f"The board's attitude estimate drifted {s['est_error_deg']:.1f}° from the truth during boost.")
+    return out
+
+
+def run_sim3d(native, config, vehicle, sim):
+    params = sim_params(config, vehicle, sim)
+    rows, summary = native.sim3d(params)
+    s = dict(zip(SIM3D_SUMMARY, summary))
+    model = rocket_model(vehicle)
+    model.pop("vehicle")
+    return {"columns": SIM3D_COLUMNS, "rows": rows, "summary": s, "verdict": sim_verdict(s, validate_config(config)),
+            "ignition_s": params[SIM3D_PARAMS.index("ignition_s")], "model": model}
+
+
+def run_sim3d_batch(native, config, vehicle, sim, count=40):
+    """Monte Carlo: random wind direction/strength, misalignment, pad tilt, sensor noise seed."""
+    import random
+    count = max(5, min(200, int(count)))
+    rng = random.Random(int(sim.get("seed", 1)))
+    runs, ok = [], 0
+    for i in range(count):
+        trial = dict(sim)
+        trial["seed"] = rng.randint(1, 99999)
+        trial["wind_m_s"] = round(rng.uniform(0, max(sim["wind_m_s"], 0.1) * 1.5), 2)
+        trial["gust_m_s"] = round(trial["wind_m_s"] * rng.uniform(1.2, 2.0), 2)
+        trial["wind_dir_deg"] = round(rng.uniform(0, 360), 1)
+        trial["misalign_deg"] = round(rng.uniform(0, max(sim["misalign_deg"], 0.2) * 2), 2)
+        trial["pad_tilt_deg"] = round(rng.uniform(0, max(sim["pad_tilt_deg"], 0.5) * 1.5), 2)
+        for key in ("wind_m_s", "gust_m_s", "misalign_deg", "pad_tilt_deg"):
+            low, high, _ = SIM_INPUTS[key]
+            trial[key] = min(high, max(low, trial[key]))
+        _, summary = native.sim3d(sim_params(config, vehicle, trial), rows=False)
+        s = dict(zip(SIM3D_SUMMARY, summary))
+        success = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"] and
+                       (s["under_chute"] or not config.get("CHUTE_CHANNEL")) and 0 < s["landing_speed"] < 9)
+        ok += success
+        runs.append({"success": success, "wind": trial["wind_m_s"], "gust": trial["gust_m_s"],
+                     "misalign": trial["misalign_deg"], "pad_tilt": trial["pad_tilt_deg"],
+                     "tilt": s["max_boost_tilt"], "apogee": s["apogee_m"], "drift": s["drift_m"],
+                     "landing": s["landing_speed"], "fault": bool(s["tvc_fault"])})
+    return {"count": count, "success": ok, "runs": runs}
+
+
+# --------------------------------------------------------------------------------------------
+# Rocket model: geometry in millimetres -> mass properties and aerodynamics
+# --------------------------------------------------------------------------------------------
+#
+# Positions are measured along the body from the NOSE TIP (mm, aft is positive), like OpenRocket.
+# Every part is a mass spread evenly over its length. The motor's propellant burns in place, so
+# the CG moves forward during the burn. CP uses Barrowman's method for a finless rocket: only the
+# nose cone produces normal force at small angles (CN_alpha = 2/rad at 0.466 L for an ogive,
+# 2/3 L for a cone, 1/2 L for a parabola, 1/3 L for an ellipse).
+
+NOSE_SHAPES = {"ogive": (0.466, 2 / 3), "conical": (2 / 3, 1 / 2), "parabolic": (0.5, 2 / 3), "elliptical": (1 / 3, 0.785)}
+# shape -> (CP fraction of nose length, planform area / (D * L) for the nose)
+
+GIMBAL_DEFAULTS = {"horn_mm": 10.5, "lever_mm": 30.0, "servo_deg_per_us": 0.09, "servo_s_per_60": 0.10, "stop_deg": 8.0}
+BODY_DEFAULTS = {"length_mm": 450.0, "nose_length_mm": 150.0, "nose_shape": "ogive",
+                 "motor_overhang_mm": 10.0, "pivot_from_nozzle_mm": 45.0}
+DEFAULT_PARTS = [  # name, grams, centre from nose tip (mm), length (mm)
+    ["Nose cone", 30, 90, 150], ["Nose ballast", 80, 40, 30], ["Body tube", 55, 375, 450], ["Parachute & shock cord", 25, 220, 90],
+    ["Parachute servo", 9, 270, 30], ["EasyTVC board", 20, 330, 65], ["2S LiPo 300 mAh", 22, 385, 55],
+    ["Wiring & hardware", 15, 420, 100], ["TVC servos ×2", 26, 505, 30], ["Gimbal & motor mount", 40, 545, 70],
+]
+
+
+def upgrade_vehicle(vehicle: dict | None) -> dict:
+    """Older saved vehicles had parts as [name, grams]; add positions and the new sections."""
+    v = json.loads(json.dumps(vehicle)) if isinstance(vehicle, dict) else {}
+    v.setdefault("motor", {"name": "Estes E12-0 (approx.)", "avg_thrust_n": 12, "burn_s": 2.5,
+                           "total_mass_g": 58, "prop_mass_g": 36})
+    v["motor"].setdefault("diameter_mm", 24.0)
+    v["motor"].setdefault("length_mm", 95.0)
+    v.setdefault("diameter_mm", 66.0)
+    v.setdefault("cd", 0.6)
+    v.setdefault("chute_diameter_cm", 55)
+    v.setdefault("chute_cd", 0.8)
+    v["body"] = {**BODY_DEFAULTS, **(v.get("body") or {})}
+    v["gimbal"] = {**GIMBAL_DEFAULTS, **(v.get("gimbal") or {})}
+    parts = v.get("parts") or []
+    if parts and all(len(p) == 2 for p in parts):
+        # old format: keep the weights, place them like the defaults by name or spread along the body
+        by_name = {p[0]: p for p in DEFAULT_PARTS}
+        total = v["body"]["nose_length_mm"] + v["body"]["length_mm"]
+        parts = [[p[0], p[1], *(by_name[p[0]][2:] if p[0] in by_name else (round(total * (i + 1) / (len(parts) + 1)), 40))]
+                 for i, p in enumerate(parts)]
+    v["parts"] = parts if parts else [list(p) for p in DEFAULT_PARTS]
+    return v
+
+
+def _num(value, low, high, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or not low <= value <= high:
+        raise ValueError(f"{label} must be between {low:g} and {high:g}.")
+    return float(value)
+
+
+def rocket_model(vehicle: dict) -> dict:
+    v = upgrade_vehicle(vehicle)
+    body, motor, gim = v["body"], v["motor"], v["gimbal"]
+    D = _num(v["diameter_mm"], 10, 500, "Body diameter")
+    Lb = _num(body["length_mm"], 50, 5000, "Body tube length")
+    Ln = _num(body["nose_length_mm"], 10, 1500, "Nose cone length")
+    if body["nose_shape"] not in NOSE_SHAPES:
+        raise ValueError("Unknown nose cone shape.")
+    overhang = _num(body["motor_overhang_mm"], -200, 200, "Motor overhang")
+    md = _num(motor["diameter_mm"], 6, D, "Motor diameter")
+    ml = _num(motor["length_mm"], 10, 2000, "Motor length")
+    pivot_from_nozzle = _num(body["pivot_from_nozzle_mm"], 0, ml, "Gimbal pivot (from nozzle)")
+    m_motor = _num(motor["total_mass_g"], 1, 50000, "Motor mass")
+    m_prop = _num(motor["prop_mass_g"], 0, m_motor, "Propellant mass")
+    length = Ln + Lb + max(0.0, overhang)
+    nozzle = Ln + Lb + overhang
+    motor_center = nozzle - ml / 2
+    pivot = nozzle - pivot_from_nozzle
+
+    items = []   # (grams, centre mm, length mm)
+    for i, part in enumerate(v["parts"]):
+        if not isinstance(part, list) or len(part) != 4 or not isinstance(part[0], str):
+            raise ValueError(f"Part {i + 1} needs a name, grams, position and length.")
+        g = _num(part[1], 0, 100000, f"{part[0]}: grams")
+        x = _num(part[2], 0, length, f"{part[0]}: position (mm from nose tip)")
+        l = _num(part[3], 0, length, f"{part[0]}: length")
+        items.append((g, x, l))
+
+    def props(motor_grams):
+        allm = items + [(motor_grams, motor_center, ml)]
+        mass = sum(g for g, _, _ in allm)
+        cg = sum(g * x for g, x, _ in allm) / mass
+        # thin rods about the CG + a solid cylinder's radial term, kg*m^2
+        inertia = sum(g * ((x - cg) ** 2 + l * l / 12 + (D / 2) ** 2 / 4) for g, x, l in allm) * 1e-9
+        return mass, cg, inertia
+
+    mass_wet, cg_wet, i_wet = props(m_motor)
+    mass_dry, cg_dry, i_dry = props(m_motor - m_prop)
+    cp_frac, plan_frac = NOSE_SHAPES[body["nose_shape"]]
+    cp = cp_frac * Ln
+    nose_plan = plan_frac * D * Ln
+    body_plan = D * Lb
+    planform = nose_plan + body_plan
+    plan_x = (nose_plan * Ln * (0.6 if body["nose_shape"] != "conical" else 2 / 3) + body_plan * (Ln + Lb / 2)) / planform
+
+    horn = _num(gim["horn_mm"], 1, 100, "Servo horn radius")
+    lever = _num(gim["lever_mm"], 1, 200, "Gimbal lever radius")
+    if horn > lever:
+        raise ValueError("The servo horn must be shorter than the gimbal lever.")
+    dpu = _num(gim["servo_deg_per_us"], 0.02, 0.4, "Servo degrees per µs")
+    s60 = _num(gim["servo_s_per_60"], 0.02, 1.0, "Servo speed (s per 60°)")
+    stop = _num(gim["stop_deg"], 0.5, 30, "Gimbal mechanical stop")
+    return {
+        "length_mm": length, "nose_tip_mm": 0.0, "nozzle_mm": nozzle, "motor_top_mm": nozzle - ml,
+        "motor_center_mm": motor_center, "pivot_mm": pivot,
+        "mass_wet_g": mass_wet, "mass_dry_g": mass_dry, "cg_wet_mm": cg_wet, "cg_dry_mm": cg_dry,
+        "cp_mm": cp, "planform_center_mm": plan_x, "planform_m2": planform * 1e-6,
+        "inertia_wet": i_wet, "inertia_dry": i_dry,
+        "gimbal_arm_mm": pivot - cg_wet, "cp_ahead_mm": cg_wet - cp,
+        "stability_cal": (cp - cg_wet) / D, "stability_cal_dry": (cp - cg_dry) / D,
+        "linkage_ratio": horn / lever, "servo_deg_per_us": dpu, "servo_speed_dps": 60.0 / s60, "stop_deg": stop,
+        "vehicle": v,
+    }
+
+
+def gimbal_angle_deg(pulse_offset_us, model):
+    """Pulse offset from centre -> gimbal angle, same linkage maths as the C simulator."""
+    import math
+    horn = math.radians(pulse_offset_us * model["servo_deg_per_us"])
+    g = math.degrees(math.asin(max(-1.0, min(1.0, model["linkage_ratio"] * math.sin(horn)))))
+    return max(-model["stop_deg"], min(model["stop_deg"], g))

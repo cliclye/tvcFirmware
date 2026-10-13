@@ -27,6 +27,63 @@ dfu = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dfu)
 
 
+class FlightSim3DTests(unittest.TestCase):
+    """The 3D sim runs the firmware in the loop; check the Studio wiring end to end."""
+    @classmethod
+    def setUpClass(cls):
+        cls.native = studio.NativeController()
+        cls.config = studio.launch.read_config(studio.launch.find_project())
+        cls.vehicle = studio.launch.upgrade_vehicle({})   # the default 610 mm / 380 g rocket model
+
+    def test_configured_rocket_flies(self):
+        result = studio.launch.run_sim3d(self.native, self.config, self.vehicle, studio.launch.sim_defaults())
+        s = result["summary"]
+        self.assertGreater(len(result["rows"]), 100)
+        self.assertEqual(s["tvc_fault"], 0)
+        self.assertLess(s["max_boost_tilt"], 10)
+        self.assertGreater(s["chute_t"], 0)
+        self.assertTrue(any(v["level"] == "good" for v in result["verdict"]))
+
+    def test_reversed_servo_is_caught(self):
+        sim = studio.launch.sim_defaults(); sim["reverse_servo_a"] = 1
+        result = studio.launch.run_sim3d(self.native, self.config, self.vehicle, sim)
+        self.assertEqual(result["summary"]["tvc_fault"], 1)
+        self.assertTrue(any(v["level"] == "bad" for v in result["verdict"]))
+
+    def test_bad_inputs_rejected(self):
+        sim = studio.launch.sim_defaults(); sim["gust_m_s"] = 0; sim["wind_m_s"] = 5
+        with self.assertRaises(ValueError):
+            studio.launch.run_sim3d(self.native, self.config, self.vehicle, sim)
+        bad = studio.launch.upgrade_vehicle({}); bad["parts"].append(["lost", 10, 5000, 10])   # beyond the nose-to-tail length
+        with self.assertRaises(ValueError):
+            studio.launch.run_sim3d(self.native, self.config, bad, studio.launch.sim_defaults())
+
+    def test_rocket_model_mass_properties(self):
+        """Hand-checkable numbers: two point masses and the motor."""
+        v = studio.launch.upgrade_vehicle({})
+        v["parts"] = [["front", 100, 100, 0], ["back", 100, 500, 0]]
+        v["motor"].update(total_mass_g=50, prop_mass_g=20, length_mm=100, diameter_mm=24)
+        v["body"].update(length_mm=450, nose_length_mm=150, motor_overhang_mm=0, pivot_from_nozzle_mm=50, nose_shape="conical")
+        m = studio.launch.rocket_model(v)
+        self.assertAlmostEqual(m["length_mm"], 600)
+        self.assertAlmostEqual(m["motor_center_mm"], 550)
+        self.assertAlmostEqual(m["pivot_mm"], 550)
+        self.assertAlmostEqual(m["cg_wet_mm"], (100 * 100 + 100 * 500 + 50 * 550) / 250)
+        self.assertAlmostEqual(m["cg_dry_mm"], (100 * 100 + 100 * 500 + 30 * 550) / 230)
+        self.assertAlmostEqual(m["cp_mm"], 100)   # cone: 2/3 of the nose length
+        self.assertAlmostEqual(m["stability_cal"], (100 - m["cg_wet_mm"]) / 66)
+
+    def test_linkage_matches_c(self):
+        m = studio.launch.rocket_model({})
+        self.assertAlmostEqual(studio.launch.gimbal_angle_deg(250, m), math.degrees(math.asin(0.35 * math.sin(math.radians(22.5)))), places=6)
+        self.assertEqual(studio.launch.gimbal_angle_deg(700, m), m["stop_deg"])   # 63 deg of horn would be 18 deg: clamped
+
+    def test_batch(self):
+        result = studio.launch.run_sim3d_batch(self.native, self.config, self.vehicle, studio.launch.sim_defaults(), 10)
+        self.assertEqual(result["count"], 10)
+        self.assertGreaterEqual(result["success"], 8)
+
+
 class StudioTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls): cls.native = studio.NativeController()

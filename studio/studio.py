@@ -156,6 +156,26 @@ class NativeController:
         self.lib.EasyTVC_StudioSimulate.argtypes = [ctypes.c_char_p, ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
         self.lib.EasyTVC_StudioSimulate.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3D.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_uint, ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3D.restype = ctypes.c_int
+
+    def sim3d(self, params, rows=True):
+        """6-DOF flight with the firmware in the loop. Returns (rows, summary)."""
+        columns, max_rows = len(launch.SIM3D_COLUMNS), 6000
+        p = (ctypes.c_float * len(params))(*params)
+        out = (ctypes.c_float * (columns * max_rows))()
+        summary = (ctypes.c_float * len(launch.SIM3D_SUMMARY))()
+        n = self.lib.EasyTVC_Sim3D(p, len(params), out, max_rows, summary, len(launch.SIM3D_SUMMARY))
+        if n < 0:
+            raise ValueError("The simulator rejected these settings (check servo limits and vehicle numbers).")
+        values = [float(v) for v in summary]
+        if not rows:
+            return None, values
+        data = [[round(float(out[i * columns + j]), 5) for j in range(columns)] for i in range(n)]
+        if any(not math.isfinite(v) for row in data for v in row):
+            raise ValueError("The simulation produced invalid numbers.")
+        return data, values
 
     def validate(self, profile):
         validate_profile(profile)
@@ -372,6 +392,8 @@ class Handler(BaseHTTPRequestHandler):
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/launch.js": ("launch.js", "text/javascript; charset=utf-8"),
+                  "/sim3d.js": ("sim3d.js", "text/javascript; charset=utf-8"),
+                  "/gimbal.js": ("gimbal.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if self.path in static:
             name, kind = static[self.path]
@@ -395,6 +417,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/rocket/save":
             return {"config": launch.write_config(self.project(), data.get("config")),
                     "build": launch.image_info(self.project())}
+        if path == "/api/sim3d/defaults":
+            return {"sim": launch.sim_defaults()}
+        if path == "/api/sim3d/run":
+            return launch.run_sim3d(server.native, data.get("config"), data.get("vehicle"), data.get("sim"))
+        if path == "/api/sim3d/batch":
+            return launch.run_sim3d_batch(server.native, data.get("config"), data.get("vehicle"), data.get("sim"), data.get("count", 40))
+        if path == "/api/rocket/model":
+            model = launch.rocket_model(data.get("vehicle"))
+            return {"model": {k: v for k, v in model.items() if k != "vehicle"}, "vehicle": model["vehicle"]}
         if path == "/api/rocket/validate":
             return {"config": launch.validate_config(data.get("config"))}
         if path == "/api/state":
@@ -451,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number.")))
             if not isinstance(data, dict): raise ValueError("Expected an object.")
             native, device = self.server.native, self.server.device
-            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
+            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/sim3d", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
             if launch_result is not None: result = launch_result
             elif self.path == "/api/simulate": result = native.simulate(data)
             elif self.path == "/api/validate":

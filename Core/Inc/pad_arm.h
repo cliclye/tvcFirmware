@@ -26,6 +26,11 @@ typedef struct {
     uint32_t tip_since_ms;
     uint32_t samples;
     float gyro_sum[3];
+    /* ~0.1 s low-pass of accel and |gyro| for the upright/still checks, so one noisy sample or a
+     * gust shaking the stand does not restart the hold timer. */
+    bool filter_ready;
+    float accel_lp[3];
+    float gyro_lp;
 } EasyTVCPadArm;
 
 void EasyTVC_PadArmInit(EasyTVCPadArm *pad);

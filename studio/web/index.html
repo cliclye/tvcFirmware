@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="/style.css">
   <script defer src="/app.js"></script>
   <script defer src="/launch.js"></script>
+  <script defer src="/sim3d.js"></script>
+  <script defer src="/gimbal.js"></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -14,6 +16,8 @@
     <nav aria-label="Workspace">
       <button class="nav-item selected" data-tab="rocket">⚙ <span>Rocket setup</span></button>
       <button class="nav-item" data-tab="tune">⌁ <span>Tuning lab</span></button>
+      <button class="nav-item" data-tab="sim3d">◭ <span>3D flight sim</span></button>
+      <button class="nav-item" data-tab="gimbal">⟲ <span>TVC gimbal</span></button>
       <button class="nav-item" data-tab="flash">⇩ <span>Build &amp; flash</span></button>
       <button class="nav-item" data-tab="live">◉ <span>Live board</span></button>
       <button class="nav-item" data-tab="checklist">✓ <span>Launch checklist</span></button>
@@ -51,7 +55,13 @@
           <article class="card"><div class="card-heading"><div><span class="eyebrow">05 / VEHICLE</span><h2>Mass, thrust &amp; apogee</h2></div><span class="chip">Planning only</span></div>
             <p class="help">Weigh the real parts and replace these numbers. The motor preset is approximate, so check the motor's published data (e.g. thrustcurve.org).</p>
             <div id="vehicle-motor" class="field-grid"></div>
-            <h3 class="sub">Parts (grams)</h3><div id="vehicle-parts" class="parts"></div><button id="part-add" class="quiet">+ Add part</button>
+            <h3 class="sub">Airframe (mm)</h3><div id="vehicle-body" class="field-grid"></div>
+            <h3 class="sub">Parts: mass and where they sit (mm from the nose tip to the part's centre)</h3>
+            <div class="part-row part-head"><span>Part</span><span>g</span><span>at · mm</span><span>long · mm</span><span></span></div>
+            <div id="vehicle-parts" class="parts"></div><button id="part-add" class="quiet">+ Add part</button>
+            <h3 class="sub">Side view (to scale)</h3>
+            <canvas id="side-view" class="side-view" aria-label="Rocket side view with CG and CP" role="img"></canvas>
+            <div id="model-stats" class="metrics wide"></div>
             <div id="vehicle-results" class="metrics wide"></div>
             <div id="vehicle-checks"></div>
             <button id="use-backup" class="quiet">Use estimated apogee time + 0.5 s as parachute backup</button></article>
@@ -73,6 +83,53 @@
           <article class="card chart-card"><div class="card-heading"><div><span class="eyebrow">RESPONSE PREVIEW</span><h2>How does it settle?</h2></div><div class="legend"><span class="x">● Axis X</span><span class="y">● Axis Y</span></div></div><div class="chart-wrap"><canvas id="chart" aria-label="Simulated tilt versus time" role="img"></canvas><span id="chart-hint">Run the model to see the response.</span></div><div class="chart-foot"><span id="chart-caption">Tilt · degrees / time · seconds</span><button id="csv" class="quiet" disabled>Export CSV ↓</button></div><div class="metrics"><div><span>PEAK TILT</span><strong id="peak">—</strong></div><div><span>FINAL TILT</span><strong id="final">—</strong></div><div><span>AT OUTPUT LIMIT</span><strong id="saturation">—</strong></div></div><div id="simulation-status" class="assessment">Ready for a simulated bench run.</div><p class="help">Uses the C firmware controller. Constant thrust, two-axis rotational dynamics, servo lag, and a simplified wind torque. It does not predict trajectory, stability through burnout, vibration, battery behavior, or hardware reliability.</p></article>
           <article class="card"><div class="card-heading"><div><span class="eyebrow">03 / VEHICLE</span><h2>Model assumptions</h2></div><span class="chip">Example values</span></div><p class="help">Replace these with measured vehicle and actuator data. Simulation assumes servo directions produce the correct torque; prove those directions on the bench.</p><div id="plant" class="field-grid"></div></article>
           <article class="card"><div class="card-heading"><div><span class="eyebrow">04 / ACTUATORS</span><h2>Servo calibration</h2></div><span class="chip">Profile only</span></div><p class="help">Choose separate output channels and measured pulse limits. Editing these fields does not move hardware. A proper 5 V servo supply is required; USB power alone is not established as sufficient.</p><div id="servos"></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sim3d" class="tab" hidden>
+      <div class="page-title"><div><h1>Fly it first.</h1><p>A full 3D flight of your rocket as currently set up in Rocket setup, unsaved changes included. The <strong>real flight software</strong> runs in the loop: pad arming, attitude estimate, launch detection, TVC and parachute.</p></div>
+        <div class="title-actions"><button id="sim-batch">40 random flights</button><button id="sim-run" class="primary">Run flight ↗</button></div></div>
+      <div class="sim-grid">
+        <article class="card sim-inputs-card"><div class="card-heading"><div><span class="eyebrow">MODEL</span><h2>Vehicle &amp; conditions</h2></div><button id="sim-reset" class="quiet small">Defaults</button></div>
+          <p class="help">The rocket's shape, mass, CG, CP and inertia come from <strong>Rocket setup</strong> (parts in mm), the servo linkage from <strong>TVC gimbal</strong>. Here you only set the flight conditions.</p>
+          <div id="sim-inputs"></div></article>
+        <div class="sim-main">
+          <article class="card sim-view"><canvas id="sim-canvas" aria-label="3D flight view" role="img"></canvas>
+            <div id="sim-empty" class="sim-empty">Press <strong>Run flight</strong> to fly your configured rocket.</div>
+            <div class="sim-controls"><button id="sim-play" class="small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>
+              <select id="sim-speed" aria-label="Playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+              <label class="inline"><input id="sim-follow" type="checkbox" checked> follow</label>
+              <label class="inline"><input id="sim-true-scale" type="checkbox"> true scale</label></div></article>
+          <div id="sim-model" class="metrics wide"></div>
+          <div id="sim-results" hidden>
+            <div class="metrics wide" id="sim-metrics"></div>
+            <div id="sim-verdict"></div>
+            <div id="sim-charts" class="sim-charts"></div>
+          </div>
+          <article id="sim-batch-result" class="card" hidden></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="gimbal" class="tab" hidden>
+      <div class="page-title"><div><h1>The gimbal, close up.</h1><p>Both servos, their horns and pushrods, and the two gimbal rings around the motor, drawn to scale in millimetres from your settings.</p></div>
+        <div class="title-actions"><select id="gim-source" aria-label="What drives the servos"><option value="manual">Manual / self test</option><option value="sim">3D sim flight</option><option value="live">Live board (bench image)</option></select>
+          <button id="gim-sweep">Power-up self test</button><button id="gim-center" class="quiet">Centre</button></div></div>
+      <div class="sim-grid">
+        <div class="controls">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">LINKAGE</span><h2>Servo &amp; gimbal geometry</h2></div><span class="chip">feeds the 3D sim</span></div>
+            <div id="gim-geometry" class="field-grid"></div>
+            <p id="gim-note" class="help"></p></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">MANUAL</span><h2>Pulse sliders</h2></div></div>
+            <p class="help">Range is each servo's MIN–MAX from Rocket setup. Moving a slider shows what the same pulse does on the bench.</p>
+            <div id="gim-sliders" class="gim-sliders"></div></article>
+          <article class="card"><h2>Travel at your endpoints</h2><table id="gim-table" class="gim-table"></table></article>
+        </div>
+        <div class="sim-main">
+          <article class="card sim-view"><canvas id="gim-canvas" class="gim-canvas" aria-label="3D view of the TVC gimbal and servos" role="img"></canvas>
+            <div class="sim-controls"><button id="gim-play" class="small">Play flight</button><input id="gim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Flight time"></div></article>
+          <p class="help">Servo A tilts the outer ring about body X; servo B tilts the inner ring (and motor) about body Y. The motor's thrust direction is the same one the flight simulator uses, so what moves here is what flew there. On the real bench, lean the nose and check that the nozzle swings to the opposite side.</p>
         </div>
       </div>
     </section>
