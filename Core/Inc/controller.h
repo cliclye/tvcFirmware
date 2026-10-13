@@ -19,6 +19,8 @@ typedef struct {
 } EasyTVCControlOutput;
 
 void EasyTVC_ControllerReset(EasyTVCController *controller);
+/* Tilt of the nose away from world-up, as rotations about body X [0] and body Y [1] (rad). */
+void EasyTVC_ControllerTilt(const EasyTVCQuaternion *orientation, float tilt_rad[2]);
 /* A new sensor sample is required for every call. Reset only while disarmed.
  * Positive controller command assumes positive body-axis torque; prove direction on a bench. */
 EasyTVCControlOutput EasyTVC_ControllerStep(EasyTVCController *controller,

@@ -57,6 +57,15 @@ void STM32_SystemReset(void)
     }
 }
 
+bool STM32_ResetWasAbnormal(void)
+{
+    const uint32_t csr = STM32_RCC->CSR;
+    const uint32_t por = 1UL << 27;
+    const uint32_t abnormal = (1UL << 28) | (1UL << 29) | (1UL << 30) | (1UL << 31); /* SFT IWDG WWDG LPWR */
+    STM32_RCC->CSR = csr | (1UL << 24);   /* RMVF: clear for the next boot */
+    return (csr & por) == 0U && (csr & abnormal) != 0U;
+}
+
 void STM32_WatchdogStart(void)
 {
     /* LSI is nominally 32 kHz (17..47 kHz over temperature): /16 -> ~2 kHz,

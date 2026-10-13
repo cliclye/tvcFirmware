@@ -1,12 +1,25 @@
 # EasyTVC Studio + firmware core
 
-Open **EasyTVC Studio.app** in Finder, or double-click **Open EasyTVC Studio.command**.
-Studio runs locally on your Mac and opens in your usual browser, including Safari.
+Open **EasyTVC Studio.app** (keep it inside this folder). It is a native Mac window with:
+**Rocket setup** (edits `Core/Inc/vehicle_config.h`, mass / thrust-to-weight / apogee / parachute
+calculator), **Tuning lab** (simulation), **Build & flash** (builds both images, flashes over USB
+DFU with read-back verification), **Live board** (telemetry via a USB-UART on TX2/RX2, tilt view,
+automatic nose-axis detection), **Launch checklist** (bench → prep → pad, GO/NO-GO, launch-day kit)
+and **Flight logs** (reads sessions off the SD card, timeline and charts, CSV export).
+Rebuild the app with `./scripts/build-studio.sh`; it needs `brew install cmake dfu-util`.
 No account, cloud service, npm, or Python packages are required. The app needs Python
 3.9+; the Python installation already present on this Mac is supported.
 
-**This is a working tuning/simulation application and tested portable controller,
-not completed flight firmware for the physical board.** EasyTVC v0.1 pin nets
+**Flight firmware: see [docs/flight-guide.md](docs/flight-guide.md)** for the parts list,
+wiring, bench checks and pad procedure. Two images are built: `easytvc_bench` (flash first; the
+gimbal follows the board by hand) and `easytvc_flight` (arms on the pad, TVC during boost,
+parachute servo at apogee). Your rocket's settings are in `Core/Inc/vehicle_config.h`.
+Nothing has been run on hardware yet, so the bench checks are mandatory.
+
+The sections below describe the Studio tuning/simulation app.
+
+**Historical note:** this was originally a tuning/simulation application and tested portable
+controller, not completed flight firmware for the physical board. EasyTVC v0.1 pin nets
 from Brian Wong's hwdef are in `board/easytvc.hwdef` and `Core/Inc/board_pins.h`.
 There is still no operational sensor/servo/USB board adapter. No board was flashed.
 Do not upload the blank image expecting working TVC. BME280 needs STM32 I2C
@@ -43,9 +56,8 @@ Mac app. `python3 studio/studio.py` also starts the interface directly.
 Use **Quit Studio** in the sidebar or quit the Mac app to stop its local service.
 Save a profile before closing; unsaved edits are not automatically persisted.
 
-The ARM build produces `build-arm/libeasytvc_core.a` and
-`build-arm/easytvc_safe_blank.bin`. **The archive contains control/runtime code;
-the executable blank image only sleeps.** There is no flight image to upload yet.
+The ARM build produces `build-arm/easytvc_bench.bin` and `build-arm/easytvc_flight.bin`
+(see [docs/flight-guide.md](docs/flight-guide.md)).
 The complete Arm GNU 14.3.Rel1 toolchain is installed locally under `.tools/` on
 this Mac. For another installation, set `ARM_TOOLCHAIN_DIR` to a complete Arm GNU
 toolchain containing newlib. The Homebrew compiler alone lacks those headers.

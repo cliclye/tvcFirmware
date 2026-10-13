@@ -54,8 +54,10 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
     const bool valid = input->sensors_healthy &&
         isfinite(input->acceleration_magnitude_g) && isfinite(input->axial_acceleration_g) &&
         isfinite(input->altitude_m) && isfinite(input->vertical_speed_m_s);
-    if (!valid && machine->state != EASYTVC_FLIGHT_IDLE &&
-        machine->state != EASYTVC_FLIGHT_LANDED) {
+    if (!valid && machine->state == EASYTVC_FLIGHT_ARMED) {
+        transition(machine, EASYTVC_FLIGHT_IDLE, input->now_ms);
+    } else if (!valid && machine->state != EASYTVC_FLIGHT_IDLE &&
+               machine->state != EASYTVC_FLIGHT_LANDED) {
         transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
     }
     if (machine->state == EASYTVC_FLIGHT_BOOST && !input->physical_arm_qualified) {
@@ -72,9 +74,10 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         break;
 
     case EASYTVC_FLIGHT_ARMED:
-        if (!input->sensors_healthy) {
-            transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
-        } else if (!input->physical_arm_qualified || !input->software_arm_request) {
+        /* Still on the pad: a bad sample disarms (the pad must re-qualify) rather than latching
+         * FAULT, which could only be cleared by a power cycle. */
+        if (!input->sensors_healthy || !input->physical_arm_qualified ||
+            !input->software_arm_request) {
             transition(machine, EASYTVC_FLIGHT_IDLE, input->now_ms);
         } else if (input->acceleration_magnitude_g >= machine->config.launch_accel_g &&
                    input->axial_acceleration_g >= machine->config.launch_accel_g * 0.5f) {

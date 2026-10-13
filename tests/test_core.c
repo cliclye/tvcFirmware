@@ -111,7 +111,20 @@ static void test_fault_on_unhealthy_sensors(void)
     EasyTVC_FlightInit(&machine, &config, 0U);
     EasyTVCFlightInput input = healthy_input(1U);
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_ARMED);
+    /* On the pad a bad sample disarms; it must re-qualify instead of latching FAULT. */
     input.now_ms = 2U;
+    input.sensors_healthy = false;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_IDLE);
+    input = healthy_input(3U);
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_ARMED);
+
+    /* In flight it is a FAULT. */
+    input = healthy_input(10U);
+    input.acceleration_magnitude_g = 3.0f;
+    (void)EasyTVC_FlightStep(&machine, &input);
+    input.now_ms = 61U;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 62U;
     input.sensors_healthy = false;
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_FAULT);
 }

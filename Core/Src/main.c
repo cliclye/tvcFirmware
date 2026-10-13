@@ -10,29 +10,48 @@
 #include "bme280.h"
 #include "data_logger.h"
 #include "app.h"
+#include "pad_arm.h"
+#include "vehicle_config.h"
 
 #include <math.h>
 #include <string.h>
 
 /*
- * MONITOR-ONLY image.
+ * Two images are built from this file (see docs/flight-guide.md):
  *
- * This runs the full estimation stack (attitude, altitude, flight state machine, controller) on
- * real sensor data, logs to SD and streams telemetry, but it can NOT actuate the vehicle:
- *   - physical_arm_qualified is hard-wired false (no arm sense input exists on this board yet),
- *     so the flight state machine never leaves IDLE and the controller never enables;
- *   - servos therefore sit at their configured centre pulse;
- *   - pyro outputs are compiled out (EASYTVC_PYRO_OUTPUTS_COMPILED_IN == 0).
- * Do not change those until the items in docs/software.md "Required board adapter" are done.
+ *   easytvc_bench  (EASYTVC_BENCH_MODE=1)  never arms. The gimbal follows the board's tilt all the
+ *                  time so servo channels, directions and endpoints can be checked by hand.
+ *   easytvc_flight (EASYTVC_BENCH_MODE=0)  arms itself once the rocket has stood vertical and
+ *                  still on the pad, then waits for launch. TVC runs only during boost.
+ *
+ * Pyro outputs stay compiled out (EASYTVC_PYRO_OUTPUTS_COMPILED_IN == 0, vendor-untested).
+ * Recovery is by a parachute-release servo (EASYTVC_CHUTE_CHANNEL) or motor ejection.
  */
+#ifndef EASYTVC_BENCH_MODE
+#define EASYTVC_BENCH_MODE 0
+#endif
+
+#if EASYTVC_SERVO_A_CHANNEL < 1 || EASYTVC_SERVO_A_CHANNEL > 4 || \
+    EASYTVC_SERVO_B_CHANNEL < 1 || EASYTVC_SERVO_B_CHANNEL > 4 || \
+    EASYTVC_CHUTE_CHANNEL < 0 || EASYTVC_CHUTE_CHANNEL > 4
+#error "servo channels are 1..4 (chute: 0 = none)"
+#endif
+#if EASYTVC_SERVO_A_CHANNEL == EASYTVC_SERVO_B_CHANNEL
+#error "TVC servos A and B must use different channels"
+#endif
+#if EASYTVC_CHUTE_CHANNEL != 0 && \
+    (EASYTVC_CHUTE_CHANNEL == EASYTVC_SERVO_A_CHANNEL || EASYTVC_CHUTE_CHANNEL == EASYTVC_SERVO_B_CHANNEL)
+#error "The parachute servo cannot share a channel with a TVC servo"
+#endif
 
 #define LOOP_HZ              200U
 #define LOOP_PERIOD_US       (1000000UL / LOOP_HZ)
 #define BARO_DIVIDER         4U      /* 50 Hz */
-#define LOG_DIVIDER          20U     /* 10 Hz SD records */
+#define LOG_DIVIDER_PAD      20U     /* 10 Hz SD records on the pad / bench */
+#define LOG_DIVIDER_FLIGHT   2U      /* 100 Hz SD records from arming until landing */
 #define TELEMETRY_DIVIDER    20U     /* 10 Hz serial */
 #define STATUS_DIVIDER       200U    /* 1 Hz serial status line */
-#define FLUSH_DIVIDER        200U    /* partial-sector flush every second */
+#define FLUSH_DIVIDER        200U    /* queue the partial sector every second */
 
 #define IMU_FAIL_RETRY_COUNT 5U
 #define SENSOR_RETRY_MS      500U
@@ -43,14 +62,24 @@
 #define GYRO_CAL_ATTEMPTS    5U
 #define BARO_REF_SAMPLES     20U
 
+#define PAD_STILL_GYRO_RAD_S 0.05f   /* ~3 deg/s */
+#define DISARM_CONFIRM_MS    500U
+#define LOCATOR_AFTER_MS     20000U  /* start the locator beeper this long after launch */
+
+#define GRAVITY              9.80665f
+#define DEG_TO_RAD           0.01745329252f
+
 /* Set to 1 to make a missing/stale barometer mark the whole sample set unhealthy (which also
- * stops the attitude filter, because AppStep gates both on one flag). Left 0 for bring-up. */
+ * stops the attitude filter, because AppStep gates both on one flag). TVC does not need it. */
 #define EASYTVC_REQUIRE_BARO 0
 
 static EasyTVCBmi088 bmi088;
 static EasyTVCBme280 bme280;
 static DataLogger logger;
 static EasyTVCApp app;
+#if EASYTVC_BENCH_MODE
+static EasyTVCController bench_controller;
+#endif
 
 static float gyro_bias[3];
 static float baro_reference_pa;
@@ -67,15 +96,26 @@ static int16_t clamp_i16(float value)
 }
 
 /*
- * Sensor frame -> body frame (+Z toward the nose). The hwdef says ROLL_180_YAW_90 for the
- * flight orientation; that has not been bench-checked, so this is the identity on purpose.
- * Nothing downstream can act on the data (see the banner above).
+ * Sensor frame -> body frame (+Z toward the nose), chosen by EASYTVC_NOSE_AXIS. Each mapping is
+ * a proper rotation (right-handed); the BMI088 accel and gyro share one axis set.
  */
-static void imu_to_body(const float in[3], float out[3])
+static void imu_to_body(const float s[3], float b[3])
 {
-    out[0] = in[0];
-    out[1] = in[1];
-    out[2] = in[2];
+#if EASYTVC_NOSE_AXIS == EASYTVC_AXIS_POS_X
+    b[0] = s[1]; b[1] = s[2]; b[2] = s[0];
+#elif EASYTVC_NOSE_AXIS == EASYTVC_AXIS_NEG_X
+    b[0] = s[1]; b[1] = -s[2]; b[2] = -s[0];
+#elif EASYTVC_NOSE_AXIS == EASYTVC_AXIS_POS_Y
+    b[0] = s[2]; b[1] = s[0]; b[2] = s[1];
+#elif EASYTVC_NOSE_AXIS == EASYTVC_AXIS_NEG_Y
+    b[0] = s[2]; b[1] = -s[0]; b[2] = -s[1];
+#elif EASYTVC_NOSE_AXIS == EASYTVC_AXIS_POS_Z
+    b[0] = s[0]; b[1] = s[1]; b[2] = s[2];
+#elif EASYTVC_NOSE_AXIS == EASYTVC_AXIS_NEG_Z
+    b[0] = s[0]; b[1] = -s[1]; b[2] = -s[2];
+#else
+#error "EASYTVC_NOSE_AXIS must be one of EASYTVC_AXIS_*"
+#endif
 }
 
 static float pressure_to_altitude_m(uint32_t pressure_pa)
@@ -195,10 +235,7 @@ static void halt_clock_fault(void)
     }
 }
 
-static void queue_text(const char *text)
-{
-    (void)EasyTVC_USART2_Queue((const uint8_t *)text, strlen(text));
-}
+/* ---- text output (no printf: nano libc has no float formatting) ---- */
 
 static size_t put_uint(char *out, uint32_t value)
 {
@@ -214,29 +251,190 @@ static size_t put_uint(char *out, uint32_t value)
     return count;
 }
 
-/* "S,imu,baro,sd,gyro_cal,logs,dropped,write_errors\n" */
-static void send_status_line(bool imu_ok, bool baro_ok, bool gyro_cal_ok)
+typedef struct {
+    char *buffer;
+    size_t used;
+    size_t capacity;
+} TextLine;
+
+static void line_str(TextLine *line, const char *text)
 {
-    char line[80];
+    while (*text != '\0' && line->used + 1U < line->capacity) {
+        line->buffer[line->used++] = *text++;
+    }
+    line->buffer[line->used] = '\0';
+}
+
+static void line_int(TextLine *line, int32_t value)
+{
+    char digits[12];
     size_t n = 0;
-    line[n++] = 'S';
-    line[n++] = ',';
-    line[n++] = imu_ok ? '1' : '0';
-    line[n++] = ',';
-    line[n++] = baro_ok ? '1' : '0';
-    line[n++] = ',';
-    line[n++] = logger.initialized ? '1' : '0';
-    line[n++] = ',';
-    line[n++] = gyro_cal_ok ? '1' : '0';
-    line[n++] = ',';
-    n += put_uint(&line[n], logger.record_count);
-    line[n++] = ',';
-    n += put_uint(&line[n], logger.dropped_records);
-    line[n++] = ',';
-    n += put_uint(&line[n], logger.write_errors);
-    line[n++] = '\n';
-    line[n] = '\0';
-    queue_text(line);
+    if (value < 0) {
+        digits[n++] = '-';
+        n += put_uint(&digits[n], 0U - (uint32_t)value);
+    } else {
+        n += put_uint(&digits[n], (uint32_t)value);
+    }
+    digits[n] = '\0';
+    line_str(line, digits);
+}
+
+static void line_field(TextLine *line, int32_t value)
+{
+    line_str(line, ",");
+    line_int(line, value);
+}
+
+static int32_t milli(float value)
+{
+    return (int32_t)lroundf(value * 1000.0f);
+}
+
+static void queue_text(const char *text)
+{
+    (void)EasyTVC_USART2_Queue((const uint8_t *)text, strlen(text));
+}
+
+/* ---- outputs ---- */
+
+static void beep_blocking(uint32_t ms)
+{
+    EasyTVC_GPIO_BuzzerSet(true);
+    STM32_DelayMilliseconds(ms);
+    EasyTVC_GPIO_BuzzerSet(false);
+}
+
+static void write_outputs(uint16_t pulse_a, uint16_t pulse_b, bool chute_open)
+{
+    uint16_t pulse[4] = {1500U, 1500U, 1500U, 1500U};
+    pulse[EASYTVC_SERVO_A_CHANNEL - 1] = pulse_a;
+    pulse[EASYTVC_SERVO_B_CHANNEL - 1] = pulse_b;
+#if EASYTVC_CHUTE_CHANNEL != 0
+    pulse[EASYTVC_CHUTE_CHANNEL - 1] = chute_open ? EASYTVC_CHUTE_OPEN_US : EASYTVC_CHUTE_CLOSED_US;
+#else
+    (void)chute_open;
+#endif
+    for (uint8_t channel = 1; channel <= 4U; ++channel) {
+        EasyTVC_PWM_SetChannel(channel, pulse[channel - 1U]);
+    }
+}
+
+/* Power-up self test: each TVC servo goes centre -> max -> min -> centre on its own, so a wrong
+ * channel or a binding endpoint is obvious. The parachute servo is NOT moved here in the flight
+ * image: it may already be holding a packed parachute. */
+static void servo_self_test(void)
+{
+    const uint16_t a[] = {EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_A_MAX_US,
+                          EASYTVC_SERVO_A_MIN_US, EASYTVC_SERVO_A_CENTER_US};
+    const uint16_t b[] = {EASYTVC_SERVO_B_CENTER_US, EASYTVC_SERVO_B_MAX_US,
+                          EASYTVC_SERVO_B_MIN_US, EASYTVC_SERVO_B_CENTER_US};
+    for (unsigned i = 0; i < 4U; ++i) {
+        write_outputs(a[i], EASYTVC_SERVO_B_CENTER_US, false);
+        STM32_DelayMilliseconds(300U);
+    }
+    for (unsigned i = 0; i < 4U; ++i) {
+        write_outputs(EASYTVC_SERVO_A_CENTER_US, b[i], false);
+        STM32_DelayMilliseconds(300U);
+    }
+#if EASYTVC_BENCH_MODE && EASYTVC_CHUTE_CHANNEL != 0
+    write_outputs(EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US, true);
+    STM32_DelayMilliseconds(600U);
+    write_outputs(EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US, false);
+    STM32_DelayMilliseconds(600U);
+#endif
+}
+
+static bool booted_in_motion(void)
+{
+    unsigned moving = 0;
+    for (unsigned i = 0; i < 20U; ++i) {
+        STM32_DelayMilliseconds(5U);
+        if (!EasyTVC_Bmi088Read(&bmi088)) {
+            continue;
+        }
+        const float *a = bmi088.accel_m_s2;
+        const float *g = bmi088.gyro_rad_s;
+        const float a_norm = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+        const float g_norm = sqrtf(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+        if (a_norm < 0.7f * GRAVITY || a_norm > 1.3f * GRAVITY || g_norm > 0.6f) {
+            ++moving;
+        }
+    }
+    return moving >= 10U;   /* most of 100 ms: not a single knock */
+}
+
+/* ---- configuration ---- */
+
+static bool apply_vehicle_config(uint32_t now_ms)
+{
+    EasyTVCSettings s;
+    EasyTVC_SettingsDefault(&s);
+    for (unsigned i = 0; i < 2U; ++i) {
+        s.axis[i] = (EasyTVCPidConfig){
+            .kp = EASYTVC_KP, .ki = EASYTVC_KI, .kd = EASYTVC_KD,
+            .integrator_limit = EASYTVC_INTEGRATOR_LIMIT, .output_limit = 1.0f,
+            .output_rate_limit = EASYTVC_OUTPUT_RATE_LIMIT,
+            .derivative_cutoff_hz = EASYTVC_DERIVATIVE_CUTOFF,
+        };
+    }
+    s.servo[0] = (EasyTVCServoSettings){
+        .minimum_us = EASYTVC_SERVO_A_MIN_US, .center_us = EASYTVC_SERVO_A_CENTER_US,
+        .maximum_us = EASYTVC_SERVO_A_MAX_US, .channel = EASYTVC_SERVO_A_CHANNEL,
+        .direction = EASYTVC_SERVO_A_DIRECTION};
+    s.servo[1] = (EasyTVCServoSettings){
+        .minimum_us = EASYTVC_SERVO_B_MIN_US, .center_us = EASYTVC_SERVO_B_CENTER_US,
+        .maximum_us = EASYTVC_SERVO_B_MAX_US, .channel = EASYTVC_SERVO_B_CHANNEL,
+        .direction = EASYTVC_SERVO_B_DIRECTION};
+    s.maximum_tilt_deg = EASYTVC_MAX_TILT_DEG;
+
+    app.flight_config.launch_accel_g = EASYTVC_LAUNCH_ACCEL_G;
+    app.flight_config.launch_confirm_ms = EASYTVC_LAUNCH_CONFIRM_MS;
+    app.flight_config.tvc_enable_delay_ms = EASYTVC_TVC_ENABLE_DELAY_MS;
+    app.flight_config.failsafe_apogee_ms = EASYTVC_CHUTE_BACKUP_MS;
+    EasyTVC_FlightInit(&app.flight, &app.flight_config, now_ms);
+    return EasyTVC_AppApplySettings(&app, &s, false);
+}
+
+static void build_header(char *buffer, size_t capacity, bool recovery_boot)
+{
+    TextLine line = {buffer, 0, capacity};
+    line_str(&line, EASYTVC_BENCH_MODE ? "EasyTVC mode=bench" : "EasyTVC mode=flight");
+    line_str(&line, recovery_boot ? " reset=abnormal" : " reset=normal");
+    line_str(&line, " nose_axis="); line_int(&line, EASYTVC_NOSE_AXIS);
+    line_str(&line, " kp_milli="); line_int(&line, milli(EASYTVC_KP));
+    line_str(&line, " ki_milli="); line_int(&line, milli(EASYTVC_KI));
+    line_str(&line, " kd_milli="); line_int(&line, milli(EASYTVC_KD));
+    line_str(&line, " A=ch"); line_int(&line, EASYTVC_SERVO_A_CHANNEL);
+    line_field(&line, EASYTVC_SERVO_A_MIN_US); line_field(&line, EASYTVC_SERVO_A_CENTER_US);
+    line_field(&line, EASYTVC_SERVO_A_MAX_US); line_field(&line, EASYTVC_SERVO_A_DIRECTION);
+    line_str(&line, " B=ch"); line_int(&line, EASYTVC_SERVO_B_CHANNEL);
+    line_field(&line, EASYTVC_SERVO_B_MIN_US); line_field(&line, EASYTVC_SERVO_B_CENTER_US);
+    line_field(&line, EASYTVC_SERVO_B_MAX_US); line_field(&line, EASYTVC_SERVO_B_DIRECTION);
+    line_str(&line, " servo_hz="); line_int(&line, EASYTVC_SERVO_RATE_HZ);
+    line_str(&line, " chute=ch"); line_int(&line, EASYTVC_CHUTE_CHANNEL);
+    line_str(&line, " max_tilt="); line_int(&line, (int32_t)EASYTVC_MAX_TILT_DEG);
+}
+
+/* ---- status indication ---- */
+
+typedef enum {
+    BUZZ_OFF,
+    BUZZ_ERROR,      /* 0.5 s beep every 2 s: do not launch */
+    BUZZ_ARMED,      /* short chirp every second: ready, hands off */
+    BUZZ_LOCATOR,    /* two beeps every 3 s after the flight */
+} BuzzPattern;
+
+static bool buzzer_on(BuzzPattern pattern, uint32_t now_ms)
+{
+    switch (pattern) {
+    case BUZZ_ERROR:   return (now_ms % 2000U) < 500U;
+    case BUZZ_ARMED:   return (now_ms % 1000U) < 60U;
+    case BUZZ_LOCATOR: {
+        const uint32_t t = now_ms % 3000U;
+        return t < 150U || (t >= 300U && t < 450U);
+    }
+    default:           return false;
+    }
 }
 
 int main(void)
@@ -244,6 +442,9 @@ int main(void)
     if (!STM32_SystemInit()) {
         halt_clock_fault();
     }
+    /* A watchdog/fault reset may have happened in the air. Do not move the gimbal, do not arm,
+     * release the parachute. Power-cycle to clear. */
+    bool recovery_boot = STM32_ResetWasAbnormal();
 
     EasyTVC_GPIO_Init();
     EasyTVC_SPI1_Init();
@@ -251,7 +452,8 @@ int main(void)
     EasyTVC_SPI3_Init();
     EasyTVC_I2C1_Init();
     EasyTVC_I2C2_Init();
-    EasyTVC_PWM_Init();       /* servos start at 1500 us */
+    EasyTVC_PWM_Init();       /* all channels start at 1500 us */
+    write_outputs(EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US, recovery_boot);
     EasyTVC_USART2_Init();
     EasyTVC_UART4_Init();
     EasyTVC_HardwareBus_Init();
@@ -262,15 +464,28 @@ int main(void)
     bme280.delay_ms = STM32_DelayMilliseconds;
 
     bool imu_ok = imu_start();
+    /* The servos share the board's 5 V linear regulator: a current spike can brown the MCU out,
+     * and that reboot looks like a power-on. If the vehicle is accelerating or turning while we
+     * boot, assume we are in the air and fail safe exactly like a watchdog reset. */
+    if (imu_ok && !recovery_boot && booted_in_motion()) {
+        recovery_boot = true;
+        write_outputs(EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US, true);
+    }
+    if (!recovery_boot) {
+        beep_blocking(100U);
+        servo_self_test();
+    }
     bool baro_ok = baro_start();
-    const bool logger_ok = DataLogger_Init(&logger);   /* SD init: can take ~1 s */
+    char header[400];
+    build_header(header, sizeof(header), recovery_boot);
+    (void)DataLogger_Init(&logger, header);   /* SD init: can take ~1 s */
 
     EasyTVC_GPIO_LedSet(0, imu_ok);
     EasyTVC_GPIO_LedSet(1, baro_ok);
-    EasyTVC_GPIO_LedSet(2, logger_ok);
+    EasyTVC_GPIO_LedSet(2, !logger.initialized);
 
-    /* From here on every loop must feed the watchdog. A hang or a fault resets the board and
-     * the servos return to centre. */
+    /* From here on every loop must feed the watchdog. A hang or a fault resets the board into
+     * the recovery boot above. */
     STM32_WatchdogStart();
 
     uint32_t last_us = STM32_Micros();
@@ -280,6 +495,13 @@ int main(void)
     }
 
     EasyTVC_AppInit(&app, STM32_Millis());
+    const bool config_ok = apply_vehicle_config(STM32_Millis());
+#if EASYTVC_BENCH_MODE
+    EasyTVC_ControllerReset(&bench_controller);
+    /* On the bench a failed still-calibration (board in hand at power-up) just leaves a small
+     * uncorrected bias; do not let it hide the gimbal test. The flight image re-calibrates on the pad. */
+    gyro_cal_ok = imu_ok;
+#endif
 
     uint32_t tick = 0;
     uint32_t last_imu_good_ms = STM32_Millis();
@@ -288,23 +510,39 @@ int main(void)
     uint32_t last_baro_retry_ms = 0;
     unsigned imu_failures = 0;
     float altitude_m = 0.0f;
-    bool led_state = false;
+
+    EasyTVCPadArm pad;
+    EasyTVC_PadArmInit(&pad);
+    const EasyTVCPadArmConfig pad_config = {
+        .hold_ms = EASYTVC_ARM_HOLD_MS,
+        .cos_arm_tilt = cosf(EASYTVC_ARM_MAX_TILT_DEG * DEG_TO_RAD),
+        .cos_disarm_tilt = cosf(EASYTVC_DISARM_TILT_DEG * DEG_TO_RAD),
+        .still_gyro_rad_s = PAD_STILL_GYRO_RAD_S,
+        .disarm_confirm_ms = DISARM_CONFIRM_MS,
+    };
+
+    bool launched = false;
+    uint32_t launch_ms = 0;
+    bool chute_open = recovery_boot;
 
     for (;;) {
         const uint32_t elapsed_us = wait_for_tick(&last_us);
         const uint32_t now_ms = STM32_Millis();
         ++tick;
+        /* Blocking sensor recovery (tens of ms) is only allowed before arming. */
+        const bool on_ground_idle = app.flight.state == EASYTVC_FLIGHT_IDLE;
 
         /* ---- sensors ---- */
+        bool imu_fresh = false;
         if (imu_ok) {
             if (EasyTVC_Bmi088Read(&bmi088)) {
                 last_imu_good_ms = now_ms;
                 imu_failures = 0;
+                imu_fresh = true;
             } else if (++imu_failures >= IMU_FAIL_RETRY_COUNT) {
                 imu_ok = false;
-                EasyTVC_GPIO_LedSet(0, false);
             }
-        } else if ((uint32_t)(now_ms - last_imu_retry_ms) >= SENSOR_RETRY_MS) {
+        } else if (on_ground_idle && (uint32_t)(now_ms - last_imu_retry_ms) >= SENSOR_RETRY_MS) {
             last_imu_retry_ms = now_ms;
             imu_ok = imu_start();
             imu_failures = 0;
@@ -316,7 +554,8 @@ int main(void)
                     last_baro_good_ms = now_ms;
                     altitude_m = pressure_to_altitude_m(bme280.pressure);
                 }
-            } else if ((uint32_t)(now_ms - last_baro_retry_ms) >= SENSOR_RETRY_MS * 2U) {
+            } else if (on_ground_idle &&
+                       (uint32_t)(now_ms - last_baro_retry_ms) >= SENSOR_RETRY_MS * 2U) {
                 last_baro_retry_ms = now_ms;
                 if (baro_start()) {
                     baro_ok = true;
@@ -328,7 +567,6 @@ int main(void)
         }
         const bool baro_fresh = baro_ok && (uint32_t)(now_ms - last_baro_good_ms) <= BARO_STALE_MS;
 
-        /* ---- estimation / control (never able to arm: see banner) ---- */
         float gyro_sensor[3];
         float accel_body[3];
         float gyro_body[3];
@@ -338,12 +576,28 @@ int main(void)
         imu_to_body(gyro_sensor, gyro_body);
         imu_to_body(bmi088.accel_m_s2, accel_body);
 
+        /* ---- pad arming: vertical + still for ARM_HOLD_MS, then hands off ---- */
+        const bool flight_ready = !EASYTVC_BENCH_MODE && !recovery_boot && imu_ok && config_ok &&
+                                  (!EASYTVC_REQUIRE_SD || logger.initialized);
+        float new_bias[3];
+        if (EasyTVC_PadArmStep(&pad, &pad_config, app.flight.state, flight_ready, imu_fresh,
+                               accel_body, gyro_body, bmi088.gyro_rad_s, now_ms, new_bias)) {
+            /* Re-take the gyro bias on the pad, right before flight: the power-up calibration may
+             * have been done in someone's hand. */
+            for (unsigned axis = 0; axis < 3U; ++axis) {
+                gyro_bias[axis] = new_bias[axis];
+                app.attitude.integral_error[axis] = 0.0f;
+            }
+            gyro_cal_ok = true;
+        }
+
+        /* ---- estimation / flight state / control ---- */
         EasyTVCAppInput input = {
             .baro_altitude_m = altitude_m,
             .sensors_healthy = imu_ok && gyro_cal_ok && !bmi088.accel_saturated &&
                                !bmi088.gyro_saturated && (EASYTVC_REQUIRE_BARO ? baro_fresh : true),
-            .physical_arm_qualified = false,
-            .software_arm_request = false,
+            .physical_arm_qualified = pad.armed,
+            .software_arm_request = pad.armed,
             .accel_is_gravity_reference = true,
             .now_ms = now_ms,
             .sensor_age_ms = (uint32_t)(now_ms - last_imu_good_ms),
@@ -353,38 +607,77 @@ int main(void)
         memcpy(input.accel_m_s2, accel_body, sizeof(input.accel_m_s2));
 
         const EasyTVCAppOutput output = EasyTVC_AppStep(&app, &input);
+        const EasyTVCFlightState state = output.flight.state;
+        if (state == EASYTVC_FLIGHT_IDLE) {
+            pad.armed = false;   /* the state machine refused or dropped the arm: re-qualify */
+        }
+        if (!launched && state == EASYTVC_FLIGHT_BOOST) {
+            launched = true;
+            launch_ms = now_ms;
+        }
 
-        /* ---- actuators: unused channels stay centred ---- */
-        uint16_t pulse[4] = {1500U, 1500U, 1500U, 1500U};
-        for (unsigned i = 0; i < 2U; ++i) {
-            const uint8_t channel = app.settings.servo[i].channel;
-            if (channel >= 1U && channel <= 4U) {
-                pulse[channel - 1U] = output.control.pulse_us[i];
+        uint16_t pulse_a = output.control.pulse_us[0];
+        uint16_t pulse_b = output.control.pulse_us[1];
+        bool tvc_active = output.control.enabled;
+        bool ctrl_fault = output.control.fault;
+#if EASYTVC_BENCH_MODE
+        {
+            const bool healthy = input.sensors_healthy && input.sensor_age_ms <= 20U &&
+                                 input.dt_s > 0.0f && input.dt_s <= 0.02f;
+            const EasyTVCControlOutput bench = EasyTVC_ControllerStep(&bench_controller,
+                &app.settings, &app.attitude.orientation, now_ms, now_ms - input.sensor_age_ms,
+                input.dt_s, healthy, true, true);
+            pulse_a = bench.pulse_us[0];
+            pulse_b = bench.pulse_us[1];
+            tvc_active = bench.enabled;
+            ctrl_fault = bench.fault;
+            if (bench.fault) {
+                /* past max tilt or a bad sample: centre, and start again next tick */
+                EasyTVC_ControllerReset(&bench_controller);
+                pulse_a = EASYTVC_SERVO_A_CENTER_US;
+                pulse_b = EASYTVC_SERVO_B_CENTER_US;
             }
         }
-        for (uint8_t channel = 1; channel <= 4U; ++channel) {
-            EasyTVC_PWM_SetChannel(channel, pulse[channel - 1U]);
+#endif
+
+        /* ---- recovery ---- */
+        if (EASYTVC_CHUTE_CHANNEL != 0 && !chute_open &&
+            EasyTVC_ChuteShouldOpen(launched, now_ms - launch_ms, state,
+                                    output.flight.drogue_deploy_requested, EASYTVC_CHUTE_BACKUP_MS)) {
+            chute_open = true;
         }
 
-        /* ---- SD logging (10 Hz, never blocks the loop) ---- */
+        write_outputs(pulse_a, pulse_b, chute_open);
+
+        /* ---- SD logging (never blocks the loop) ---- */
+        float tilt[2];
+        EasyTVC_ControllerTilt(&app.attitude.orientation, tilt);
         DataLogger_Poll(&logger);
-        if (tick % LOG_DIVIDER == 0U && logger.initialized) {
+        const uint32_t log_divider = state == EASYTVC_FLIGHT_IDLE ? LOG_DIVIDER_PAD : LOG_DIVIDER_FLIGHT;
+        if (tick % log_divider == 0U && logger.initialized) {
             TelemetryRecord record;
             record.timestamp = now_ms;
-            record.accel_x = clamp_i16(accel_body[0] / 9.80665f * 1000.0f);
-            record.accel_y = clamp_i16(accel_body[1] / 9.80665f * 1000.0f);
-            record.accel_z = clamp_i16(accel_body[2] / 9.80665f * 1000.0f);
-            record.gyro_x = clamp_i16(gyro_body[0] * 572.9578f);
-            record.gyro_y = clamp_i16(gyro_body[1] * 572.9578f);
-            record.gyro_z = clamp_i16(gyro_body[2] * 572.9578f);
-            record.temperature = clamp_i16((float)bme280.temperature);
-            record.pressure = bme280.pressure;
-            record.flags = (uint8_t)(TELEMETRY_FLAG_MARKER |
-                                     (imu_ok ? TELEMETRY_FLAG_IMU_OK : 0U) |
+            for (unsigned axis = 0; axis < 3U; ++axis) {
+                record.accel[axis] = clamp_i16(accel_body[axis] / GRAVITY * 1000.0f);
+                record.gyro[axis] = clamp_i16(gyro_body[axis] * 572.9578f);
+            }
+            record.tilt[0] = clamp_i16(tilt[0] * 5729.578f);
+            record.tilt[1] = clamp_i16(tilt[1] * 5729.578f);
+            record.servo_us[0] = pulse_a;
+            record.servo_us[1] = pulse_b;
+            record.baro_alt_dm = clamp_i16(altitude_m * 10.0f);
+            record.vspeed_cm_s = clamp_i16(app.nav.vertical_speed_m_s * 100.0f);
+            record.session = (uint8_t)logger.session;
+            record.state = (uint8_t)state;
+            record.flags = (uint8_t)((imu_ok ? TELEMETRY_FLAG_IMU_OK : 0U) |
                                      (baro_fresh ? TELEMETRY_FLAG_BARO_OK : 0U) |
                                      (gyro_cal_ok ? TELEMETRY_FLAG_GYRO_CAL_OK : 0U) |
                                      (bmi088.accel_saturated ? TELEMETRY_FLAG_ACCEL_SAT : 0U) |
-                                     (bmi088.gyro_saturated ? TELEMETRY_FLAG_GYRO_SAT : 0U));
+                                     (bmi088.gyro_saturated ? TELEMETRY_FLAG_GYRO_SAT : 0U) |
+                                     (tvc_active ? TELEMETRY_FLAG_TVC_ACTIVE : 0U) |
+                                     (ctrl_fault ? TELEMETRY_FLAG_CTRL_FAULT : 0U) |
+                                     (chute_open ? TELEMETRY_FLAG_CHUTE_OPEN : 0U));
+            record.marker = TELEMETRY_MARKER;
             (void)DataLogger_Log(&logger, &record);
         }
         if (tick % FLUSH_DIVIDER == 0U) {
@@ -393,14 +686,73 @@ int main(void)
 
         /* ---- serial telemetry (queued, dropped if the line is slow) ---- */
         if (tick % TELEMETRY_DIVIDER == 0U) {
+#if EASYTVC_BENCH_MODE
+            /* B,ms,tiltX_cdeg,tiltY_cdeg,pulseA,pulseB,raw_ax_mg,raw_ay_mg,raw_az_mg,body_az_mg */
+            char text[120];
+            TextLine line = {text, 0, sizeof(text)};
+            line_str(&line, "B");
+            line_field(&line, (int32_t)now_ms);
+            line_field(&line, (int32_t)(tilt[0] * 5729.578f));
+            line_field(&line, (int32_t)(tilt[1] * 5729.578f));
+            line_field(&line, pulse_a);
+            line_field(&line, pulse_b);
+            for (unsigned axis = 0; axis < 3U; ++axis) {
+                line_field(&line, (int32_t)(bmi088.accel_m_s2[axis] / GRAVITY * 1000.0f));
+            }
+            line_field(&line, (int32_t)(accel_body[2] / GRAVITY * 1000.0f));
+            line_str(&line, "\n");
+            queue_text(text);
+#else
             queue_text(output.telemetry);
+#endif
         }
+
+        const bool error = !imu_ok || !config_ok || recovery_boot || state == EASYTVC_FLIGHT_FAULT ||
+                           (EASYTVC_REQUIRE_SD && !EASYTVC_BENCH_MODE && !logger.initialized);
         if (tick % STATUS_DIVIDER == 0U) {
-            send_status_line(imu_ok, baro_fresh, gyro_cal_ok);
-            led_state = !led_state;
-            EasyTVC_GPIO_LedSet(0, led_state && imu_ok);
-            EasyTVC_GPIO_LedSet(1, baro_fresh);
-            EasyTVC_GPIO_LedSet(2, logger.initialized && logger.write_errors == 0U);
+            /* S,imu,baro,sd,gyro_cal,records,dropped,write_errors,session,state,armed,recovery,chute */
+            char text[120];
+            TextLine line = {text, 0, sizeof(text)};
+            line_str(&line, "S");
+            line_field(&line, imu_ok);
+            line_field(&line, baro_fresh);
+            line_field(&line, logger.initialized);
+            line_field(&line, gyro_cal_ok);
+            line_field(&line, (int32_t)logger.record_count);
+            line_field(&line, (int32_t)logger.dropped_records);
+            line_field(&line, (int32_t)logger.write_errors);
+            line_field(&line, (int32_t)logger.session);
+            line_field(&line, (int32_t)state);
+            line_field(&line, pad.armed);
+            line_field(&line, recovery_boot);
+            line_field(&line, chute_open);
+            line_str(&line, "\n");
+            queue_text(text);
         }
+
+        /* LEDs: blue = alive, red = do not launch, green = arming progress / armed. */
+        EasyTVC_GPIO_LedSet(0, (now_ms % 1000U) < 500U);
+        EasyTVC_GPIO_LedSet(2, error);
+        bool green;
+        if (EASYTVC_BENCH_MODE) {
+            green = tvc_active;
+        } else if (state == EASYTVC_FLIGHT_ARMED) {
+            green = true;
+        } else if (state == EASYTVC_FLIGHT_IDLE && flight_ready) {
+            green = EasyTVC_PadArmQualifying(&pad) ? (now_ms % 250U) < 125U : (now_ms % 1000U) < 500U;
+        } else {
+            green = false;
+        }
+        EasyTVC_GPIO_LedSet(1, green);
+
+        BuzzPattern pattern = BUZZ_OFF;
+        if (launched && (uint32_t)(now_ms - launch_ms) >= LOCATOR_AFTER_MS) {
+            pattern = BUZZ_LOCATOR;
+        } else if (error && !launched) {
+            pattern = BUZZ_ERROR;
+        } else if (state == EASYTVC_FLIGHT_ARMED) {
+            pattern = BUZZ_ARMED;
+        }
+        EasyTVC_GPIO_BuzzerSet(buzzer_on(pattern, now_ms));
     }
 }
