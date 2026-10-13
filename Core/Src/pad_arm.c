@@ -20,13 +20,26 @@ bool EasyTVC_PadArmStep(EasyTVCPadArm *pad, const EasyTVCPadArmConfig *config,
                         const float gyro_raw[3], uint32_t now_ms, float bias_out[3])
 {
     const float accel_norm = norm3(accel);
+    const float gyro_norm = norm3(gyro);
+    if (fresh && isfinite(accel_norm) && isfinite(gyro_norm)) {
+        const float alpha = 0.05f;   /* 200 Hz -> ~0.1 s */
+        if (!pad->filter_ready) {
+            for (unsigned axis = 0; axis < 3U; ++axis) pad->accel_lp[axis] = accel[axis];
+            pad->gyro_lp = gyro_norm;
+            pad->filter_ready = true;
+        }
+        for (unsigned axis = 0; axis < 3U; ++axis) pad->accel_lp[axis] += alpha * (accel[axis] - pad->accel_lp[axis]);
+        pad->gyro_lp += alpha * (gyro_norm - pad->gyro_lp);
+    }
 
     if (state == EASYTVC_FLIGHT_IDLE) {
         pad->armed = false;
         pad->tip_active = false;
-        const bool upright = isfinite(accel_norm) && accel_norm > 0.92f * GRAVITY &&
-                             accel_norm < 1.08f * GRAVITY && accel[2] > accel_norm * config->cos_arm_tilt;
-        const bool quiet = norm3(gyro) < config->still_gyro_rad_s;
+        const float lp_norm = norm3(pad->accel_lp);
+        const bool upright = pad->filter_ready && lp_norm > 0.92f * GRAVITY && lp_norm < 1.08f * GRAVITY &&
+                             pad->accel_lp[2] > lp_norm * config->cos_arm_tilt;
+        const bool quiet = pad->filter_ready && pad->gyro_lp < config->still_gyro_rad_s &&
+                           gyro_norm < 4.0f * config->still_gyro_rad_s;
         if (!(ready && fresh && upright && quiet)) {
             pad->still_active = false;
             return false;

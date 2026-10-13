@@ -43,14 +43,30 @@ common ground on the board.
 Don't connect anything to pyro channel P2. Its MOSFET gate is on PA13 (SWDIO), which the MCU
 pulls *up* at reset. Pyro outputs are compiled out of this firmware altogether.
 
-## 2. Wiring
+## 2. Wiring (EasyTVC v0.1, matched to the board photos)
 
-- Servo A to header **1**, servo B to header **2**, parachute servo to header **3**. Header 4 is
-  unused and held at 1500 µs. You can change the channels in `vehicle_config.h`.
-- 2S LiPo to the XT30. Plugging in the battery is the power switch.
-- Optional live telemetry: adapter `RX` to board `TX2`, adapter `TX` to board `RX2`, plus GND.
-  Then run `screen /dev/tty.usbserial-XXXX 115200`.
-- Dedicated microSD card in the slot.
+- **Servo headers** are the two 3×2 pin blocks at the bottom edge: **J9 = servos 1 and 2**
+  (left of the XT30) and **J10 = servos 3 and 4** (right). In each column the top pin is the
+  signal, the middle is **5V** and the bottom is **GND**, as printed on the board. Plug the brown
+  or black servo wire onto GND. Default use: servo A → 1, servo B → 2, parachute servo → 3.
+- **Battery:** 2S LiPo into the **XT30** at the bottom. Unplugging it is the power switch.
+- **Telemetry/serial:** the 7-pin white connector on the right side (3.3V, 5V, TX2, RX2, SCL2,
+  SDA2, GND). It's much bigger than the 1 mm Qwiic connector on the back, probably JST-PH
+  (2.0 mm) or JST-XH (2.5 mm) pitch. **Measure it before buying a mating cable.** A USB-UART
+  adapter or a telemetry radio goes here: their TX → **RX2**, their RX → **TX2**, plus GND (and
+  5V to power a radio).
+- **4-pin RX4/TX4 connector** (left, UART4): not used by this firmware.
+- **P1/P2/P3/SW screw terminals** (top): pyro outputs and the vendor's pyro arming switch. Pyro is
+  compiled out, so **leave them all empty**, and especially never use P2.
+- **Qwiic connector** (back) and the unpopulated through-holes: not used.
+- **On USB power alone** the servo rail is fed from your Mac's USB port, which can't supply
+  moving servos. **Always connect the LiPo for anything that moves a servo**, including the
+  bench image's power-up sweep. Plug in USB only to flash, or with the LiPo also connected.
+- **Dedicated microSD card** in the slot on the back.
+
+**Status LED:** at power-up it shows red, green, then blue, one at a time. If instead you see the
+LED mostly lit with one colour missing each step, set `EASYTVC_LED_ACTIVE_LOW` to 0 (Rocket
+setup → "Status LED is active-low"), save, build and flash again.
 
 ## 3. Flash
 
@@ -73,7 +89,7 @@ powered up. That's the in-air safety mode, and a power cycle with the board at r
 The bench image never arms. The gimbal always tries to hold the motor so that it would push the
 rocket back to vertical.
 
-1. **Power-up self test.** A short beep, then servo A sweeps centre → max → min → centre, then
+1. **Power-up self test** (LiPo connected). Red → green → blue on the LED, a short beep, then servo A sweeps centre → max → min → centre, then
    servo B does the same, then the parachute servo opens and closes. Make sure the right servo
    moves at each step. Watch for binding: if the gimbal hits a stop, shrink `MIN_US`/`MAX_US`
    for that servo. If you hear no beep at all, the buzzer is not working; note it.
@@ -125,14 +141,41 @@ are kept. Read the flight with `./scripts/read-sd-data.sh /dev/diskN <session>` 
 It prints the state timeline, the worst tilt during boost, and any controller fault. Logging
 runs at 100 Hz from arming to landing and 10 Hz on the bench or pad.
 
-## 6. Tuning before the first flight
+## 6. Rocket model, gimbal and 3D flight sim (do this before building)
 
-The gains in `vehicle_config.h` (`KP` 1.2, `KD` 0.2 in full-deflection per radian) are starting
-values. The host simulation is stable with them for an assumed 31 rad/s² of control authority:
-E12 thrust, about 0.15 m from gimbal to CG, ±5° of gimbal travel. Your rocket will differ.
-Measure its mass, CG and moment of inertia, then use **EasyTVC Studio**'s simulation with your
-numbers before flying. If the bench tilt test looks twitchy or oscillates, lower `KD` first. If
-it's sluggish, raise `KP`. For the first flight, pick a day with almost no wind.
+**Rocket setup → Mass, thrust & apogee** is a millimetre model of the rocket: body outer diameter,
+tube length, nose-cone length and shape, motor size, how far the motor sticks out, the gimbal
+pivot height, and every part's mass, centre position (mm from the nose tip) and length. Studio
+computes from it, OpenRocket-style:
+
+- CG at liftoff and at burnout (the propellant burns away, so the CG moves forward);
+- pitch moment of inertia;
+- CP by Barrowman's method (finless: only the nose cone lifts at small angles) and the stability
+  margin in calibers (negative = unstable, which is normal for TVC);
+- the pivot-to-CG lever (TVC authority) and the CG-to-CP distance (how hard the air flips it).
+
+A to-scale side view shows the parts, motor, CG, CP and pivot. Weigh each part on a 1 g scale and
+measure its position with a ruler from the nose tip; it's worth it.
+
+**TVC gimbal** shows both servos, horns, pushrods and the two gimbal rings in mm, driven by the
+pulse sliders, the firmware's power-up self-test sweep, a 3D-sim flight, or the live board. Its
+linkage numbers (horn radius, lever radius, servo °/µs and speed, mechanical stop) feed the sim:
+gimbal angle = asin(horn/lever × sin(horn angle)). Measure the real holes with calipers.
+
+**3D flight sim** then flies exactly that rocket with the real flight software in the loop.
+
+What the model found for the default E12 rocket (610 mm, 66 mm tube, 150 mm ogive):
+- **Without nose weight it can't be flown**: CG 401 mm, CP 70 mm (−5 cal), pivot only 164 mm
+  behind the CG. No gains held it; above ~35 m/s the air overpowers the gimbal.
+- **With 80 g of nose weight**, a 10.5 mm horn / 30 mm lever (≈7.7° gimbal) and **KP 8, KI 0.5,
+  KD 0.8, slew 20/s**: CG 325 mm, −3.9 cal, pivot 240 mm behind the CG, 380 g liftoff. It held
+  16/16 random flights (3 m/s wind gusting ~6, 1° misalignment, 2° pad lean) under ~3°, about
+  120 m apogee, 5–6 m/s landing on a 55 cm parachute. These are the new defaults.
+- KD amplifies motor vibration into roughly ±1° of gimbal jitter. If the servos buzz or get hot,
+  lower KD or the D filter cutoff.
+
+The model leaves out servo backlash, airframe flex and wind-tunnel data. A good sim result is
+necessary, not sufficient: do the bench checks and fly the first flight on a calm day.
 
 ## 7. What changed in this pass (review findings)
 

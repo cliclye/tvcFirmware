@@ -472,6 +472,12 @@ int main(void)
         write_outputs(EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US, true);
     }
     if (!recovery_boot) {
+        /* LED self test: red, green, blue, one at a time (checks EASYTVC_LED_ACTIVE_LOW). */
+        for (uint8_t led = 3; led-- > 0;) {
+            EasyTVC_GPIO_LedSet(led, true);
+            STM32_DelayMilliseconds(250U);
+            EasyTVC_GPIO_LedSet(led, false);
+        }
         beep_blocking(100U);
         servo_self_test();
     }
