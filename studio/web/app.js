@@ -1,4 +1,37 @@
 "use strict";
+/* ---- appearance: light / dark / system ---- */
+let paletteCache = null;
+function isDarkTheme() {
+  const t = document.documentElement.dataset.theme;
+  return t === "dark" || (!t && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+/* Colours for canvas drawing, from the CSS theme tokens (cached until the theme changes). */
+function pal() {
+  if (paletteCache) return paletteCache;
+  const css = getComputedStyle(document.documentElement), v = n => css.getPropertyValue(`--${n}`).trim();
+  const dark = isDarkTheme();
+  paletteCache = {grid: v("line-soft"), muted: v("muted"), line: v("line"), line2: dark ? "#45435e" : "#cfcbe0",
+    text: v("text"), text2: v("text-2"), hud: dark ? "rgba(29,28,39,0.9)" : "rgba(255,255,255,0.88)", fill: v("purple-pale"),
+    card: v("card"), canvas: v("canvas-bg"), badLine: dark ? "#7a3a44" : "#e7a9a9", shadow: v("shadow"),
+    sky0: dark ? "#1b1c30" : "#eef0fb", sky1: dark ? "#121118" : "#f9f8f4", purple: v("purple"), green: v("green"),
+    series: [v("purple"), v("green"), v("amber")], dark};
+  return paletteCache;
+}
+function applyTheme(choice) {
+  if (choice === "light" || choice === "dark") document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem("easytvc-theme", choice); } catch (error) { /* private mode */ }
+  document.querySelectorAll("[data-theme-choice]").forEach(b => b.classList.toggle("selected", b.dataset.themeChoice === choice));
+  paletteCache = null;
+  window.dispatchEvent(new Event("easytvc-theme"));
+}
+(() => {
+  let saved = "system";
+  try { saved = localStorage.getItem("easytvc-theme") || "system"; } catch (error) { /* ignore */ }
+  applyTheme(saved);
+  document.querySelectorAll("[data-theme-choice]").forEach(b => b.onclick = () => applyTheme(b.dataset.themeChoice));
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { paletteCache = null; window.dispatchEvent(new Event("easytvc-theme")); });
+})();
 const $ = id => document.getElementById(id);
 const token = location.hash.slice(1) || sessionStorage.getItem("easytvc-session");
 if (token) sessionStorage.setItem("easytvc-session", token);
@@ -121,12 +154,12 @@ function draw(hover = null) {
   const left = 38, top = 13, width = rect.width-50, height = rect.height-38;
   const max = rows.length ? Math.max(5, Math.ceil(Math.max(...rows.flatMap(r => [Math.abs(r[1]), Math.abs(r[2])])) / 5)*5) : 10;
   ctx.font = "10px -apple-system, sans-serif"; ctx.lineWidth = 1;
-  for (let i=0; i<=4; i++) { const y = top+i*height/4; ctx.strokeStyle = "#ebebef"; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(left+width,y); ctx.stroke(); ctx.fillStyle = "#90909b"; ctx.fillText((max-i*max/2).toFixed(0), 4,y+4); }
-  for (let i=0; i<=5; i++) { ctx.fillStyle = "#90909b"; ctx.fillText(`${i*2}s`,left+i*width/5-5,top+height+20); }
-  [1,2].forEach((column,i) => { ctx.strokeStyle = i ? "#288471" : "#7655e8"; ctx.lineWidth = 2; ctx.beginPath(); rows.forEach((r,j) => { const x = left+r[0]/10*width, y = top+height/2-r[column]/max*height/2; if (j) ctx.lineTo(x,y); else ctx.moveTo(x,y); }); ctx.stroke(); });
+  for (let i=0; i<=4; i++) { const y = top+i*height/4; ctx.strokeStyle = pal().grid; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(left+width,y); ctx.stroke(); ctx.fillStyle = pal().muted; ctx.fillText((max-i*max/2).toFixed(0), 4,y+4); }
+  for (let i=0; i<=5; i++) { ctx.fillStyle = pal().muted; ctx.fillText(`${i*2}s`,left+i*width/5-5,top+height+20); }
+  [1,2].forEach((column,i) => { ctx.strokeStyle = i ? pal().green : pal().purple; ctx.lineWidth = 2; ctx.beginPath(); rows.forEach((r,j) => { const x = left+r[0]/10*width, y = top+height/2-r[column]/max*height/2; if (j) ctx.lineTo(x,y); else ctx.moveTo(x,y); }); ctx.stroke(); });
   if (hover !== null && rows.length) {
     const time = Math.min(10,Math.max(0,(hover-left)/width*10)), index = Math.min(rows.length-1,Math.round(time*100)), r = rows[index];
-    ctx.strokeStyle = "#a6a3b4"; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(left+r[0]/10*width,top); ctx.lineTo(left+r[0]/10*width,top+height); ctx.stroke();
+    ctx.strokeStyle = pal().muted; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(left+r[0]/10*width,top); ctx.lineTo(left+r[0]/10*width,top+height); ctx.stroke();
     $("chart-caption").textContent = `${r[0].toFixed(2)} s · X ${r[1].toFixed(2)}° · Y ${r[2].toFixed(2)}° · command ${r[3].toFixed(2)}, ${r[4].toFixed(2)}`;
   }
 }

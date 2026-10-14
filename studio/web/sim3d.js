@@ -153,7 +153,7 @@ function drawSimCharts() {
   charts.forEach(([title, series, names]) => {
     const canvas = el("canvas", {class: "log-chart", role: "img", "aria-label": title});
     wrap.append(el("article", {class: "card chart-card"}, el("div", {class: "card-heading"}, el("h2", {text: title}),
-      el("div", {class: "legend"}, ...names.map((n, i) => el("span", {style: `color:${COLORS[i]}`, text: `● ${n}`})))), canvas));
+      el("div", {class: "legend"}, ...names.map((n, i) => el("span", {style: `color:${pal().series[i]}`, text: `● ${n}`})))), canvas));
     requestAnimationFrame(() => lineChart(canvas, t, series, events));
   });
 }
@@ -176,7 +176,7 @@ function scatter(canvas, runs) {
   const ctx = canvas.getContext("2d"); ctx.scale(k, k);
   const left = 46, top = 10, w = rect.width - 60, h = rect.height - 34;
   const maxW = Math.max(1, ...runs.map(r => r.gust)), maxT = Math.max(10, ...runs.map(r => r.tilt));
-  ctx.strokeStyle = "#ebebef"; ctx.fillStyle = "#90909b"; ctx.font = "10px -apple-system, sans-serif";
+  ctx.strokeStyle = pal().grid; ctx.fillStyle = pal().muted; ctx.font = "10px -apple-system, sans-serif";
   for (let i = 0; i <= 4; i++) { const y = top + i * h / 4; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + w, y); ctx.stroke(); ctx.fillText(`${(maxT - i * maxT / 4).toFixed(0)}°`, 6, y + 3); }
   ctx.fillText("worst boost tilt", left + 4, top + 10); ctx.fillText("gust speed (m/s) →", left + w - 100, top + h + 22);
   for (let i = 0; i <= 4; i++) ctx.fillText((i * maxW / 4).toFixed(1), left + i * w / 4 - 6, top + h + 12);
@@ -208,7 +208,7 @@ function drawScene() {
   if (canvas.width !== Math.round(rect.width * k)) { canvas.width = rect.width * k; canvas.height = rect.height * k; }
   const ctx = canvas.getContext("2d"); ctx.setTransform(k, 0, 0, k, 0, 0);
   const W = rect.width, H = rect.height;
-  const sky = ctx.createLinearGradient(0, 0, 0, H); sky.addColorStop(0, "#eef0fb"); sky.addColorStop(1, "#f9f8f4");
+  const sky = ctx.createLinearGradient(0, 0, 0, H); sky.addColorStop(0, pal().sky0); sky.addColorStop(1, pal().sky1);
   ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
   if (!simResult) return;
 
@@ -230,11 +230,11 @@ function drawScene() {
   const span = Math.max(40, Math.ceil(Math.max(...xs.map(Math.abs), ...ys.map(Math.abs), cam.dist * 0.6) / 10) * 10 + 20);
   const step = span > 200 ? 50 : span > 80 ? 20 : 10;
   for (let g = -span; g <= span; g += step) {
-    line([g, -span, 0], [g, span, 0], g === 0 ? "#cfcbe0" : "#e3e1ea");
-    line([-span, g, 0], [span, g, 0], g === 0 ? "#cfcbe0" : "#e3e1ea");
+    line([g, -span, 0], [g, span, 0], g === 0 ? pal().line2 : pal().line);
+    line([-span, g, 0], [span, g, 0], g === 0 ? pal().line2 : pal().line);
   }
   /* pad and wind arrow */
-  line([0, 0, 0], [0, 0, 1.2], "#272735", 3);
+  line([0, 0, 0], [0, 0, 1.2], pal().text, 3);
   const wd = (sim.wind_dir_deg || 0) * Math.PI / 180, wl = Math.min(span * 0.3, 4 + sim.wind_m_s * 3);
   const w0 = [-span * 0.7, -span * 0.7, 0.1], w1 = add3(w0, [Math.cos(wd), Math.sin(wd), 0], wl);
   line(w0, w1, "#5f9bd4", 2); const tip = project(w1); if (tip) { ctx.fillStyle = "#5f9bd4"; ctx.fillText(`wind ${sim.wind_m_s} m/s`, tip[0] + 4, tip[1]); }
@@ -244,11 +244,11 @@ function drawScene() {
     const a = rows[i - 1], b = rows[i];
     if (b[C.z] <= 0 && a[C.z] <= 0) continue;
     const done = b[0] <= play.t;
-    line([a[C.x], a[C.y], a[C.z]], [b[C.x], b[C.y], b[C.z]], done ? STATE_COLORS[b[C.state]] || "#999" : "#d6d3e3", done ? 2 : 1);
+    line([a[C.x], a[C.y], a[C.z]], [b[C.x], b[C.y], b[C.z]], done ? STATE_COLORS[b[C.state]] || "#999" : pal().line, done ? 2 : 1);
   }
   /* shadow + drop line */
-  line([pos[0], pos[1], 0], pos, "#c9c4dc", 1);
-  const sh = project([pos[0], pos[1], 0]); if (sh) { ctx.fillStyle = "#0002"; ctx.beginPath(); ctx.ellipse(sh[0], sh[1], 6, 3, 0, 0, 2 * Math.PI); ctx.fill(); }
+  line([pos[0], pos[1], 0], pos, pal().line2, 1);
+  const sh = project([pos[0], pos[1], 0]); if (sh) { ctx.fillStyle = pal().shadow; ctx.beginPath(); ctx.ellipse(sh[0], sh[1], 6, 3, 0, 0, 2 * Math.PI); ctx.fill(); }
 
   /* rocket: true geometry from the rocket model (mm), enlarged only when the camera is far away */
   const model = simResult.model, L = model.length_mm / 1000;
@@ -285,20 +285,20 @@ function drawScene() {
     const top = add3(tipP, [0, 0, 1], L * scale * 1.6), rad = (vehicle ? vehicle.chute_diameter_cm / 200 : 0.25) * scale;
     const T = project(top);
     if (T) { const pr = rad / T[2] * F; ctx.fillStyle = "#e9542ccc"; ctx.beginPath(); ctx.ellipse(T[0], T[1], pr, pr * 0.55, 0, Math.PI, 0); ctx.fill();
-      const Pp = project(tipP); if (Pp) { ctx.strokeStyle = "#88889a"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(T[0] - pr, T[1]); ctx.lineTo(Pp[0], Pp[1]); ctx.lineTo(T[0] + pr, T[1]); ctx.stroke(); } }
+      const Pp = project(tipP); if (Pp) { ctx.strokeStyle = pal().muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(T[0] - pr, T[1]); ctx.lineTo(Pp[0], Pp[1]); ctx.lineTo(T[0] + pr, T[1]); ctx.stroke(); } }
   }
   /* metric scale bar at the rocket's distance */
   const here = project(pos);
   if (here) { const px = F / here[2] * scale; const bar = px > 40 ? 0.1 : px > 4 ? 1 : 10;
-    ctx.strokeStyle = "#555"; ctx.fillStyle = "#555"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 30 - bar * px, H - 26); ctx.lineTo(W - 30, H - 26); ctx.stroke();
+    ctx.strokeStyle = pal().text2; ctx.fillStyle = pal().text2; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 30 - bar * px, H - 26); ctx.lineTo(W - 30, H - 26); ctx.stroke();
     ctx.font = "10px -apple-system, sans-serif"; ctx.fillText(bar < 1 ? "10 cm" : `${bar} m`, W - 30 - bar * px, H - 32); }
 
   /* HUD */
   const ig = simResult.ignition_s, st = SIM_STATES[row[C.state]] || "?";
-  ctx.fillStyle = "#ffffffd9"; ctx.fillRect(12, 12, 235, 132); ctx.strokeStyle = "#e3e1ea"; ctx.strokeRect(12, 12, 235, 132);
-  ctx.fillStyle = STATE_COLORS[row[C.state]] || "#333"; ctx.font = "600 15px -apple-system, sans-serif";
+  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, 235, 132); ctx.strokeStyle = pal().line; ctx.strokeRect(12, 12, 235, 132);
+  ctx.fillStyle = STATE_COLORS[row[C.state]] || pal().text; ctx.font = "600 15px -apple-system, sans-serif";
   ctx.fillText(row[C.chute] && st !== "LANDED" ? `${st} · CHUTE` : st, 24, 36);
-  ctx.fillStyle = "#272735"; ctx.font = "12px -apple-system, sans-serif";
+  ctx.fillStyle = pal().text; ctx.font = "12px -apple-system, sans-serif";
   const tt = row[0] - ig;
   [[`T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(2)} s`, `${row[C.armed] ? "armed" : "not armed"}`],
    [`alt ${row[C.z].toFixed(1)} m`, `speed ${row[C.speed].toFixed(1)} m/s`],
@@ -306,7 +306,7 @@ function drawScene() {
    [`gimbal A ${row[C.gimbal_a].toFixed(2)}°`, `B ${row[C.gimbal_b].toFixed(2)}°`],
    [`thrust ${row[C.thrust].toFixed(1)} N`, row[C.tvc] ? "TVC active" : "TVC off"]]
     .forEach(([a, b], i) => { ctx.fillText(a, 24, 58 + i * 18); ctx.fillText(b, 140, 58 + i * 18); });
-  ctx.fillStyle = "#90909b"; ctx.font = "10px -apple-system, sans-serif";
+  ctx.fillStyle = pal().muted; ctx.font = "10px -apple-system, sans-serif";
   ctx.fillText(`drag to orbit · scroll to zoom · rocket ${scale > 1.05 ? `enlarged ${scale.toFixed(0)}×` : "true scale"} · motor gimbal shown ×4`, 12, H - 10);
 
 
