@@ -28,6 +28,8 @@
  * green, blue one at a time. If instead you see the LED mostly lit with one colour missing each
  * step, change this to 0. */
 #define EASYTVC_LED_ACTIVE_LOW 1
+/* Status LED brightness, 10..100 % in steps of 10 (software PWM at 100 Hz). */
+#define EASYTVC_LED_BRIGHTNESS_PCT 10
 
 /* ---- TVC servos -----------------------------------------------------------------------------
  * Servo A tilts the motor about body X, servo B about body Y. Channels are the board's servo

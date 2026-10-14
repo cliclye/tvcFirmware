@@ -1,5 +1,6 @@
 #include "stm32f4xx.h"
 #include "board_pins.h"
+#include "gpio_init.h"
 
 /* Cortex-M system registers */
 #define SCB_CPACR   (*(volatile uint32_t *)0xE000ED88UL)
@@ -16,6 +17,7 @@ static volatile uint32_t system_millis;
 void SysTick_Handler(void)
 {
     system_millis++;
+    EasyTVC_GPIO_LedTick(system_millis);
 }
 
 uint32_t STM32_Millis(void)
