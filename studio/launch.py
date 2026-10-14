@@ -55,7 +55,7 @@ def tool_env():
 
 # (macro suffix, kind, low, high)   kinds: int, uint (U suffix), float (f suffix), axis
 CONFIG_FIELDS = (
-    ("NOSE_AXIS", "axis", None, None), ("LED_ACTIVE_LOW", "int", 0, 1),
+    ("NOSE_AXIS", "axis", None, None), ("LED_ACTIVE_LOW", "int", 0, 1), ("LED_BRIGHTNESS_PCT", "int", 10, 100),
     ("SERVO_A_CHANNEL", "int", 1, 4), ("SERVO_A_MIN_US", "int", 1000, 2000),
     ("SERVO_A_CENTER_US", "int", 1000, 2000), ("SERVO_A_MAX_US", "int", 1000, 2000),
     ("SERVO_A_DIRECTION", "int", -1, 1),
@@ -149,6 +149,8 @@ def validate_config(values: dict) -> dict:
         raise ValueError("The parachute servo cannot share a channel with a TVC servo.")
     if clean["SERVO_RATE_HZ"] not in SERVO_RATES:
         raise ValueError("Servo rate must be one of " + ", ".join(map(str, SERVO_RATES)) + " Hz.")
+    if clean["LED_BRIGHTNESS_PCT"] % 10:
+        raise ValueError("LED brightness must be a multiple of 10 %.")
     if clean["DISARM_TILT_DEG"] <= clean["ARM_MAX_TILT_DEG"]:
         raise ValueError("Disarm tilt must be larger than the arming tilt.")
     return clean

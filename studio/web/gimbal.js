@@ -7,7 +7,7 @@
  * simResult, simCol, play and the vector helpers from the other scripts. */
 
 const SERVO_BOX = [22.8, 12.2, 22.5];   /* MG90D body, mm (without the mounting tabs) */
-let gim = {source: "manual", pulse: [1500, 1500], sweep: null, yaw: -0.65, pitch: 0.42, dist: 230, liveTimer: null};
+let gim = {source: "sim", pulse: [1500, 1500], sweep: null, yaw: -0.65, pitch: 0.42, dist: 230, liveTimer: null};
 
 function gimbalGeom() {
   const g = vehicle.gimbal, mo = vehicle.motor, b = vehicle.body;
@@ -41,7 +41,7 @@ function renderGimbalInputs() {
   ["A", "B"].forEach((s, i) => {
     const slider = el("input", {type: "range", min: cfg[`SERVO_${s}_MIN_US`], max: cfg[`SERVO_${s}_MAX_US`], step: 1, "aria-label": `Servo ${s} pulse`});
     slider.value = gim.pulse[i];
-    slider.oninput = () => { gim.source = "manual"; $("gim-source").value = "manual"; gim.sweep = null; gim.pulse[i] = Number(slider.value); };
+    slider.oninput = () => { setGimbalSource("manual"); gim.sweep = null; gim.pulse[i] = Number(slider.value); };
     sliders.append(el("label", {class: "field"}, el("span", {text: `Servo ${s} · header ${cfg[`SERVO_${s}_CHANNEL`]} · ${cfg[`SERVO_${s}_MIN_US`]}–${cfg[`SERVO_${s}_MAX_US`]} µs`}), slider));
   });
   renderGimbalTable();
@@ -63,14 +63,16 @@ function renderGimbalTable() {
 }
 
 /* ------------------------------------------------------------------ sources */
-$("gim-source").onchange = () => {
-  gim.source = $("gim-source").value; gim.sweep = null;
-  if (gim.source === "sim" && !simResult) notice("Run a flight in the 3D flight sim first.");
-  if (gim.source === "live") pollGimbalLive();
-};
+function setGimbalSource(source) {
+  gim.source = source; $("gim-source").value = source;
+  $("gim-manual").hidden = source !== "manual";
+  if (source !== "sim") play.playing = false;   /* the flight clock only drives "flight playback" */
+  if (source === "live") pollGimbalLive();
+}
+$("gim-source").onchange = () => { gim.sweep = null; setGimbalSource($("gim-source").value); };
 $("gim-sweep").onclick = () => {
   /* the firmware's power-up self test: A centre->max->min->centre, then B, 300 ms each step */
-  gim.source = "manual"; $("gim-source").value = "manual";
+  setGimbalSource("manual");
   const steps = [];
   for (const [i, s] of [[0, "A"], [1, "B"]])
     for (const k of ["CENTER", "MAX", "MIN", "CENTER"]) steps.push([i, cfg[`SERVO_${s}_${k}_US`]]);
@@ -79,12 +81,15 @@ $("gim-sweep").onclick = () => {
 $("gim-center").onclick = () => { gim.sweep = null; gim.pulse = [cfg.SERVO_A_CENTER_US, cfg.SERVO_B_CENTER_US]; renderGimbalInputs(); };
 async function pollGimbalLive() {
   clearTimeout(gim.liveTimer);
-  if (gim.source !== "live" || $("gimbal").hidden) return;
+  if (gim.source !== "live" || $("sim3d").hidden) return;
   try { liveStatus = await api("monitor/status", {}); } catch (error) { notice(error.message); return; }
   gim.liveTimer = setTimeout(pollGimbalLive, 150);
 }
 function currentState(now) {
   /* returns per servo {pulse, horn, gimbal, atStop}, plus a label */
+  if (gim.source === "sim" && !simResult) {
+    return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Flight playback: press Play to fly"};
+  }
   if (gim.source === "sim" && simResult) {
     const row = rowAt(play.t);
     const make = (i, s) => { const info = servoInfo(i, row[simCol[`pulse_${s}`]]);
@@ -109,7 +114,7 @@ function currentState(now) {
 const rotX = (v, a) => [v[0], v[1] * Math.cos(a) - v[2] * Math.sin(a), v[1] * Math.sin(a) + v[2] * Math.cos(a)];
 const rotY = (v, a) => [v[0] * Math.cos(a) + v[2] * Math.sin(a), v[1], -v[0] * Math.sin(a) + v[2] * Math.cos(a)];
 function drawGimbal(now) {
-  const canvas = $("gim-canvas"); if (!canvas || $("gimbal").hidden || !vehicle || !cfg) return;
+  const canvas = $("gim-canvas"); if (!canvas || $("sim3d").hidden || !vehicle || !cfg) return;
   const rect = canvas.getBoundingClientRect(); if (!rect.width) return;
   const k = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(rect.width * k)) { canvas.width = rect.width * k; canvas.height = rect.height * k; }
@@ -199,36 +204,9 @@ function drawGimbal(now) {
   if (G.lever <= G.motorR + 12) { ctx.fillStyle = "#c0392b"; ctx.fillText(`Lever ${G.lever} mm is inside the outer ring (≈${(G.motorR + 12).toFixed(0)} mm): make it longer`, 12, H - 40); }
 }
 
-/* ------------------------------------------------------------------ loop, camera, start-up */
-function gimbalTick(now) {
-  if (!$("gimbal").hidden && gim.source === "sim" && simResult && play.playing && $("sim3d").hidden) {
-    const rows = simResult.rows, end = rows[rows.length - 1][0];
-    play.t = Math.min(end, play.t + (now - (gim.last || now)) / 1000 * play.speed);
-    if (play.t >= end) play.playing = false;
-  }
-  gim.last = now;
-  if (simResult) { $("gim-slider").min = simResult.rows[0][0]; $("gim-slider").max = simResult.rows[simResult.rows.length - 1][0]; $("gim-slider").value = play.t; }
-  if (!$("gim-play").disabled) $("gim-play").textContent = play.playing && gim.source === "sim" ? "Pause" : "Play flight";
-  drawGimbal(now);
-  requestAnimationFrame(gimbalTick);
-}
-/* The button must do what its label says. Playback is shared with the 3D sim page, so it can
- * already be running while this page shows "Play flight" (gimbal on Manual): then a toggle
- * would have paused it and the click looked dead. */
-action("gim-play", async () => {
-  const showingPause = play.playing && gim.source === "sim";
-  gim.source = "sim"; $("gim-source").value = "sim"; gim.sweep = null;
-  if (showingPause) { play.playing = false; return; }
-  if (!simResult) {
-    $("gim-play").disabled = true; $("gim-play").textContent = "Simulating…";
-    try { await runSimFlight(); } finally { $("gim-play").disabled = false; }
-  }
-  const rows = simResult.rows, end = rows[rows.length - 1][0];
-  if (play.t >= end - 0.05 || play.t < simResult.ignition_s - 1) play.t = simResult.ignition_s - 0.5;
-  gim.last = performance.now();
-  play.playing = true;
-});
-$("gim-slider").oninput = () => { if (!simResult) return; gim.source = "sim"; $("gim-source").value = "sim"; play.t = Number($("gim-slider").value); play.playing = false; };
+/* ------------------------------------------------------------------ camera, start-up
+ * Drawn from the 3D sim page's animation loop (one clock for both views). */
+window.drawGimbal = drawGimbal;
 (() => {
   const canvas = $("gim-canvas"); let drag = null;
   canvas.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY, gim.yaw, gim.pitch]; canvas.setPointerCapture(e.pointerId); });
@@ -240,7 +218,7 @@ $("gim-slider").oninput = () => { if (!simResult) return; gim.source = "sim"; $(
 const previousGimbalHook = window.onTabShown;
 window.onTabShown = id => {
   if (previousGimbalHook) previousGimbalHook(id);
-  if (id === "gimbal") { renderGimbalInputs(); if (gim.source === "live") pollGimbalLive(); }
+  if (id === "sim3d") { renderGimbalInputs(); if (gim.source === "live") pollGimbalLive(); }
 };
 (async () => {
   await window.studioReady;
@@ -249,5 +227,4 @@ window.onTabShown = id => {
   if (!cfg || !vehicle) return;
   gim.pulse = [cfg.SERVO_A_CENTER_US, cfg.SERVO_B_CENTER_US];
   renderGimbalInputs();
-  requestAnimationFrame(gimbalTick);
 })();

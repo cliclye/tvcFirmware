@@ -17,13 +17,13 @@
       <button class="nav-item selected" data-tab="rocket">⚙ <span>Rocket setup</span></button>
       <button class="nav-item" data-tab="tune">⌁ <span>Tuning lab</span></button>
       <button class="nav-item" data-tab="sim3d">◭ <span>3D flight sim</span></button>
-      <button class="nav-item" data-tab="gimbal">⟲ <span>TVC gimbal</span></button>
       <button class="nav-item" data-tab="flash">⇩ <span>Build &amp; flash</span></button>
       <button class="nav-item" data-tab="live">◉ <span>Live board</span></button>
       <button class="nav-item" data-tab="checklist">✓ <span>Launch checklist</span></button>
       <button class="nav-item" data-tab="logs">≋ <span>Flight logs</span></button>
       <button class="nav-item" data-tab="guide">⊞ <span>Guide</span></button>
     </nav>
+    <button id="install-board" class="primary install-button">⇩ Install on board</button>
     <div class="sidebar-go" id="sidebar-go"><span class="go-light"></span><div><strong>NO-GO</strong><p>Open the launch checklist.</p></div></div>
     <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Nothing leaves this computer.</p></div>
     <button id="quit" class="quiet">Quit Studio ↗</button>
@@ -34,7 +34,7 @@
 
     <section id="rocket" class="tab">
       <div class="page-title"><div><h1>Your rocket.</h1><p>Everything the firmware needs to know, written straight into <code>Core/Inc/vehicle_config.h</code>.</p></div>
-        <div class="title-actions"><span id="rocket-dirty" class="chip" hidden>Unsaved changes</span><button id="rocket-revert" class="quiet">Revert</button><button id="rocket-save" class="primary">Save to firmware <span>↗</span></button></div></div>
+        <div class="title-actions"><span id="rocket-dirty" class="chip" hidden>Unsaved changes</span><button id="rocket-revert" class="quiet">Revert</button><button id="rocket-save">Save</button><button id="rocket-install" class="primary">Save &amp; install on board <span>↗</span></button></div></div>
       <div id="rocket-banner" class="banner"><strong>Loading</strong><span>Reading vehicle_config.h…</span></div>
       <div class="workspace-grid">
         <div class="controls">
@@ -72,7 +72,7 @@
     </section>
     <section id="tune" class="tab" hidden>
       <div class="page-title"><div><h1>Find your balance.</h1><p>Tune two gimbal axes. Explore disturbances. Keep the limits in view.</p></div><button id="run" class="primary">Run simulation <span>↗</span></button></div>
-      <div class="banner"><strong>Model, not flight evidence</strong><span>Gains and servo limits here start from your rocket setup. When a response looks right, copy it back with <em>Use in rocket setup</em>, then save and rebuild.</span><button id="tune-to-rocket" class="primary small">Use in rocket setup ↗</button></div>
+      <div class="banner"><strong>Model, not flight evidence</strong><span>Gains and servo limits here start from your rocket setup. When a response looks right, copy it back with <em>Use in rocket setup</em>, then save and rebuild.</span><button id="tune-to-rocket" class="small">Use in rocket setup</button><button id="tune-install" class="primary small">Install this tune on board ↗</button></div>
       <div class="profile-bar"><label>PROFILE <input id="profile-name" maxlength="80" aria-label="Profile name"></label><div><button id="import">Import</button><button id="export">Save profile ↓</button><button id="reset" class="quiet">Reset</button></div><input id="file" type="file" accept="application/json,.json" hidden></div>
       <div class="workspace-grid">
         <div class="controls">
@@ -88,19 +88,36 @@
     </section>
 
     <section id="sim3d" class="tab" hidden>
-      <div class="page-title"><div><h1>Fly it first.</h1><p>A full 3D flight of your rocket as currently set up in Rocket setup, unsaved changes included. The <strong>real flight software</strong> runs in the loop: pad arming, attitude estimate, launch detection, TVC and parachute.</p></div>
+      <div class="page-title"><div><h1>Fly it first.</h1><p>A full 3D flight of your rocket as currently set up in Rocket setup, unsaved changes included, with the TVC gimbal alongside. The <strong>real flight software</strong> runs in the loop: pad arming, attitude estimate, launch detection, TVC and parachute.</p></div>
         <div class="title-actions"><button id="sim-batch">40 random flights</button><button id="sim-run" class="primary">Run flight ↗</button></div></div>
       <div class="sim-grid">
-        <article class="card sim-inputs-card"><div class="card-heading"><div><span class="eyebrow">MODEL</span><h2>Vehicle &amp; conditions</h2></div><button id="sim-reset" class="quiet small">Defaults</button></div>
-          <p class="help">The rocket's shape, mass, CG, CP and inertia come from <strong>Rocket setup</strong> (parts in mm), the servo linkage from <strong>TVC gimbal</strong>. Here you only set the flight conditions.</p>
-          <div id="sim-inputs"></div></article>
+        <div class="controls">
+          <article class="card sim-inputs-card"><div class="card-heading"><div><span class="eyebrow">CONDITIONS</span><h2>Flight conditions</h2></div><button id="sim-reset" class="quiet small">Defaults</button></div>
+            <p class="help">The rocket's shape, mass, CG, CP and inertia come from <strong>Rocket setup</strong> (parts in mm). Here you set the flight conditions and the TVC linkage.</p>
+            <div id="sim-inputs"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">TVC LINKAGE</span><h2>Servo &amp; gimbal geometry</h2></div><span class="chip">mm</span></div>
+            <div id="gim-geometry" class="field-grid"></div>
+            <p id="gim-note" class="help"></p>
+            <h3 class="sub">Travel at your endpoints</h3><table id="gim-table" class="gim-table"></table></article>
+        </div>
         <div class="sim-main">
-          <article class="card sim-view"><canvas id="sim-canvas" aria-label="3D flight view" role="img"></canvas>
-            <div id="sim-empty" class="sim-empty">Press <strong>Run flight</strong> to fly your configured rocket.</div>
-            <div class="sim-controls"><button id="sim-play" class="small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>
-              <select id="sim-speed" aria-label="Playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
-              <label class="inline"><input id="sim-follow" type="checkbox" checked> follow</label>
-              <label class="inline"><input id="sim-true-scale" type="checkbox"> true scale</label></div></article>
+          <article class="card sim-view">
+            <div class="view-toolbar">
+              <div class="segmented" role="group" aria-label="View"><button data-view="rocket">Rocket</button><button data-view="split" class="selected">Split</button><button data-view="gimbal">TVC gimbal</button></div>
+              <label class="inline">Gimbal <select id="gim-source" aria-label="What drives the gimbal view"><option value="sim">flight playback</option><option value="manual">manual &amp; self test</option><option value="live">live board</option></select></label>
+              <label class="inline"><input id="sim-follow" type="checkbox" checked> follow rocket</label>
+              <label class="inline"><input id="sim-true-scale" type="checkbox"> true scale</label>
+            </div>
+            <div id="view-panes" class="view-panes split">
+              <div class="pane pane-rocket"><canvas id="sim-canvas" aria-label="3D flight view" role="img"></canvas>
+                <div id="sim-empty" class="sim-empty">Press <strong>Play</strong> or <strong>Run flight</strong> to fly your configured rocket.</div></div>
+              <div class="pane pane-gimbal"><canvas id="gim-canvas" class="gim-canvas" aria-label="3D view of the TVC gimbal and servos" role="img"></canvas></div>
+            </div>
+            <div class="sim-controls"><button id="sim-play" class="primary small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>
+              <select id="sim-speed" aria-label="Playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></article>
+          <article id="gim-manual" class="card" hidden><div class="card-heading"><div><span class="eyebrow">MANUAL</span><h2>Pulse sliders</h2></div><div><button id="gim-sweep" class="small">Power-up self test</button> <button id="gim-center" class="quiet small">Centre</button></div></div>
+            <p class="help">Range is each servo's MIN–MAX from Rocket setup: what the same pulse does on the bench.</p>
+            <div id="gim-sliders" class="gim-sliders"></div></article>
           <div id="sim-model" class="metrics wide"></div>
           <div id="sim-results" hidden>
             <div class="metrics wide" id="sim-metrics"></div>
@@ -108,28 +125,6 @@
             <div id="sim-charts" class="sim-charts"></div>
           </div>
           <article id="sim-batch-result" class="card" hidden></article>
-        </div>
-      </div>
-    </section>
-
-    <section id="gimbal" class="tab" hidden>
-      <div class="page-title"><div><h1>The gimbal, close up.</h1><p>Both servos, their horns and pushrods, and the two gimbal rings around the motor, drawn to scale in millimetres from your settings.</p></div>
-        <div class="title-actions"><select id="gim-source" aria-label="What drives the servos"><option value="manual">Manual / self test</option><option value="sim">3D sim flight</option><option value="live">Live board (bench image)</option></select>
-          <button id="gim-sweep">Power-up self test</button><button id="gim-center" class="quiet">Centre</button></div></div>
-      <div class="sim-grid">
-        <div class="controls">
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">LINKAGE</span><h2>Servo &amp; gimbal geometry</h2></div><span class="chip">feeds the 3D sim</span></div>
-            <div id="gim-geometry" class="field-grid"></div>
-            <p id="gim-note" class="help"></p></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">MANUAL</span><h2>Pulse sliders</h2></div></div>
-            <p class="help">Range is each servo's MIN–MAX from Rocket setup. Moving a slider shows what the same pulse does on the bench.</p>
-            <div id="gim-sliders" class="gim-sliders"></div></article>
-          <article class="card"><h2>Travel at your endpoints</h2><table id="gim-table" class="gim-table"></table></article>
-        </div>
-        <div class="sim-main">
-          <article class="card sim-view"><canvas id="gim-canvas" class="gim-canvas" aria-label="3D view of the TVC gimbal and servos" role="img"></canvas>
-            <div class="sim-controls"><button id="gim-play" class="small">Play flight</button><input id="gim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Flight time"></div></article>
-          <p class="help">Servo A tilts the outer ring about body X; servo B tilts the inner ring (and motor) about body Y. The motor's thrust direction is the same one the flight simulator uses, so what moves here is what flew there. On the real bench, lean the nose and check that the nozzle swings to the opposite side.</p>
         </div>
       </div>
     </section>

@@ -203,7 +203,7 @@ const unit3 = a => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n
 
 function drawScene() {
   const canvas = $("sim-canvas"), rect = canvas.getBoundingClientRect();
-  if (!rect.width || $("sim3d").hidden) return;
+  if (!rect.width || $("sim3d").hidden) return;   /* hidden tab or gimbal-only view */
   const k = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(rect.width * k)) { canvas.width = rect.width * k; canvas.height = rect.height * k; }
   const ctx = canvas.getContext("2d"); ctx.setTransform(k, 0, 0, k, 0, 0);
@@ -309,28 +309,51 @@ function drawScene() {
   ctx.fillStyle = "#90909b"; ctx.font = "10px -apple-system, sans-serif";
   ctx.fillText(`drag to orbit · scroll to zoom · rocket ${scale > 1.05 ? `enlarged ${scale.toFixed(0)}×` : "true scale"} · motor gimbal shown ×4`, 12, H - 10);
 
-  $("sim-slider").value = play.t;
-  $("sim-time").textContent = `T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(1)} s`;
+
 }
+/* ---- one playback clock for both views ----
+ * The step is clamped: after the window was hidden or in the background, requestAnimationFrame
+ * resumes with a huge gap, which used to jump straight to the end of the flight and stop, so the
+ * next Play click looked like it did nothing. */
+function playbackEnd() { return simResult ? simResult.rows[simResult.rows.length - 1][0] : 0; }
+function playbackStart() { return simResult ? Math.max(simResult.rows[0][0], simResult.ignition_s - 1.5) : 0; }
 function tick(now) {
-  if (simResult && play.playing && !$("sim3d").hidden) {
-    const rows = simResult.rows, end = rows[rows.length - 1][0];
-    play.t = Math.min(end, play.t + (now - play.last) / 1000 * play.speed);
-    if (play.t >= end) play.playing = false;
-  }
-  $("sim-play").textContent = play.playing ? "Pause" : "Play";
+  const dt = Math.max(0, Math.min(0.1, (now - (play.last || now)) / 1000));
   play.last = now;
+  if (simResult && play.playing && !$("sim3d").hidden) {
+    play.t = Math.min(playbackEnd(), play.t + dt * play.speed);
+    if (play.t >= playbackEnd()) play.playing = false;
+  }
+  if (!$("sim-play").disabled) $("sim-play").textContent = play.playing ? "Pause" : play.t >= playbackEnd() - 0.05 && simResult ? "Replay" : "Play";
+  if (simResult) {
+    const slider = $("sim-slider"), tt = play.t - simResult.ignition_s;
+    slider.min = simResult.rows[0][0]; slider.max = playbackEnd();
+    if (document.activeElement !== slider) slider.value = play.t;
+    $("sim-time").textContent = `T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(1)} s`;
+  }
   drawScene();
+  if (window.drawGimbal) window.drawGimbal(now);
   requestAnimationFrame(tick);
 }
-$("sim-play").onclick = () => {
-  if (!simResult) return;
-  const rows = simResult.rows;
-  if (!play.playing && play.t >= rows[rows.length - 1][0]) play.t = Math.max(rows[0][0], simResult.ignition_s - 1.5);
-  play.playing = !play.playing; $("sim-play").textContent = play.playing ? "Pause" : "Play";
-};
+action("sim-play", async () => {
+  if (play.playing) { play.playing = false; return; }
+  if (!simResult) {
+    $("sim-play").disabled = true; $("sim-play").textContent = "Simulating…";
+    try { await runSimFlight(); } finally { $("sim-play").disabled = false; }
+  }
+  if (play.t >= playbackEnd() - 0.05 || play.t < simResult.rows[0][0]) play.t = playbackStart();
+  if ($("gim-source").value !== "sim") { $("gim-source").value = "sim"; $("gim-source").dispatchEvent(new Event("change")); }
+  play.last = performance.now();
+  play.playing = true;
+});
 $("sim-speed").onchange = () => { play.speed = Number($("sim-speed").value); };
-$("sim-slider").oninput = () => { play.t = Number($("sim-slider").value); play.playing = false; $("sim-play").textContent = "Play"; };
+$("sim-slider").oninput = () => { if (!simResult) return; play.t = Number($("sim-slider").value); play.playing = false; };
+document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {
+  document.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("selected", b === button));
+  $("view-panes").className = `view-panes ${button.dataset.view}`;
+  try { localStorage.setItem("easytvc-sim-view", button.dataset.view); } catch (error) { /* private mode */ }
+});
+try { const saved = localStorage.getItem("easytvc-sim-view"); if (saved) document.querySelector(`[data-view="${saved}"]`)?.click(); } catch (error) { /* ignore */ }
 $("sim-follow").onchange = () => { cam.follow = $("sim-follow").checked; if (cam.follow) cam.dist = Math.min(cam.dist, 3); };
 $("sim-true-scale").onchange = () => { cam.trueScale = $("sim-true-scale").checked; };
 (() => {

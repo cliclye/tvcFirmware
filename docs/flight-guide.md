@@ -157,8 +157,8 @@ computes from it, OpenRocket-style:
 A to-scale side view shows the parts, motor, CG, CP and pivot. Weigh each part on a 1 g scale and
 measure its position with a ruler from the nose tip; it's worth it.
 
-**TVC gimbal** shows both servos, horns, pushrods and the two gimbal rings in mm, driven by the
-pulse sliders, the firmware's power-up self-test sweep, a 3D-sim flight, or the live board. Its
+The **TVC gimbal view** inside the 3D flight sim (Rocket / Split / TVC gimbal buttons) shows both servos, horns, pushrods and the two gimbal rings in mm, driven by the
+pulse sliders, the firmware's power-up self-test sweep, the flight playback (same timeline as the rocket), or the live board. Its
 linkage numbers (horn radius, lever radius, servo °/µs and speed, mechanical stop) feed the sim:
 gimbal angle = asin(horn/lever × sin(horn angle)). Measure the real holes with calipers.
 

@@ -67,3 +67,21 @@ pre.log{background:#1f1d2b;color:#d9d6e8;font-size:10px;line-height:1.5;padding:
 .gim-table{width:100%;border-collapse:collapse;font-size:11px;margin-top:12px}.gim-table th{text-align:left;color:var(--muted);font-weight:600;padding:6px 4px;border-bottom:1px solid var(--line)}
 .gim-table td{padding:8px 4px;border-bottom:1px solid #f2f2f4;font-variant-numeric:tabular-nums}.gim-table td.bad{color:#a33;font-weight:600}
 #gimbal .controls{grid-template-columns:1fr}
+
+/* ---- install on board ---- */
+.install-button{margin-top:22px;width:100%}.led-brightness{margin-top:14px}.led-brightness input{accent-color:var(--purple)}
+.image-choice{display:grid;gap:10px}.choice{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer}
+.choice p{margin:4px 0 0;font-size:11px;color:var(--muted);line-height:1.5}.choice input{margin-top:3px;accent-color:var(--purple)}
+.install-steps{list-style:none;padding:0;margin:8px 0 14px;display:grid;gap:10px}.install-steps li{display:flex;gap:10px;align-items:center;font-size:13px}
+.install-steps li::before{content:"○";width:18px;text-align:center;color:#b9b6c6}.install-steps li.running::before{content:"◌";color:var(--purple);animation:spin 1s linear infinite}
+.install-steps li.done::before{content:"✓";color:var(--green);font-weight:700}.install-steps li.failed::before{content:"✕";color:#c0392b;font-weight:700}
+.install-steps li.pending{color:var(--muted)}@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---- combined 3D view ---- */
+.view-toolbar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.segmented{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.segmented button{border:0;border-radius:0;padding:7px 12px;font-size:12px}
+.segmented button+button{border-left:1px solid var(--line)}.segmented button.selected{background:var(--purple);color:white}
+.view-panes{display:grid;grid-template-columns:1fr}.view-panes.split{grid-template-columns:1fr 1fr}.view-panes.split .pane+.pane{border-left:1px solid var(--line)}
+.view-panes.rocket .pane-gimbal,.view-panes.gimbal .pane-rocket{display:none}.pane{position:relative;min-width:0}
+.pane canvas{height:540px}.view-panes .gim-canvas{height:540px}
+@media(max-width:1150px){.view-panes.split{grid-template-columns:1fr}.view-panes.split .pane+.pane{border-left:0;border-top:1px solid var(--line)}.pane canvas{height:420px}}
