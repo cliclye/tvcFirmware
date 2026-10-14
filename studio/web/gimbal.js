@@ -150,8 +150,8 @@ function drawGimbal(now) {
   /* motor, inner ring (both axes), outer ring (servo A only) */
   cylinder(G.motorR, G.motorBottom, G.motorTop, 20, [125, 125, 138, 0.45], inner);   /* see-through so both linkages stay visible */
   cylinder(G.motorR * 0.55, G.motorBottom - 6, G.motorBottom, 14, [70, 70, 80], inner);
-  ring(G.motorR + 3, 4, [232, 120, 52], inner);
-  ring(G.motorR + 10, 4, [106, 76, 229], outer);
+  ring(G.motorR + 3, 4, pal().term ? [255, 59, 48] : [232, 120, 52], inner);
+  ring(G.motorR + 10, 4, pal().term ? [215, 215, 215] : [106, 76, 229], outer);
   /* pivot pins: outer ring on the airframe along X, inner ring on the outer ring along Y */
   seg([-(G.motorR + 18), 0, 0], [G.motorR + 18, 0, 0], pal().text, 3);
   seg(outer([0, -(G.motorR + 12), 0]), outer([0, G.motorR + 12, 0]), pal().text, 3);
@@ -173,7 +173,7 @@ function drawGimbal(now) {
     const label = P(add3(boxCenter, [0, 0, -SERVO_BOX[2] / 2 - 6]));
     return {label, name: `Servo ${["A", "B"][i]}`};
   };
-  const labels = [servo(0, sa, "y", outer, [70, 90, 160]), servo(1, sb, "x", inner, [60, 140, 110])];
+  const labels = [servo(0, sa, "y", outer, pal().term ? [70, 70, 74] : [70, 90, 160]), servo(1, sb, "x", inner, pal().term ? [110, 110, 116] : [60, 140, 110])];
 
   faces.sort((a, b) => b.depth - a.depth);
   const all = [...faces.map(x => ({kind: "f", ...x})), ...lines.map(x => ({kind: "l", ...x}))].sort((a, b) => b.depth - a.depth);
@@ -182,19 +182,20 @@ function drawGimbal(now) {
       ctx.beginPath(); ctx.moveTo(it.pp[0][0], it.pp[0][1]); it.pp.slice(1).forEach(p => ctx.lineTo(p[0], p[1])); ctx.closePath(); ctx.fill(); }
     else { ctx.strokeStyle = it.color; ctx.lineWidth = it.width; ctx.beginPath(); ctx.moveTo(it.A[0], it.A[1]); ctx.lineTo(it.B[0], it.B[1]); ctx.stroke(); }
   }
-  ctx.font = "600 11px -apple-system, sans-serif"; ctx.fillStyle = pal().text;
+  ctx.font = pal().font(11, "600"); ctx.fillStyle = pal().text;
   labels.forEach(l => { if (l.label) ctx.fillText(l.name, l.label[0] - 20, l.label[1]); });
 
   /* scale bar: 10 mm at the pivot */
   const o = P([0, 0, 0]);
   if (o) { const px = F / o[2] * 10; ctx.strokeStyle = pal().text2; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 24 - px, H - 22); ctx.lineTo(W - 24, H - 22); ctx.stroke();
-    ctx.fillStyle = pal().text2; ctx.font = "10px -apple-system, sans-serif"; ctx.fillText("10 mm", W - 24 - px, H - 28); }
+    ctx.fillStyle = pal().text2; ctx.font = pal().font(10); ctx.fillText("10 mm", W - 24 - px, H - 28); }
   ctx.fillStyle = pal().muted; ctx.fillText("true scale, mm · drag to orbit · scroll to zoom", 12, H - 10);
 
   /* readouts */
-  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, 300, 92); ctx.strokeStyle = pal().line; ctx.lineWidth = 1; ctx.strokeRect(12, 12, 300, 92);
-  ctx.fillStyle = pal().text; ctx.font = "600 12px -apple-system, sans-serif"; ctx.fillText(state.label, 22, 32);
-  ctx.font = "12px -apple-system, sans-serif";
+  ctx.font = pal().font(12); const hudW = Math.max(300, ctx.measureText(`Servo A  1500 µs   horn -22.5°   gimbal -7.70°  STOP`).width + 24);
+  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, hudW, 92); ctx.strokeStyle = pal().line; ctx.lineWidth = 1; ctx.strokeRect(12, 12, hudW, 92);
+  ctx.fillStyle = pal().text; ctx.font = pal().font(12, "600"); ctx.fillText(state.label, 22, 32);
+  ctx.font = pal().font(12);
   state.servos.forEach((sv, i) => {
     ctx.fillStyle = sv.atStop ? "#c0392b" : pal().text;
     ctx.fillText(`Servo ${["A", "B"][i]}  ${Math.round(sv.pulse)} µs   horn ${sv.horn.toFixed(1)}°   gimbal ${sv.gimbal.toFixed(2)}°${sv.atStop ? "  STOP" : ""}`, 22, 56 + i * 20);

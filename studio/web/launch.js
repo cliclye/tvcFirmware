@@ -223,7 +223,7 @@ function drawSideView() {
     if (b.nose_shape === "parabolic") return R * (2 * t - t * t);
     if (b.nose_shape === "elliptical") return R * Math.sqrt(Math.max(0, 1 - (1 - t) ** 2));
     const rho = (R * R + (Ln * s) ** 2) / (2 * R), xx = (Ln - x) * s; return Math.sqrt(Math.max(0, rho * rho - xx * xx)) + R - rho; };
-  ctx.font = "10px -apple-system, sans-serif"; ctx.lineWidth = 1;
+  ctx.font = pal().font(10); ctx.lineWidth = 1;
   /* body outline */
   ctx.beginPath(); ctx.moveTo(X(0), cy);
   for (let x = 0; x <= Ln; x += Ln / 40) ctx.lineTo(X(x), cy - noseR(x));
@@ -440,7 +440,7 @@ function drawBubble(tx, ty) {
   ctx.beginPath(); ctx.moveTo(c - r, c); ctx.lineTo(c + r, c); ctx.moveTo(c, c - r); ctx.lineTo(c, c + r); ctx.stroke();
   const limit = cfg ? cfg.MAX_TILT_DEG : 25;
   ctx.strokeStyle = pal().badLine; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(c, c, r * Math.min(limit, range) / range, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle = pal().muted; ctx.font = "10px -apple-system, sans-serif"; ctx.fillText("about X →", size - 62, c - 6); ctx.fillText("about Y ↑", c + 6, 14);
+  ctx.fillStyle = pal().muted; ctx.font = pal().font(10); ctx.fillText("about X →", size - 62, c - 6); ctx.fillText("about Y ↑", c + 6, 14);
   [10, 20, 30].forEach(d => ctx.fillText(`${d}°`, c + 3, c - r * d / range + 11));
   if (tx == null) return;
   const x = c + Math.max(-1, Math.min(1, tx / range)) * r, y = c - Math.max(-1, Math.min(1, ty / range)) * r;
@@ -628,7 +628,7 @@ function lineChart(canvas, t, series, events) {
   let lo = Math.min(...series.flat()), hi = Math.max(...series.flat());
   if (hi - lo < 1e-6) { lo -= 1; hi += 1; } const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
   const X = v => left + (v - t0) / (t1 - t0) * width, Y = v => top + (hi - v) / (hi - lo) * height;
-  ctx.font = "10px -apple-system, sans-serif"; ctx.fillStyle = pal().muted; ctx.strokeStyle = pal().grid; ctx.lineWidth = 1;
+  ctx.font = pal().font(10); ctx.fillStyle = pal().muted; ctx.strokeStyle = pal().grid; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) { const v = hi - i * (hi - lo) / 4, y = Y(v); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); ctx.fillText(v.toFixed(Math.abs(hi - lo) < 10 ? 1 : 0), 2, y + 3); }
   for (let i = 0; i <= 5; i++) { const v = t0 + i * (t1 - t0) / 5; ctx.fillText(`${v.toFixed(1)}s`, X(v) - 10, top + height + 18); }
   let lastX = -1e9, row = 0;

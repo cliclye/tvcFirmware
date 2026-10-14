@@ -50,9 +50,9 @@ function rocketMesh(model, ga, gb) {
   const motorT = p => add3(add3(add3([0, 0, zp], ex, p[0]), ey, p[1]), axis, p[2] - zp);
   const motor = [[z(model.motor_top_mm), mr], [z(model.nozzle_mm), mr], [z(model.nozzle_mm), mr * 0.55]];
   return [
-    ...revolve(nose, 20, [210, 75, 75]),
-    ...revolve(body, 20, (i, s) => s % 10 < 5 ? [106, 76, 229] : [92, 64, 205]),
-    ...revolve(motor, 14, [120, 120, 132], motorT),
+    ...revolve(nose, 20, pal().term ? [255, 59, 48] : [210, 75, 75]),
+    ...revolve(body, 20, (i, s) => pal().term ? (s % 10 < 5 ? [222, 222, 222] : [196, 196, 196]) : (s % 10 < 5 ? [106, 76, 229] : [92, 64, 205])),
+    ...revolve(motor, 14, pal().term ? [80, 80, 86] : [120, 120, 132], motorT),
   ];
 }
 
@@ -176,7 +176,7 @@ function scatter(canvas, runs) {
   const ctx = canvas.getContext("2d"); ctx.scale(k, k);
   const left = 46, top = 10, w = rect.width - 60, h = rect.height - 34;
   const maxW = Math.max(1, ...runs.map(r => r.gust)), maxT = Math.max(10, ...runs.map(r => r.tilt));
-  ctx.strokeStyle = pal().grid; ctx.fillStyle = pal().muted; ctx.font = "10px -apple-system, sans-serif";
+  ctx.strokeStyle = pal().grid; ctx.fillStyle = pal().muted; ctx.font = pal().font(10);
   for (let i = 0; i <= 4; i++) { const y = top + i * h / 4; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + w, y); ctx.stroke(); ctx.fillText(`${(maxT - i * maxT / 4).toFixed(0)}°`, 6, y + 3); }
   ctx.fillText("worst boost tilt", left + 4, top + 10); ctx.fillText("gust speed (m/s) →", left + w - 100, top + h + 22);
   for (let i = 0; i <= 4; i++) ctx.fillText((i * maxW / 4).toFixed(1), left + i * w / 4 - 6, top + h + 12);
@@ -291,22 +291,23 @@ function drawScene() {
   const here = project(pos);
   if (here) { const px = F / here[2] * scale; const bar = px > 40 ? 0.1 : px > 4 ? 1 : 10;
     ctx.strokeStyle = pal().text2; ctx.fillStyle = pal().text2; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 30 - bar * px, H - 26); ctx.lineTo(W - 30, H - 26); ctx.stroke();
-    ctx.font = "10px -apple-system, sans-serif"; ctx.fillText(bar < 1 ? "10 cm" : `${bar} m`, W - 30 - bar * px, H - 32); }
+    ctx.font = pal().font(10); ctx.fillText(bar < 1 ? "10 cm" : `${bar} m`, W - 30 - bar * px, H - 32); }
 
   /* HUD */
   const ig = simResult.ignition_s, st = SIM_STATES[row[C.state]] || "?";
-  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, 235, 132); ctx.strokeStyle = pal().line; ctx.strokeRect(12, 12, 235, 132);
-  ctx.fillStyle = STATE_COLORS[row[C.state]] || pal().text; ctx.font = "600 15px -apple-system, sans-serif";
+  const hudW = pal().term ? 300 : 235, col2 = pal().term ? 168 : 140;
+  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, hudW, 132); ctx.strokeStyle = pal().line; ctx.strokeRect(12, 12, hudW, 132);
+  ctx.fillStyle = STATE_COLORS[row[C.state]] || pal().text; ctx.font = pal().font(15, "600");
   ctx.fillText(row[C.chute] && st !== "LANDED" ? `${st} · CHUTE` : st, 24, 36);
-  ctx.fillStyle = pal().text; ctx.font = "12px -apple-system, sans-serif";
+  ctx.fillStyle = pal().text; ctx.font = pal().font(12);
   const tt = row[0] - ig;
   [[`T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(2)} s`, `${row[C.armed] ? "armed" : "not armed"}`],
    [`alt ${row[C.z].toFixed(1)} m`, `speed ${row[C.speed].toFixed(1)} m/s`],
    [`tilt X ${row[C.tilt_x].toFixed(1)}°`, `Y ${row[C.tilt_y].toFixed(1)}°`],
    [`gimbal A ${row[C.gimbal_a].toFixed(2)}°`, `B ${row[C.gimbal_b].toFixed(2)}°`],
    [`thrust ${row[C.thrust].toFixed(1)} N`, row[C.tvc] ? "TVC active" : "TVC off"]]
-    .forEach(([a, b], i) => { ctx.fillText(a, 24, 58 + i * 18); ctx.fillText(b, 140, 58 + i * 18); });
-  ctx.fillStyle = pal().muted; ctx.font = "10px -apple-system, sans-serif";
+    .forEach(([a, b], i) => { ctx.fillText(a, 24, 58 + i * 18); ctx.fillText(b, col2, 58 + i * 18); });
+  ctx.fillStyle = pal().muted; ctx.font = pal().font(10);
   ctx.fillText(`drag to orbit · scroll to zoom · rocket ${scale > 1.05 ? `enlarged ${scale.toFixed(0)}×` : "true scale"} · motor gimbal shown ×4`, 12, H - 10);
 
 

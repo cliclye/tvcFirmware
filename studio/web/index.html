@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>EasyTVC Studio</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/terminal.css">
   <script defer src="/app.js"></script>
   <script defer src="/launch.js"></script>
   <script defer src="/sim3d.js"></script>
@@ -25,11 +26,19 @@
     </nav>
     <button id="install-board" class="primary install-button">⇩ Install on board</button>
     <div class="sidebar-go" id="sidebar-go"><span class="go-light"></span><div><strong>NO-GO</strong><p>Open the launch checklist.</p></div></div>
-    <div class="theme-switch" role="group" aria-label="Appearance"><button data-theme-choice="light">Light</button><button data-theme-choice="dark">Dark</button><button data-theme-choice="system">System</button></div>
+    <div class="theme-switch" role="group" aria-label="Appearance"><button data-theme-choice="light">Light</button><button data-theme-choice="dark">Dark</button><button data-theme-choice="terminal">Term</button><button data-theme-choice="system">System</button></div>
     <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Nothing leaves this computer.</p></div>
     <button id="quit" class="quiet">Quit Studio ↗</button>
   </aside>
   <main>
+    <div class="term-head" aria-hidden="true"><pre class="ascii-logo">███████╗ █████╗ ███████╗██╗   ██╗████████╗██╗   ██╗ ██████╗
+██╔════╝██╔══██╗██╔════╝╚██╗ ██╔╝╚══██╔══╝██║   ██║██╔════╝
+█████╗  ███████║███████╗ ╚████╔╝    ██║   ██║   ██║██║
+██╔══╝  ██╔══██║╚════██║  ╚██╔╝     ██║   ╚██╗ ██╔╝██║
+███████╗██║  ██║███████║   ██║      ██║    ╚████╔╝ ╚██████╗
+╚══════╝╚═╝  ╚═╝╚══════╝   ╚═╝      ╚═╝     ╚═══╝   ╚═════╝</pre>
+      <div class="term-lines"><div>EASYTVC_STUDIO V0.2.0 — FLIGHT SYSTEMS 2026</div><div class="dim">NAVIGATE WITH MOUSE · SELECT A COMMAND ON THE LEFT</div>
+      <div><span class="ok">◆</span> EASYTVC V0.1 FLIGHT COMPUTER — STM32F405 · BMI088 · BME280</div></div></div>
     <header><span class="eyebrow">FLIGHT SYSTEMS / EASYTVC v0.1</span><span id="connection-badge" class="badge">BOARD · NOT CONNECTED</span></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
 
@@ -111,7 +120,7 @@
             </div>
             <div id="view-panes" class="view-panes split">
               <div class="pane pane-rocket"><canvas id="sim-canvas" aria-label="3D flight view" role="img"></canvas>
-                <div id="sim-empty" class="sim-empty">Press <strong>Play</strong> or <strong>Run flight</strong> to fly your configured rocket.</div></div>
+                <div id="sim-empty" class="sim-empty"><span>Press <strong>Play</strong> or <strong>Run flight</strong> to fly your configured rocket.</span></div></div>
               <div class="pane pane-gimbal"><canvas id="gim-canvas" class="gim-canvas" aria-label="3D view of the TVC gimbal and servos" role="img"></canvas></div>
             </div>
             <div class="sim-controls"><button id="sim-play" class="primary small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>

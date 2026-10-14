@@ -1,0 +1,154 @@
+/* ======================================================================================
+ * TERMINAL theme: black, monospace, uppercase, hairlines, one red accent.
+ * Everything is scoped to :root[data-theme="terminal"] so the other themes are untouched.
+ * ====================================================================================== */
+:root[data-theme="terminal"]{
+  --bg:#000;--card:#000;--sidebar:#000;--input:#000;--surface:#0b0b0b;--surface-2:#0b0b0b;--line-soft:#1c1c1c;--chip-line:#2f2f2f;
+  --text:#ececec;--text-2:#bdbdbd;--muted:#8a8a8a;--faint:#666;--line:#2c2c2c;
+  --purple:#ececec;--purple-pale:#1a1a1a;--purple-soft:#000;--purple-strong:#fff;--purple-hover:#fff;--focus:#ff3b30;--purple-fill:#2a2a2a;
+  --banner-bg:#000;--banner-line:#2c2c2c;--banner-text:#bdbdbd;--banner-strong:#fff;--code-bg:#111;
+  --green:#3ddc84;--good-bg:#000;--good-line:#1f4d34;--go-bg:#000;--go-line:#3ddc84;--go-text:#3ddc84;--go-light:#3ddc84;
+  --amber:#ffb340;--warn-bg:#000;--dirty-bg:#000;--dirty-line:#ffb340;
+  --bad-bg:#000;--bad-text:#ff3b30;--bad-strong:#ff3b30;--bad-line:#ff3b30;--bad-line-2:#ff3b30;--red:#ff3b30;--red-strong:#ff3b30;--bad-num:#ff3b30;
+  --notice-bg:#000;--log-bg:#050505;--log-text:#cfcfcf;--overlay:#000c;--servo-track:#151515;--canvas-bg:#000;--pending:#555;
+  --events-line:#1c1c1c;--shadow:#0000;--shadow-2:#0000;--radius:0;
+  --mono:"SF Mono","JetBrains Mono","Menlo","Monaco","Consolas",monospace;
+  color-scheme:dark;font-family:var(--mono);font-size:13px;
+}
+:root[data-theme="terminal"] body{text-transform:uppercase;letter-spacing:.06em;-webkit-font-smoothing:antialiased}
+:root[data-theme="terminal"] input,:root[data-theme="terminal"] select,:root[data-theme="terminal"] pre,
+:root[data-theme="terminal"] code,:root[data-theme="terminal"] .mono{text-transform:none;letter-spacing:0}
+:root[data-theme="terminal"] *{border-radius:0!important}
+:root[data-theme="terminal"] ::selection{background:#ececec;color:#000}
+
+/* ---- header: ASCII logo + version line ---- */
+.term-head{display:none}
+:root[data-theme="terminal"] .term-head{display:block;padding:26px 0 6px}
+:root[data-theme="terminal"] .ascii-logo{margin:0;font-family:var(--mono);font-size:9px;line-height:1.08;color:#ececec;letter-spacing:0;white-space:pre}
+:root[data-theme="terminal"] .term-lines{margin-top:16px;font-size:12px;line-height:2}
+:root[data-theme="terminal"] .term-lines .dim{color:var(--muted)}
+:root[data-theme="terminal"] .term-lines .ok{color:var(--green)}
+:root[data-theme="terminal"] header{height:auto;padding:10px 0;border-bottom:1px dashed var(--line)}
+:root[data-theme="terminal"] .badge{background:transparent;color:var(--text);border:1px solid var(--line);padding:4px 8px;font-size:11px}
+
+/* ---- sidebar becomes a plain command list ---- */
+:root[data-theme="terminal"] .sidebar{border-right:1px solid var(--line);padding:26px 16px}
+:root[data-theme="terminal"] .brand{font-size:15px;letter-spacing:.12em;font-weight:500}
+:root[data-theme="terminal"] .brand-mark{background:transparent;border:1px solid #ececec;color:#ececec;width:34px;height:34px;font-size:20px}
+:root[data-theme="terminal"] .brand div>span{letter-spacing:.2em}
+:root[data-theme="terminal"] nav{gap:2px;margin-top:28px}
+:root[data-theme="terminal"] .nav-item{font-size:13px;padding:7px 8px;color:var(--muted);gap:8px;border:1px solid transparent}
+:root[data-theme="terminal"] .nav-item span{font-size:12px}
+:root[data-theme="terminal"] .nav-item:hover:not(:disabled){background:transparent;color:#fff}
+:root[data-theme="terminal"] .nav-item.selected{background:transparent;color:#fff;border-color:#ececec}
+:root[data-theme="terminal"] .nav-item.selected span::before{content:"> "}
+
+/* ---- buttons: text commands; hover inverts ---- */
+:root[data-theme="terminal"] button{background:transparent;border:1px solid transparent;color:var(--text);padding:6px 10px;font-weight:400;transition:none;letter-spacing:.08em}
+:root[data-theme="terminal"] button:hover:not(:disabled){background:#ececec;color:#000}
+:root[data-theme="terminal"] button:active:not(:disabled){transform:none}
+:root[data-theme="terminal"] .primary{background:transparent;border:1px solid #ececec;color:#fff}
+:root[data-theme="terminal"] .primary::before{content:"[ "}:root[data-theme="terminal"] .primary::after{content:" ]"}
+:root[data-theme="terminal"] .primary span{padding-left:6px}
+:root[data-theme="terminal"] .quiet{color:var(--muted)}
+:root[data-theme="terminal"] button:focus-visible,:root[data-theme="terminal"] input:focus-visible,:root[data-theme="terminal"] select:focus-visible{outline:1px solid #ff3b30;outline-offset:2px}
+:root[data-theme="terminal"] .install-button{border:1px solid #ececec}
+
+/* ---- headings & text ---- */
+:root[data-theme="terminal"] h1{font-size:20px;font-weight:500;letter-spacing:.14em}
+:root[data-theme="terminal"] h1::after{content:"_";animation:term-blink 1.1s steps(1) infinite;margin-left:4px}
+@keyframes term-blink{50%{opacity:0}}
+:root[data-theme="terminal"] h2{font-size:13px;font-weight:500;letter-spacing:.12em}
+:root[data-theme="terminal"] h3,:root[data-theme="terminal"] h3.sub{font-size:11px;font-weight:500;color:var(--muted);letter-spacing:.14em}
+:root[data-theme="terminal"] h3.sub::before{content:"── "}
+:root[data-theme="terminal"] .page-title{padding:22px 0 16px}
+:root[data-theme="terminal"] .page-title p{font-size:11px}
+:root[data-theme="terminal"] .eyebrow{font-weight:400;color:var(--faint)}
+:root[data-theme="terminal"] .eyebrow::before{content:"> "}
+:root[data-theme="terminal"] .help{font-size:11px;color:var(--muted)}
+:root[data-theme="terminal"] .help::before{content:"> "}
+
+/* ---- cards: hairline frames, no fill ---- */
+:root[data-theme="terminal"] .card{background:transparent;border:1px solid var(--line);padding:18px}
+:root[data-theme="terminal"] .banner{border:1px dashed var(--line);background:transparent}
+:root[data-theme="terminal"] .chip{background:transparent;border:0;color:var(--muted);padding:0;font-size:10px}
+:root[data-theme="terminal"] .chip::before{content:"["}:root[data-theme="terminal"] .chip::after{content:"]"}
+:root[data-theme="terminal"] .chip.good{color:var(--green)}
+
+/* ---- fields: LABEL ........ < value > ---- */
+:root[data-theme="terminal"] .field-grid{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:4px 24px;margin-top:12px}
+:root[data-theme="terminal"] label.field{flex-direction:row;align-items:baseline;gap:6px;font-size:11px;color:var(--text)}
+:root[data-theme="terminal"] label.field>span:first-child{flex:1;min-width:0;white-space:nowrap;overflow:hidden}
+:root[data-theme="terminal"] label.field>span:first-child::after{content:" ................................................................................";color:#444}
+:root[data-theme="terminal"] label.field::before{content:"<";order:2;color:var(--muted)}
+:root[data-theme="terminal"] label.field::after{content:">";order:4;color:var(--muted)}
+:root[data-theme="terminal"] label.field>input,:root[data-theme="terminal"] label.field>select{order:3}
+:root[data-theme="terminal"] input[type=number],:root[data-theme="terminal"] input[type=text],:root[data-theme="terminal"] select,:root[data-theme="terminal"] #profile-name{
+  background:transparent;border:0;border-bottom:1px dotted #555;padding:2px 2px;color:#fff;font-family:var(--mono);font-size:12px}
+:root[data-theme="terminal"] label.field>input[type=number]{width:84px;text-align:right}
+:root[data-theme="terminal"] label.field>select{width:auto;max-width:170px}
+:root[data-theme="terminal"] select option{background:#000;color:#ececec}
+:root[data-theme="terminal"] input[type=number]::-webkit-inner-spin-button{opacity:.35}
+:root[data-theme="terminal"] input[type=range]{accent-color:#ececec}
+:root[data-theme="terminal"] input[type=checkbox],:root[data-theme="terminal"] input[type=radio]{accent-color:#ececec}
+:root[data-theme="terminal"] .servo-block>.field-grid,:root[data-theme="terminal"] .gain-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+:root[data-theme="terminal"] .part-row input{border-bottom:1px dotted #333}
+:root[data-theme="terminal"] .led-brightness::before,:root[data-theme="terminal"] .led-brightness::after,
+:root[data-theme="terminal"] .gim-sliders label.field::before,:root[data-theme="terminal"] .gim-sliders label.field::after{content:none}
+:root[data-theme="terminal"] .led-brightness,:root[data-theme="terminal"] .gim-sliders label.field{flex-direction:column;align-items:stretch}
+:root[data-theme="terminal"] .led-brightness>span::after,:root[data-theme="terminal"] .gim-sliders label.field>span::after{content:none}
+
+/* ---- results, status lines ---- */
+:root[data-theme="terminal"] .metrics{border-top:1px dashed var(--line)}
+:root[data-theme="terminal"] .metrics strong{font-size:18px;font-weight:400;letter-spacing:.02em}
+:root[data-theme="terminal"] .metrics span{font-size:9px;font-weight:400;letter-spacing:.14em}
+:root[data-theme="terminal"] .metrics div.bad strong{color:#ff3b30}
+:root[data-theme="terminal"] .assessment,:root[data-theme="terminal"] .check-line{background:transparent;padding:4px 0;border-radius:0;margin-top:6px}
+:root[data-theme="terminal"] .assessment::before{content:"[--] "}
+:root[data-theme="terminal"] .assessment.good::before,:root[data-theme="terminal"] .check-line.good::before{content:"[OK] "}
+:root[data-theme="terminal"] .check-line.warn::before{content:"[!!] "}
+:root[data-theme="terminal"] .check-line.bad::before{content:"[XX] "}
+:root[data-theme="terminal"] .check-line.info::before{content:"[..] "}
+:root[data-theme="terminal"] .telemetry-grid div{background:transparent;border:1px solid var(--line)}
+:root[data-theme="terminal"] .telemetry-grid div.bad{border-color:#ff3b30}
+:root[data-theme="terminal"] .go-banner{border:1px solid var(--line);background:transparent}
+:root[data-theme="terminal"] .go-banner.go{border-color:#3ddc84;color:#3ddc84}
+:root[data-theme="terminal"] .go-banner.nogo{border-color:#ff3b30;color:#ff3b30}
+:root[data-theme="terminal"] .go-light,:root[data-theme="terminal"] .sidebar-go .go-light{border-radius:0!important;box-shadow:none;width:10px;height:10px;background:#ff3b30}
+:root[data-theme="terminal"] .go .go-light,:root[data-theme="terminal"] .sidebar-go.go .go-light{background:#3ddc84}
+:root[data-theme="terminal"] .sidebar-go{background:transparent;border:1px solid #ff3b30;color:#ff3b30}
+:root[data-theme="terminal"] .sidebar-go.go{border-color:#3ddc84;color:#3ddc84}
+:root[data-theme="terminal"] .check-item{border-bottom:1px dotted #222}
+:root[data-theme="terminal"] .check-item input{accent-color:#3ddc84}
+:root[data-theme="terminal"] .events li{border-bottom:1px dotted #222}
+:root[data-theme="terminal"] pre.log{border:1px solid var(--line)}
+:root[data-theme="terminal"] #notice{background:#000;border:1px solid #ececec;color:#fff}
+:root[data-theme="terminal"] #notice::before{content:"> "}
+:root[data-theme="terminal"] .modal-card{background:#000;border:1px solid #ececec}
+:root[data-theme="terminal"] .choice{border:1px solid var(--line)}
+:root[data-theme="terminal"] .side-view{border:1px solid var(--line);background:#000}
+:root[data-theme="terminal"] .image-row{border-bottom:1px dotted var(--line)}
+
+/* ---- segmented controls / tabs inside pages: boxed selection like the reference ---- */
+:root[data-theme="terminal"] .segmented,:root[data-theme="terminal"] .theme-switch{border:0;gap:6px}
+:root[data-theme="terminal"] .segmented button,:root[data-theme="terminal"] .theme-switch button{border:1px solid transparent!important;background:transparent;color:var(--muted)}
+:root[data-theme="terminal"] .segmented button.selected,:root[data-theme="terminal"] .theme-switch button.selected{background:transparent;color:#fff;border-color:#ececec!important}
+:root[data-theme="terminal"] .view-toolbar,:root[data-theme="terminal"] .sim-controls{border-color:var(--line)}
+:root[data-theme="terminal"] .view-panes.split .pane+.pane{border-color:var(--line)}
+:root[data-theme="terminal"] .servo-bar{background:#111}:root[data-theme="terminal"] .servo-bar i{background:#2a2a2a}:root[data-theme="terminal"] .servo-bar b{background:#fff}
+:root[data-theme="terminal"] footer{border-top:1px dashed var(--line);margin-top:30px}
+:root[data-theme="terminal"] ::-webkit-scrollbar{width:8px;height:8px}
+:root[data-theme="terminal"] ::-webkit-scrollbar-thumb{background:#2c2c2c}
+:root[data-theme="terminal"] ::-webkit-scrollbar-track{background:#000}
+
+/* ---- layout: let columns shrink; leader rows must never widen a column ---- */
+:root[data-theme="terminal"] .workspace-grid{grid-template-columns:minmax(0,.9fr) minmax(0,1.3fr)}
+:root[data-theme="terminal"] .sim-grid{grid-template-columns:minmax(0,.62fr) minmax(0,1.7fr)}
+:root[data-theme="terminal"] .controls,:root[data-theme="terminal"] .results,:root[data-theme="terminal"] .sim-main,
+:root[data-theme="terminal"] .card,:root[data-theme="terminal"] .servo-block{min-width:0}
+:root[data-theme="terminal"] .field-grid,:root[data-theme="terminal"] .servo-block>.field-grid,:root[data-theme="terminal"] .gain-grid,
+:root[data-theme="terminal"] .sim-inputs-card .field-grid{grid-template-columns:repeat(auto-fill,minmax(min(240px,100%),1fr))}
+:root[data-theme="terminal"] label.field{min-width:0}
+:root[data-theme="terminal"] .check{min-width:0;overflow-wrap:anywhere}
+@media(max-width:1150px){:root[data-theme="terminal"] .workspace-grid,:root[data-theme="terminal"] .sim-grid{grid-template-columns:minmax(0,1fr)}}
+:root[data-theme="terminal"] .led-brightness>span:first-child,:root[data-theme="terminal"] .gim-sliders label.field>span:first-child{flex:none;white-space:normal}

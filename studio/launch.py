@@ -535,7 +535,7 @@ def load_state() -> dict:
 
 
 def save_state(update: dict) -> dict:
-    allowed = {"checklist", "vehicle", "flashed", "packing", "sim"}
+    allowed = {"checklist", "vehicle", "flashed", "packing", "sim", "ui"}
     if not isinstance(update, dict) or not set(update) <= allowed:
         raise ValueError("Unsupported state fields.")
     if len(json.dumps(update)) > 65536:
