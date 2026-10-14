@@ -187,6 +187,11 @@ class StudioTests(unittest.TestCase):
     def test_dfu_only_targets_internal_flash(self):
         listing = 'Found DFU: [0483:df11] ver=2200, path="1-2", alt=0, name="@Internal Flash /0x08000000/04*016Kg,01*064Kg,07*128Kg", serial="1234"\n'
         self.assertEqual(dfu.discover(listing)[0]["serial"], "1234")
+        # exact listing from a real EasyTVC v0.1 (STM32F405 ROM bootloader pads the name with two spaces)
+        real = ('Found DFU: [0483:df11] ver=2200, devnum=1, cfg=1, intf=0, path="1-1", alt=1, name="@Option Bytes  /0x1FFFC000/01*016 e", serial="305B344F3034"\n'
+                'Found DFU: [0483:df11] ver=2200, devnum=1, cfg=1, intf=0, path="1-1", alt=0, name="@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg", serial="305B344F3034"\n')
+        found = dfu.discover(real)
+        self.assertEqual([d["serial"] for d in found], ["305B344F3034"])
         self.assertEqual(dfu.discover(listing.replace("alt=0", "alt=1")), [])
         self.assertEqual(dfu.discover(listing.replace("0483:df11", "1209:0001")), [])
         self.assertEqual(dfu.discover(listing.replace("Internal Flash", "Option Bytes")), [])

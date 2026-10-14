@@ -11,3 +11,4 @@ __pycache__/
 *.hex
 *.bin
 *.map
+/backups/

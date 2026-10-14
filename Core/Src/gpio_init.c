@@ -475,24 +475,51 @@ void EasyTVC_GPIO_Init(void)
     /* Continuity sense PB12, PC4, PC2 stay inputs (reset default). */
 }
 
+#if EASYTVC_LED_BRIGHTNESS_PCT < 10 || EASYTVC_LED_BRIGHTNESS_PCT > 100 || (EASYTVC_LED_BRIGHTNESS_PCT % 10) != 0
+#error "EASYTVC_LED_BRIGHTNESS_PCT must be 10, 20, ... 100"
+#endif
+#define LED_PWM_PERIOD_MS 10U                                   /* 100 Hz: no visible flicker */
+#define LED_ON_MS         (EASYTVC_LED_BRIGHTNESS_PCT / 10U)    /* on-time per period */
+
+static volatile uint8_t led_requested;   /* bit n = LED n should be lit */
+static volatile bool led_pwm_running;    /* set once the 1 kHz tick has taken over */
+
+static void led_write(uint32_t pin, bool lit)
+{
+    const bool high = EASYTVC_LED_ACTIVE_LOW ? !lit : lit;
+    STM32_GPIOB->BSRR = high ? (1U << pin) : ((1U << pin) << 16);
+}
+
+static const uint8_t led_pins[3] = {5, 4, 3};   /* blue, green, red */
+
 void EasyTVC_GPIO_LedSet(uint8_t led, bool state)
 {
-    STM32_GPIO_TypeDef *gpio = STM32_GPIOB;
-    uint32_t pin;
-
-    switch (led) {
-        case 0: pin = 5; break;  /* Blue */
-        case 1: pin = 4; break;  /* Green */
-        case 2: pin = 3; break;  /* Red */
-        default: return;
+    if (led > 2U) {
+        return;
     }
-
-    const bool high = EASYTVC_LED_ACTIVE_LOW ? !state : state;
-    if (high) {
-        gpio->BSRR = (1U << pin);
+    if (state) {
+        led_requested |= (uint8_t)(1U << led);
     } else {
-        gpio->BSRR = (1U << pin) << 16;
+        led_requested &= (uint8_t)~(1U << led);
     }
+    /* Once the 1 kHz tick runs it owns the pins (writing here too would add full-brightness
+     * slivers every loop). Before that, or if the clock failed, drive the LED directly. */
+    if (!led_pwm_running) {
+        led_write(led_pins[led], state);
+    }
+}
+
+void EasyTVC_GPIO_LedTick(uint32_t now_ms)
+{
+#if EASYTVC_LED_BRIGHTNESS_PCT < 100
+    led_pwm_running = true;
+    const bool phase_on = (now_ms % LED_PWM_PERIOD_MS) < LED_ON_MS;
+    for (uint8_t led = 0; led < 3U; ++led) {
+        led_write(led_pins[led], phase_on && (led_requested & (1U << led)));
+    }
+#else
+    (void)now_ms;
+#endif
 }
 
 void EasyTVC_GPIO_BuzzerSet(bool state)

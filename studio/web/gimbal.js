@@ -7,7 +7,7 @@
  * simResult, simCol, play and the vector helpers from the other scripts. */
 
 const SERVO_BOX = [22.8, 12.2, 22.5];   /* MG90D body, mm (without the mounting tabs) */
-let gim = {source: "manual", pulse: [1500, 1500], sweep: null, yaw: -0.65, pitch: 0.42, dist: 230, liveTimer: null};
+let gim = {source: "sim", pulse: [1500, 1500], sweep: null, yaw: -0.65, pitch: 0.42, dist: 230, liveTimer: null};
 
 function gimbalGeom() {
   const g = vehicle.gimbal, mo = vehicle.motor, b = vehicle.body;
@@ -41,7 +41,7 @@ function renderGimbalInputs() {
   ["A", "B"].forEach((s, i) => {
     const slider = el("input", {type: "range", min: cfg[`SERVO_${s}_MIN_US`], max: cfg[`SERVO_${s}_MAX_US`], step: 1, "aria-label": `Servo ${s} pulse`});
     slider.value = gim.pulse[i];
-    slider.oninput = () => { gim.source = "manual"; $("gim-source").value = "manual"; gim.sweep = null; gim.pulse[i] = Number(slider.value); };
+    slider.oninput = () => { setGimbalSource("manual"); gim.sweep = null; gim.pulse[i] = Number(slider.value); };
     sliders.append(el("label", {class: "field"}, el("span", {text: `Servo ${s} · header ${cfg[`SERVO_${s}_CHANNEL`]} · ${cfg[`SERVO_${s}_MIN_US`]}–${cfg[`SERVO_${s}_MAX_US`]} µs`}), slider));
   });
   renderGimbalTable();
@@ -63,14 +63,16 @@ function renderGimbalTable() {
 }
 
 /* ------------------------------------------------------------------ sources */
-$("gim-source").onchange = () => {
-  gim.source = $("gim-source").value; gim.sweep = null;
-  if (gim.source === "sim" && !simResult) notice("Run a flight in the 3D flight sim first.");
-  if (gim.source === "live") pollGimbalLive();
-};
+function setGimbalSource(source) {
+  gim.source = source; $("gim-source").value = source;
+  $("gim-manual").hidden = source !== "manual";
+  if (source !== "sim") play.playing = false;   /* the flight clock only drives "flight playback" */
+  if (source === "live") pollGimbalLive();
+}
+$("gim-source").onchange = () => { gim.sweep = null; setGimbalSource($("gim-source").value); };
 $("gim-sweep").onclick = () => {
   /* the firmware's power-up self test: A centre->max->min->centre, then B, 300 ms each step */
-  gim.source = "manual"; $("gim-source").value = "manual";
+  setGimbalSource("manual");
   const steps = [];
   for (const [i, s] of [[0, "A"], [1, "B"]])
     for (const k of ["CENTER", "MAX", "MIN", "CENTER"]) steps.push([i, cfg[`SERVO_${s}_${k}_US`]]);
@@ -79,12 +81,15 @@ $("gim-sweep").onclick = () => {
 $("gim-center").onclick = () => { gim.sweep = null; gim.pulse = [cfg.SERVO_A_CENTER_US, cfg.SERVO_B_CENTER_US]; renderGimbalInputs(); };
 async function pollGimbalLive() {
   clearTimeout(gim.liveTimer);
-  if (gim.source !== "live" || $("gimbal").hidden) return;
+  if (gim.source !== "live" || $("sim3d").hidden) return;
   try { liveStatus = await api("monitor/status", {}); } catch (error) { notice(error.message); return; }
   gim.liveTimer = setTimeout(pollGimbalLive, 150);
 }
 function currentState(now) {
   /* returns per servo {pulse, horn, gimbal, atStop}, plus a label */
+  if (gim.source === "sim" && !simResult) {
+    return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Flight playback: press Play to fly"};
+  }
   if (gim.source === "sim" && simResult) {
     const row = rowAt(play.t);
     const make = (i, s) => { const info = servoInfo(i, row[simCol[`pulse_${s}`]]);
@@ -109,13 +114,13 @@ function currentState(now) {
 const rotX = (v, a) => [v[0], v[1] * Math.cos(a) - v[2] * Math.sin(a), v[1] * Math.sin(a) + v[2] * Math.cos(a)];
 const rotY = (v, a) => [v[0] * Math.cos(a) + v[2] * Math.sin(a), v[1], -v[0] * Math.sin(a) + v[2] * Math.cos(a)];
 function drawGimbal(now) {
-  const canvas = $("gim-canvas"); if (!canvas || $("gimbal").hidden || !vehicle || !cfg) return;
+  const canvas = $("gim-canvas"); if (!canvas || $("sim3d").hidden || !vehicle || !cfg) return;
   const rect = canvas.getBoundingClientRect(); if (!rect.width) return;
   const k = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(rect.width * k)) { canvas.width = rect.width * k; canvas.height = rect.height * k; }
   const ctx = canvas.getContext("2d"); ctx.setTransform(k, 0, 0, k, 0, 0);
   const W = rect.width, H = rect.height;
-  ctx.fillStyle = "#f7f6fb"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = pal().canvas; ctx.fillRect(0, 0, W, H);
   const G = gimbalGeom(), state = currentState(now), [sa, sb] = state.servos;
   const ga = sa.gimbal * Math.PI / 180, gb = sb.gimbal * Math.PI / 180;
   /* ring hierarchy: outer ring turns about body X (servo A), inner ring about the outer ring's Y (servo B).
@@ -141,15 +146,15 @@ function drawGimbal(now) {
 
   /* airframe section around the mount (fixed), drawn as a translucent wire */
   for (let s = 0; s < 36; s++) { const a0 = 2 * Math.PI * s / 36, a1 = 2 * Math.PI * (s + 1) / 36;
-    for (const z of [G.motorBottom, G.motorTop * 0.6]) seg([G.bodyR * Math.cos(a0), G.bodyR * Math.sin(a0), z], [G.bodyR * Math.cos(a1), G.bodyR * Math.sin(a1), z], "#cfcbe0", 1); }
+    for (const z of [G.motorBottom, G.motorTop * 0.6]) seg([G.bodyR * Math.cos(a0), G.bodyR * Math.sin(a0), z], [G.bodyR * Math.cos(a1), G.bodyR * Math.sin(a1), z], pal().line2, 1); }
   /* motor, inner ring (both axes), outer ring (servo A only) */
   cylinder(G.motorR, G.motorBottom, G.motorTop, 20, [125, 125, 138, 0.45], inner);   /* see-through so both linkages stay visible */
   cylinder(G.motorR * 0.55, G.motorBottom - 6, G.motorBottom, 14, [70, 70, 80], inner);
-  ring(G.motorR + 3, 4, [232, 120, 52], inner);
-  ring(G.motorR + 10, 4, [106, 76, 229], outer);
+  ring(G.motorR + 3, 4, pal().term ? [255, 59, 48] : [232, 120, 52], inner);
+  ring(G.motorR + 10, 4, pal().term ? [215, 215, 215] : [106, 76, 229], outer);
   /* pivot pins: outer ring on the airframe along X, inner ring on the outer ring along Y */
-  seg([-(G.motorR + 18), 0, 0], [G.motorR + 18, 0, 0], "#272735", 3);
-  seg(outer([0, -(G.motorR + 12), 0]), outer([0, G.motorR + 12, 0]), "#272735", 3);
+  seg([-(G.motorR + 18), 0, 0], [G.motorR + 18, 0, 0], pal().text, 3);
+  seg(outer([0, -(G.motorR + 12), 0]), outer([0, G.motorR + 12, 0]), pal().text, 3);
 
   /* servos sit beside the motor, above the pivot; A drives the outer ring through a lever along +Y,
    * B the inner ring through a lever along +X; pushrods run down to the lever holes */
@@ -163,12 +168,12 @@ function drawGimbal(now) {
     const hornTip = add3(add3(shaft, ax, G.horn * Math.cos(h)), [0, 0, 1], (i === 0 ? -1 : 1) * G.horn * Math.sin(h));
     const boxCenter = add3(add3(shaft, ax, SERVO_BOX[0] / 2 - 6), [0, 0, -SERVO_BOX[2] / 2 + 3]);
     box(boxCenter, leverDirection === "y" ? [SERVO_BOX[1], SERVO_BOX[0], SERVO_BOX[2]] : [SERVO_BOX[0], SERVO_BOX[1], SERVO_BOX[2]], color);
-    seg(shaft, hornTip, "#f0f0f4", 5); seg(shaft, hornTip, "#272735", 1);
-    seg(hornTip, leverHole, "#3a3a46", 2);
+    seg(shaft, hornTip, pal().card, 5); seg(shaft, hornTip, pal().text, 1);
+    seg(hornTip, leverHole, pal().text2, 2);
     const label = P(add3(boxCenter, [0, 0, -SERVO_BOX[2] / 2 - 6]));
     return {label, name: `Servo ${["A", "B"][i]}`};
   };
-  const labels = [servo(0, sa, "y", outer, [70, 90, 160]), servo(1, sb, "x", inner, [60, 140, 110])];
+  const labels = [servo(0, sa, "y", outer, pal().term ? [70, 70, 74] : [70, 90, 160]), servo(1, sb, "x", inner, pal().term ? [110, 110, 116] : [60, 140, 110])];
 
   faces.sort((a, b) => b.depth - a.depth);
   const all = [...faces.map(x => ({kind: "f", ...x})), ...lines.map(x => ({kind: "l", ...x}))].sort((a, b) => b.depth - a.depth);
@@ -177,58 +182,32 @@ function drawGimbal(now) {
       ctx.beginPath(); ctx.moveTo(it.pp[0][0], it.pp[0][1]); it.pp.slice(1).forEach(p => ctx.lineTo(p[0], p[1])); ctx.closePath(); ctx.fill(); }
     else { ctx.strokeStyle = it.color; ctx.lineWidth = it.width; ctx.beginPath(); ctx.moveTo(it.A[0], it.A[1]); ctx.lineTo(it.B[0], it.B[1]); ctx.stroke(); }
   }
-  ctx.font = "600 11px -apple-system, sans-serif"; ctx.fillStyle = "#272735";
+  ctx.font = pal().font(11, "600"); ctx.fillStyle = pal().text;
   labels.forEach(l => { if (l.label) ctx.fillText(l.name, l.label[0] - 20, l.label[1]); });
 
   /* scale bar: 10 mm at the pivot */
   const o = P([0, 0, 0]);
-  if (o) { const px = F / o[2] * 10; ctx.strokeStyle = "#555"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 24 - px, H - 22); ctx.lineTo(W - 24, H - 22); ctx.stroke();
-    ctx.fillStyle = "#555"; ctx.font = "10px -apple-system, sans-serif"; ctx.fillText("10 mm", W - 24 - px, H - 28); }
-  ctx.fillStyle = "#90909b"; ctx.fillText("true scale, mm · drag to orbit · scroll to zoom", 12, H - 10);
+  if (o) { const px = F / o[2] * 10; ctx.strokeStyle = pal().text2; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W - 24 - px, H - 22); ctx.lineTo(W - 24, H - 22); ctx.stroke();
+    ctx.fillStyle = pal().text2; ctx.font = pal().font(10); ctx.fillText("10 mm", W - 24 - px, H - 28); }
+  ctx.fillStyle = pal().muted; ctx.fillText("true scale, mm · drag to orbit · scroll to zoom", 12, H - 10);
 
   /* readouts */
-  ctx.fillStyle = "#ffffffe0"; ctx.fillRect(12, 12, 300, 92); ctx.strokeStyle = "#e3e1ea"; ctx.lineWidth = 1; ctx.strokeRect(12, 12, 300, 92);
-  ctx.fillStyle = "#272735"; ctx.font = "600 12px -apple-system, sans-serif"; ctx.fillText(state.label, 22, 32);
-  ctx.font = "12px -apple-system, sans-serif";
+  ctx.font = pal().font(12); const hudW = Math.max(300, ctx.measureText(`Servo A  1500 µs   horn -22.5°   gimbal -7.70°  STOP`).width + 24);
+  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, hudW, 92); ctx.strokeStyle = pal().line; ctx.lineWidth = 1; ctx.strokeRect(12, 12, hudW, 92);
+  ctx.fillStyle = pal().text; ctx.font = pal().font(12, "600"); ctx.fillText(state.label, 22, 32);
+  ctx.font = pal().font(12);
   state.servos.forEach((sv, i) => {
-    ctx.fillStyle = sv.atStop ? "#c0392b" : "#272735";
+    ctx.fillStyle = sv.atStop ? "#c0392b" : pal().text;
     ctx.fillText(`Servo ${["A", "B"][i]}  ${Math.round(sv.pulse)} µs   horn ${sv.horn.toFixed(1)}°   gimbal ${sv.gimbal.toFixed(2)}°${sv.atStop ? "  STOP" : ""}`, 22, 56 + i * 20);
   });
   const axis = inner([0, 0, 1]);
-  ctx.fillStyle = "#90909b"; ctx.fillText(`motor axis tilt ${(Math.acos(Math.max(-1, Math.min(1, axis[2]))) * 180 / Math.PI).toFixed(2)}°`, 22, 96);
+  ctx.fillStyle = pal().muted; ctx.fillText(`motor axis tilt ${(Math.acos(Math.max(-1, Math.min(1, axis[2]))) * 180 / Math.PI).toFixed(2)}°`, 22, 96);
   if (G.lever <= G.motorR + 12) { ctx.fillStyle = "#c0392b"; ctx.fillText(`Lever ${G.lever} mm is inside the outer ring (≈${(G.motorR + 12).toFixed(0)} mm): make it longer`, 12, H - 40); }
 }
 
-/* ------------------------------------------------------------------ loop, camera, start-up */
-function gimbalTick(now) {
-  if (!$("gimbal").hidden && gim.source === "sim" && simResult && play.playing && $("sim3d").hidden) {
-    const rows = simResult.rows, end = rows[rows.length - 1][0];
-    play.t = Math.min(end, play.t + (now - (gim.last || now)) / 1000 * play.speed);
-    if (play.t >= end) play.playing = false;
-  }
-  gim.last = now;
-  if (simResult) { $("gim-slider").min = simResult.rows[0][0]; $("gim-slider").max = simResult.rows[simResult.rows.length - 1][0]; $("gim-slider").value = play.t; }
-  if (!$("gim-play").disabled) $("gim-play").textContent = play.playing && gim.source === "sim" ? "Pause" : "Play flight";
-  drawGimbal(now);
-  requestAnimationFrame(gimbalTick);
-}
-/* The button must do what its label says. Playback is shared with the 3D sim page, so it can
- * already be running while this page shows "Play flight" (gimbal on Manual): then a toggle
- * would have paused it and the click looked dead. */
-action("gim-play", async () => {
-  const showingPause = play.playing && gim.source === "sim";
-  gim.source = "sim"; $("gim-source").value = "sim"; gim.sweep = null;
-  if (showingPause) { play.playing = false; return; }
-  if (!simResult) {
-    $("gim-play").disabled = true; $("gim-play").textContent = "Simulating…";
-    try { await runSimFlight(); } finally { $("gim-play").disabled = false; }
-  }
-  const rows = simResult.rows, end = rows[rows.length - 1][0];
-  if (play.t >= end - 0.05 || play.t < simResult.ignition_s - 1) play.t = simResult.ignition_s - 0.5;
-  gim.last = performance.now();
-  play.playing = true;
-});
-$("gim-slider").oninput = () => { if (!simResult) return; gim.source = "sim"; $("gim-source").value = "sim"; play.t = Number($("gim-slider").value); play.playing = false; };
+/* ------------------------------------------------------------------ camera, start-up
+ * Drawn from the 3D sim page's animation loop (one clock for both views). */
+window.drawGimbal = drawGimbal;
 (() => {
   const canvas = $("gim-canvas"); let drag = null;
   canvas.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY, gim.yaw, gim.pitch]; canvas.setPointerCapture(e.pointerId); });
@@ -240,7 +219,7 @@ $("gim-slider").oninput = () => { if (!simResult) return; gim.source = "sim"; $(
 const previousGimbalHook = window.onTabShown;
 window.onTabShown = id => {
   if (previousGimbalHook) previousGimbalHook(id);
-  if (id === "gimbal") { renderGimbalInputs(); if (gim.source === "live") pollGimbalLive(); }
+  if (id === "sim3d") { renderGimbalInputs(); if (gim.source === "live") pollGimbalLive(); }
 };
 (async () => {
   await window.studioReady;
@@ -249,5 +228,4 @@ window.onTabShown = id => {
   if (!cfg || !vehicle) return;
   gim.pulse = [cfg.SERVO_A_CENTER_US, cfg.SERVO_B_CENTER_US];
   renderGimbalInputs();
-  requestAnimationFrame(gimbalTick);
 })();

@@ -61,7 +61,12 @@ function renderRocket() {
              cfgSelect("SERVO_RATE_HZ", "Servo frame rate", [[50, "50 Hz (any servo)"], [100, "100 Hz"], [125, "125 Hz"], [200, "200 Hz (digital)"], [250, "250 Hz (digital)"]]));
   const led = el("input", {type: "checkbox"}); led.checked = cfg.LED_ACTIVE_LOW === 1;
   led.onchange = () => { cfg.LED_ACTIVE_LOW = led.checked ? 1 : 0; cfgChanged(); };
-  mount.append(top, el("label", {class: "check"}, led, " Status LED is active-low (power-up shows red → green → blue one at a time; untick if you see the opposite)"));
+  const bright = el("input", {type: "range", min: 10, max: 100, step: 10, "aria-label": "Status LED brightness"});
+  bright.value = cfg.LED_BRIGHTNESS_PCT;
+  const brightLabel = el("span", {text: `Status LED brightness · ${cfg.LED_BRIGHTNESS_PCT} %`});
+  bright.oninput = () => { cfg.LED_BRIGHTNESS_PCT = Number(bright.value); brightLabel.textContent = `Status LED brightness · ${bright.value} %`; cfgChanged(); };
+  mount.append(top, el("label", {class: "check"}, led, " Status LED is active-low (power-up shows red → green → blue one at a time; untick if you see the opposite)"),
+    el("label", {class: "field led-brightness"}, brightLabel, bright));
   for (const s of ["A", "B"]) {
     const block = el("div", {class: "servo-block"}, el("h3", {text: `Servo ${s} · tilts about body ${s === "A" ? "X" : "Y"}`}));
     const g = grid();
@@ -218,13 +223,13 @@ function drawSideView() {
     if (b.nose_shape === "parabolic") return R * (2 * t - t * t);
     if (b.nose_shape === "elliptical") return R * Math.sqrt(Math.max(0, 1 - (1 - t) ** 2));
     const rho = (R * R + (Ln * s) ** 2) / (2 * R), xx = (Ln - x) * s; return Math.sqrt(Math.max(0, rho * rho - xx * xx)) + R - rho; };
-  ctx.font = "10px -apple-system, sans-serif"; ctx.lineWidth = 1;
+  ctx.font = pal().font(10); ctx.lineWidth = 1;
   /* body outline */
   ctx.beginPath(); ctx.moveTo(X(0), cy);
   for (let x = 0; x <= Ln; x += Ln / 40) ctx.lineTo(X(x), cy - noseR(x));
   ctx.lineTo(X(Ln + b.length_mm), cy - R); ctx.lineTo(X(Ln + b.length_mm), cy + R); ctx.lineTo(X(Ln), cy + R);
   for (let x = Ln; x >= 0; x -= Ln / 40) ctx.lineTo(X(x), cy + noseR(x));
-  ctx.closePath(); ctx.fillStyle = "#f1eefc"; ctx.fill(); ctx.strokeStyle = "#6a4ce5"; ctx.stroke();
+  ctx.closePath(); ctx.fillStyle = pal().fill; ctx.fill(); ctx.strokeStyle = pal().purple; ctx.stroke();
   /* parts */
   vehicle.parts.forEach((p, i) => { const x0 = X(p[2] - p[3] / 2), w = Math.max(2, p[3] * s), h = R * 1.2;
     ctx.fillStyle = `hsla(${(i * 47) % 360},55%,60%,0.35)`; ctx.fillRect(x0, cy - h / 2, w, h); });
@@ -239,7 +244,7 @@ function drawSideView() {
   marker(m.cg_wet_mm, "#1f6fb2", `CG ${m.cg_wet_mm.toFixed(0)}`, true);
   marker(m.pivot_mm, "#e0661b", `pivot ${m.pivot_mm.toFixed(0)}`, false);
   /* scale */
-  ctx.strokeStyle = "#90909b"; ctx.fillStyle = "#90909b"; const y = H - 14;
+  ctx.strokeStyle = pal().muted; ctx.fillStyle = pal().muted; const y = H - 14;
   ctx.beginPath(); ctx.moveTo(X(0), y); ctx.lineTo(X(m.length_mm), y); ctx.stroke();
   for (let mm = 0; mm <= m.length_mm; mm += 100) { ctx.beginPath(); ctx.moveTo(X(mm), y - 4); ctx.lineTo(X(mm), y + 2); ctx.stroke(); ctx.fillText(`${mm}`, X(mm) - 8, y - 6); }
   ctx.fillText(`${m.length_mm.toFixed(0)} mm`, X(m.length_mm) - 40, y + 12);
@@ -430,18 +435,18 @@ function drawBubble(tx, ty) {
   const canvas = $("bubble"), ctx = canvas.getContext("2d"), size = 260, c = size / 2, r = 110, range = 30;
   const scale = window.devicePixelRatio || 1; canvas.width = size * scale; canvas.height = size * scale; canvas.style.width = canvas.style.height = size + "px";
   ctx.scale(scale, scale); ctx.clearRect(0, 0, size, size);
-  ctx.strokeStyle = "#e3e1ea"; ctx.lineWidth = 1;
+  ctx.strokeStyle = pal().line; ctx.lineWidth = 1;
   [10, 20, 30].forEach(d => { ctx.beginPath(); ctx.arc(c, c, r * d / range, 0, 2 * Math.PI); ctx.stroke(); });
   ctx.beginPath(); ctx.moveTo(c - r, c); ctx.lineTo(c + r, c); ctx.moveTo(c, c - r); ctx.lineTo(c, c + r); ctx.stroke();
   const limit = cfg ? cfg.MAX_TILT_DEG : 25;
-  ctx.strokeStyle = "#e7a9a9"; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(c, c, r * Math.min(limit, range) / range, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle = "#90909b"; ctx.font = "10px -apple-system, sans-serif"; ctx.fillText("about X →", size - 62, c - 6); ctx.fillText("about Y ↑", c + 6, 14);
+  ctx.strokeStyle = pal().badLine; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(c, c, r * Math.min(limit, range) / range, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = pal().muted; ctx.font = pal().font(10); ctx.fillText("about X →", size - 62, c - 6); ctx.fillText("about Y ↑", c + 6, 14);
   [10, 20, 30].forEach(d => ctx.fillText(`${d}°`, c + 3, c - r * d / range + 11));
   if (tx == null) return;
   const x = c + Math.max(-1, Math.min(1, tx / range)) * r, y = c - Math.max(-1, Math.min(1, ty / range)) * r;
-  ctx.fillStyle = Math.hypot(tx, ty) > limit ? "#c0392b" : "#6a4ce5";
+  ctx.fillStyle = Math.hypot(tx, ty) > limit ? "#c0392b" : pal().purple;
   ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.fill();
-  ctx.fillStyle = "#272735"; ctx.fillText(`X ${tx.toFixed(1)}°  Y ${ty.toFixed(1)}°`, 8, size - 8);
+  ctx.fillStyle = pal().text; ctx.fillText(`X ${tx.toFixed(1)}°  Y ${ty.toFixed(1)}°`, 8, size - 8);
 }
 
 /* ------------------------------------------------------------------ launch checklist */
@@ -609,7 +614,7 @@ function drawLogCharts() {
   const events = logData.events;
   charts.forEach(([title, keys, names]) => {
     const canvas = el("canvas", {class: "log-chart", role: "img", "aria-label": title});
-    const legend = el("div", {class: "legend"}, ...names.map((n, i) => el("span", {style: `color:${COLORS[i]}`, text: `● ${n}`})));
+    const legend = el("div", {class: "legend"}, ...names.map((n, i) => el("span", {style: `color:${pal().series[i]}`, text: `● ${n}`})));
     wrap.append(el("article", {class: "card chart-card"}, el("div", {class: "card-heading"}, el("h2", {text: title}), legend), canvas));
     requestAnimationFrame(() => lineChart(canvas, rows.map(r => r[col("t_s")]), keys.map(k => rows.map(r => r[col(k)])), events));
   });
@@ -623,14 +628,14 @@ function lineChart(canvas, t, series, events) {
   let lo = Math.min(...series.flat()), hi = Math.max(...series.flat());
   if (hi - lo < 1e-6) { lo -= 1; hi += 1; } const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
   const X = v => left + (v - t0) / (t1 - t0) * width, Y = v => top + (hi - v) / (hi - lo) * height;
-  ctx.font = "10px -apple-system, sans-serif"; ctx.fillStyle = "#90909b"; ctx.strokeStyle = "#ebebef"; ctx.lineWidth = 1;
+  ctx.font = pal().font(10); ctx.fillStyle = pal().muted; ctx.strokeStyle = pal().grid; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) { const v = hi - i * (hi - lo) / 4, y = Y(v); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); ctx.fillText(v.toFixed(Math.abs(hi - lo) < 10 ? 1 : 0), 2, y + 3); }
   for (let i = 0; i <= 5; i++) { const v = t0 + i * (t1 - t0) / 5; ctx.fillText(`${v.toFixed(1)}s`, X(v) - 10, top + height + 18); }
   let lastX = -1e9, row = 0;
-  events.forEach(e => { if (e.t < t0 || e.t > t1) return; ctx.strokeStyle = /FAULT/.test(e.event) ? "#c0392b" : "#c9c4dc"; ctx.setLineDash([3, 3]);
+  events.forEach(e => { if (e.t < t0 || e.t > t1) return; ctx.strokeStyle = /FAULT/.test(e.event) ? "#c0392b" : pal().line2; ctx.setLineDash([3, 3]);
     const x = X(e.t); row = x - lastX < 80 ? row + 1 : 0; lastX = x;
-    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + height); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = "#8d84b0"; ctx.fillText(e.event, x + 3, top + 10 + row * 11); });
-  series.forEach((values, i) => { ctx.strokeStyle = COLORS[i]; ctx.lineWidth = 1.6; ctx.beginPath();
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + height); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = pal().muted; ctx.fillText(e.event, x + 3, top + 10 + row * 11); });
+  series.forEach((values, i) => { ctx.strokeStyle = pal().series[i]; ctx.lineWidth = 1.6; ctx.beginPath();
     const step = Math.max(1, Math.floor(values.length / (width * 2)));
     for (let j = 0; j < values.length; j += step) { const x = X(t[j]), y = Y(values[j]); if (j) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
     ctx.stroke(); });
@@ -649,3 +654,112 @@ window.onTabShown = id => {
 };
 window.addEventListener("resize", () => { if (logData && !$("logs").hidden) drawLogCharts(); if (!$("rocket").hidden) drawSideView(); });
 (async () => { await window.studioReady; await loadRocket(); drawBubble(null, null); })();
+
+/* ------------------------------------------------------------------ one-click install
+ * Save the setup (and the tune) -> build both images -> wait for the board in DFU -> flash with
+ * read-back verification. The firmware has no USB serial yet, so the board has to be put into
+ * DFU by hand (BOOT + RST); everything else is automatic. */
+let installCancel = false;
+function installDialog(title) {
+  $("modal-title").textContent = title;
+  $("modal").hidden = false;
+  const steps = [["save", "Save your setup to vehicle_config.h"], ["build", "Build the firmware"],
+                 ["find", "Find the board in DFU mode"], ["flash", "Install and verify every byte"]];
+  const list = el("ol", {class: "install-steps"}, ...steps.map(([id, text]) => el("li", {id: `install-${id}`, class: "pending"}, el("span", {text}))));
+  const detail = el("div", {id: "install-detail", class: "help"});
+  $("modal-body").replaceChildren(list, detail);
+  $("modal-ok").hidden = true; $("modal-cancel").textContent = "Cancel";
+  $("modal-cancel").onclick = () => { installCancel = true; };
+  return {
+    step(id, state, text) { const li = $(`install-${id}`); li.className = state; if (text !== undefined) li.querySelector("span").textContent = text; },
+    detail(nodes) { detail.replaceChildren(...[].concat(nodes)); },
+    finish(ok) { $("modal-cancel").textContent = ok ? "Done" : "Close"; $("modal-cancel").onclick = () => { $("modal").hidden = true; $("modal-ok").hidden = false; }; },
+  };
+}
+async function installOnBoard(source) {
+  if (!cfg) throw new Error("Rocket setup is not loaded yet.");
+  if (source === "tune") {
+    /* copy the Tuning lab's gains into the setup, like "Use in rocket setup" */
+    const x = profile.axes[0];
+    Object.assign(cfg, {KP: x.kp, KI: x.ki, KD: x.kd, INTEGRATOR_LIMIT: x.integrator_limit, OUTPUT_RATE_LIMIT: x.output_rate_limit,
+      DERIVATIVE_CUTOFF: x.derivative_cutoff_hz, MAX_TILT_DEG: profile.maximum_tilt_deg});
+    renderRocket();
+  }
+  await api("rocket/validate", {config: cfg});
+
+  /* choose the image */
+  const benchOpen = sectionMissing("bench").length;
+  const choice = el("div", {class: "image-choice"});
+  const option = (value, title, text, checked) => {
+    const radio = el("input", {type: "radio", name: "install-image", value}); radio.checked = checked;
+    return el("label", {class: "choice"}, radio, el("div", {}, el("strong", {text: title}), el("p", {text})));
+  };
+  choice.append(option("bench", "Bench image (recommended for testing)", "Never arms. The gimbal follows the board by hand, so you can check the servos.", true),
+    option("flight", "Flight image", benchOpen ? `Arms itself on the pad. ${benchOpen} bench check${benchOpen > 1 ? "s are" : " is"} still open.` : "Arms itself on the pad and runs TVC during boost.", false));
+  const tune = el("p", {class: "help", text: `Installs: KP ${cfg.KP} · KI ${cfg.KI} · KD ${cfg.KD} · servo A ${cfg.SERVO_A_MIN_US}/${cfg.SERVO_A_CENTER_US}/${cfg.SERVO_A_MAX_US} µs · servo B ${cfg.SERVO_B_MIN_US}/${cfg.SERVO_B_CENTER_US}/${cfg.SERVO_B_MAX_US} µs · nose ${cfg.NOSE_AXIS} · LED ${cfg.LED_BRIGHTNESS_PCT} %`});
+  if (!await confirmModal("Install on board", [choice, tune, el("p", {class: "help", text: "Plug the board in by USB-C. If it isn't in DFU mode yet, you'll be told how."})], "Install")) return;
+  const image = document.querySelector('input[name="install-image"]:checked').value;
+  if (image === "flight" && benchOpen && !await confirmModal("Bench checks are not done", [el("p", {class: "warn-text", text: "The flight image arms itself when it stands still and upright. Finish the bench checks first unless you know what you're doing."})], "Install flight image anyway")) return;
+
+  installCancel = false;
+  const ui = installDialog(`Installing the ${image} image`);
+  try {
+    ui.step("save", "running");
+    if (!same(cfg, savedCfg)) {
+      const saved = await api("rocket/save", {config: cfg});
+      cfg = saved.config; savedCfg = structuredClone(cfg); buildInfo = saved.build; renderRocket(); syncTuningFromRocket();
+      ui.step("save", "done", "Setup saved to vehicle_config.h");
+    } else ui.step("save", "done", "Setup already saved");
+
+    ui.step("build", "running", "Building the firmware (about 20 s)…");
+    const built = await api("build/run", {});
+    buildInfo = built; renderImages();
+    if (!built.ok) { ui.step("build", "failed", "Build failed"); ui.detail(el("pre", {class: "log", text: built.log.slice(-3000)})); ui.finish(false); return; }
+    const target = built.images[image];
+    ui.step("build", "done", `Built ${image} image · ${(target.size / 1024).toFixed(1)} KB · ${target.sha256.slice(0, 12)}…`);
+
+    ui.step("find", "running", "Looking for the board…");
+    let devices = [];
+    for (let tries = 0; !installCancel; tries++) {
+      devices = (await api("dfu/list", {})).devices || [];
+      if (devices.length) break;
+      if (tries === 0) ui.detail([el("strong", {text: "Put the board in DFU mode:"}),
+        el("ol", {class: "steps"}, el("li", {text: "Unplug the LiPo."}), el("li", {text: "Hold the BOOT button."}),
+          el("li", {text: "Plug in USB-C, or tap RST."}), el("li", {text: "Let go of BOOT. Studio continues by itself."}))]);
+      ui.step("find", "running", `Waiting for the board in DFU mode… (${tries + 1})`);
+      await new Promise(r => setTimeout(r, 1500));
+      if (tries > 200) throw new Error("No board appeared in DFU mode within 5 minutes.");
+    }
+    if (installCancel) { ui.step("find", "failed", "Cancelled. Nothing was written to the board."); ui.finish(false); return; }
+    if (devices.length > 1) { ui.step("find", "failed", "More than one board in DFU mode: unplug the others."); ui.finish(false); return; }
+    ui.step("find", "done", `Found board ${devices[0].serial}`);
+    ui.detail([]);
+
+    ui.step("flash", "running", "Installing… do not unplug (about 10 s)");
+    const result = await api("dfu/flash", {image, sha256: target.sha256, serial: devices[0].serial});
+    appState.flashed = {image, sha256: target.sha256, time: Date.now() / 1000};
+    if (image === "bench") toggleCheck("b-flash", true); else toggleCheck("p-flight", true);
+    renderImages(); renderChecklists();
+    ui.step("flash", "done", "Installed and verified: every byte matches");
+    ui.detail([el("strong", {text: "Now restart the board:"}),
+      el("p", {text: "Unplug USB-C, wait 2 s, plug it back in (connect the LiPo first if servos are plugged in). At power-up the LED shows red → green → blue, then the servos sweep."}),
+      el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);
+    ui.finish(true);
+  } catch (error) {
+    for (const id of ["save", "build", "find", "flash"]) { const li = $(`install-${id}`); if (li && li.className === "running") ui.step(id, "failed"); }
+    ui.detail(el("p", {class: "warn-text", text: error.message}));
+    ui.finish(false);
+  }
+}
+action("install-board", () => installOnBoard("setup"));
+action("rocket-install", () => installOnBoard("setup"));
+action("tune-install", () => installOnBoard("tune"));
+
+/* redraw the static canvases when the appearance changes (3D views redraw every frame anyway) */
+window.addEventListener("easytvc-theme", () => {
+  try { draw(); } catch (error) { /* tuning chart not ready */ }
+  if (rocketModel) drawSideView();
+  if (logData) drawLogCharts();
+  if (liveStatus) renderLive(); else drawBubble(null, null);
+  if (typeof drawSimCharts === "function") drawSimCharts();
+});

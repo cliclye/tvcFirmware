@@ -394,7 +394,8 @@ class Handler(BaseHTTPRequestHandler):
                   "/launch.js": ("launch.js", "text/javascript; charset=utf-8"),
                   "/sim3d.js": ("sim3d.js", "text/javascript; charset=utf-8"),
                   "/gimbal.js": ("gimbal.js", "text/javascript; charset=utf-8"),
-                  "/style.css": ("style.css", "text/css; charset=utf-8")}
+                  "/style.css": ("style.css", "text/css; charset=utf-8"),
+                  "/terminal.css": ("terminal.css", "text/css; charset=utf-8")}
         if self.path in static:
             name, kind = static[self.path]
             self.send_content(200, (ROOT / "web" / name).read_bytes(), kind)

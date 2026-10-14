@@ -45,7 +45,8 @@ def discover(output):
         name = re.search(r'name="([^"]+)"', line)
         serial = re.search(r'serial="([^"]+)"', line)
         path = re.search(r'path="([^"]+)"', line)
-        if not name or not name.group(1).startswith("@Internal Flash /0x08000000/"): continue
+        # Real STM32F405 ROM bootloaders pad the name ("@Internal Flash  /0x08000000/..."): allow any spacing.
+        if not name or not re.match(r"@Internal Flash\s+/0x08000000/", name.group(1)): continue
         if serial and path: devices.append({"serial": serial.group(1), "path": path.group(1), "memory": name.group(1)})
     return devices
 
