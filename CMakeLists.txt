@@ -56,9 +56,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
 
     # Two images from the same source: the bench image never arms and lets the gimbal follow the
     # board by hand; the flight image arms on the pad and runs TVC during boost.
-    function(easytvc_image name bench_mode)
+    function(easytvc_image name bench_mode main_source)
         add_executable(${name}
-            Core/Src/main.c
+            ${main_source}
             Core/Src/startup_stm32f405rg.c
             Core/Src/easytvc_safety.c
         )
@@ -98,8 +98,10 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         )
     endfunction()
 
-    easytvc_image(easytvc_bench 1)
-    easytvc_image(easytvc_flight 0)
+    easytvc_image(easytvc_bench 1 Core/Src/main.c)
+    easytvc_image(easytvc_flight 0 Core/Src/main.c)
+    # Sensor test: reads every sensor, logs every raw reading to SD, never arms or moves a servo.
+    easytvc_image(easytvc_sensortest 1 Core/Src/sensor_test.c)
 else()
     add_library(easytvc_core STATIC ${EASYTVC_CORE_SOURCES})
     target_include_directories(easytvc_core PUBLIC Core/Inc)

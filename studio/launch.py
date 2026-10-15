@@ -4,9 +4,12 @@ Python standard library only. Everything runs on this Mac; nothing is uploaded a
 """
 from __future__ import annotations
 
-from collections import deque
+import bisect
+from collections import OrderedDict, deque
+import csv
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -181,10 +184,13 @@ def write_config(project: Path, values: dict) -> dict:
 # build / flash
 # --------------------------------------------------------------------------------------------
 
+IMAGES = ("bench", "flight", "sensortest")
+
+
 def image_info(project: Path) -> dict:
     config_mtime = config_path(project).stat().st_mtime
     images = {}
-    for key in ("bench", "flight"):
+    for key in IMAGES:
         path = project / "build-arm" / f"easytvc_{key}.bin"
         if path.is_file():
             data = path.read_bytes()
@@ -232,8 +238,8 @@ def dfu_devices(project: Path) -> dict:
 
 
 def flash(project: Path, image: str, sha256: str, serial: str | None) -> dict:
-    if image not in ("bench", "flight"):
-        raise ValueError("Choose the bench or the flight image.")
+    if image not in IMAGES:
+        raise ValueError("Choose the bench, flight or sensor test image.")
     info = image_info(project)["images"][image]
     if info is None:
         raise ValueError("Build the firmware first.")
@@ -264,6 +270,11 @@ def serial_ports():
                       glob.glob("/dev/cu.SLAB*") + glob.glob("/dev/cu.wchusbserial*")))
 
 
+SENSOR_CHECKS = [("accel_id", 0), ("gyro_id", 0), ("baro_id", 0), ("accel_1g", 0), ("gyro_still", 0),
+                 ("imu_alive", 0), ("imu_rate", 0), ("pressure", 0), ("baro_temp", 0), ("humidity", 0),
+                 ("baro_rate", 0), ("accel_temp", 0), ("sd", 0), ("supply", 0)]   # bit order of sensor_test.h
+
+
 def parse_line(text: str):
     """Classify one firmware telemetry line. Returns (kind, dict) or None."""
     parts = text.strip().split(",")
@@ -274,6 +285,20 @@ def parse_line(text: str):
                               "records": v[4], "dropped": v[5], "write_errors": v[6],
                               "session": v[7], "state": STATES[v[8]] if 0 <= v[8] < 8 else str(v[8]),
                               "armed": v[9], "recovery": v[10], "chute": v[11]}
+        if parts[0] == "T" and len(parts) == 15:
+            v = [int(x) for x in parts[1:]]
+            return "sensors", {"ms": v[0], "accel_g": [v[1] / 1000, v[2] / 1000, v[3] / 1000],
+                               "gyro_dps": [v[4] / 100, v[5] / 100, v[6] / 100], "imu_temp_c": v[7] / 100,
+                               "pressure_pa": v[8], "baro_temp_c": v[9] / 100, "humidity_pct": v[10] / 10,
+                               "vdda_v": v[11] / 1000, "batt_pin_v": v[12] / 1000, "mcu_temp_c": v[13] / 100}
+        if parts[0] == "Q" and len(parts) == 17:
+            v = [int(x) for x in parts[1:]]
+            names = [key for key, _ in SENSOR_CHECKS]
+            return "sensor_checks", {"ms": v[0], "checks": {n: bool(v[1] >> i & 1) for i, n in enumerate(names)},
+                                     "boot": {n: bool(v[2] >> i & 1) for i, n in enumerate(names)},
+                                     "ids": [v[3], v[4], v[5]], "imu_samples": v[6], "imu_errors": v[7],
+                                     "baro_samples": v[8], "baro_errors": v[9], "sd": v[10], "records": v[11],
+                                     "dropped": v[12], "write_errors": v[13], "session": v[14], "overruns": v[15]}
         if parts[0] == "B" and len(parts) == 10:
             v = [int(x) for x in parts[1:]]
             return "bench", {"ms": v[0], "tilt_x": v[1] / 100, "tilt_y": v[2] / 100,
@@ -416,8 +441,65 @@ def flights_dir(create: bool = True) -> Path:
     return path
 
 
+SENSOR_SERIES = {"imu": ("accel_x_g", "accel_y_g", "accel_z_g", "gyro_x_dps", "gyro_y_dps", "gyro_z_dps",
+                         "imu_temp_c", "read_us"),
+                 "baro": ("pressure_pa", "baro_temp_c", "humidity_pct"),
+                 "adc": ("vdda_v", "batt_pin_v", "mcu_temp_c", "max_loop_us")}
+_sensor_sessions: "OrderedDict[str, dict]" = OrderedDict()   # parsed sessions, for zoom and CSV
+
+
+def _sensor_lookup(data_id):
+    if not isinstance(data_id, str) or data_id not in _sensor_sessions:
+        raise ValueError("That sensor session is no longer loaded. Open it again.")
+    return _sensor_sessions[data_id]
+
+
+def sensor_window(data_id, t0=None, t1=None, points=6000) -> dict:
+    """Every channel between t0 and t1 (s), at most `points` samples per record type, evenly picked.
+    Zoomed in far enough, this is every sample the board recorded."""
+    parsed = _sensor_lookup(data_id)
+    points = max(100, min(20000, int(points)))
+    out = {}
+    for group, cols in SENSOR_SERIES.items():
+        rows = parsed[group]
+        if t0 is not None and t1 is not None:
+            lo = bisect.bisect_left([r["t_s"] for r in rows], float(t0))
+            hi = bisect.bisect_right([r["t_s"] for r in rows], float(t1))
+            rows = rows[max(0, lo - 1):hi + 1]
+        step = max(1, len(rows) // points)
+        rows = rows[::step]
+        out[group] = {"t": [r["t_s"] for r in rows], "step": step, **{c: [r[c] for r in rows] for c in cols}}
+    return out
+
+
+def sensor_csv_text(data_id) -> dict:
+    parsed = _sensor_lookup(data_id)
+    keys, rows = _viewer(None).sensor_csv(parsed)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=keys)
+    writer.writeheader()
+    writer.writerows(rows)
+    return {"name": f"easytvc_sensortest_{parsed['session']}.csv", "csv": buffer.getvalue(), "rows": len(rows)}
+
+
+def summarize_sensor_session(viewer, data: bytes, source: str) -> dict:
+    parsed = viewer.parse_sensor_session(data)
+    report = viewer.sensor_report(parsed)
+    data_id = hashlib.sha256(data).hexdigest()[:16]
+    _sensor_sessions[data_id] = parsed
+    _sensor_sessions.move_to_end(data_id)
+    while len(_sensor_sessions) > 3:
+        _sensor_sessions.popitem(last=False)
+    return {"kind": "sensortest", "session": parsed["session"], "header": parsed["header"], "source": source,
+            "report": report, "count": parsed["records"], "data_id": data_id,
+            "series": sensor_window(data_id, points=4000)}
+
+
 def summarize_session(project, data: bytes, source: str) -> dict:
-    session, header, rows = _viewer(project).parse_session(data)
+    viewer = _viewer(project)
+    if viewer.is_sensor_session(data):
+        return summarize_sensor_session(viewer, data, source)
+    session, header, rows = viewer.parse_session(data)
     events, previous = [], None
     for r in rows:
         if r["state"] != previous:
@@ -446,14 +528,21 @@ def summarize_session(project, data: bytes, source: str) -> dict:
 
 
 def external_disks():
-    result = subprocess.run(["diskutil", "list", "-plist", "external", "physical"],
-                            capture_output=True, timeout=15)
+    try:
+        result = subprocess.run(["diskutil", "list", "-plist", "external", "physical"],
+                                capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        raise ValueError("macOS didn't list the disks in time. Re-seat the card reader and press Refresh.")
     if result.returncode:
         return []
     disks = []
     for disk in plistlib.loads(result.stdout).get("WholeDisks", []):
-        info = subprocess.run(["diskutil", "info", "-plist", disk], capture_output=True, timeout=15)
-        meta = plistlib.loads(info.stdout) if info.returncode == 0 else {}
+        # A card reader can be slow to answer (still spinning up): list it anyway, without details.
+        try:
+            info = subprocess.run(["diskutil", "info", "-plist", disk], capture_output=True, timeout=8)
+            meta = plistlib.loads(info.stdout) if info.returncode == 0 else {}
+        except (subprocess.TimeoutExpired, plistlib.InvalidFileException):
+            meta = {"MediaName": "Card reader (not answering yet)"}
         disks.append({"id": disk, "name": meta.get("MediaName", "Unknown"),
                       "size_gb": round(meta.get("Size", meta.get("TotalSize", 0)) / 1e9, 1)})
     return disks

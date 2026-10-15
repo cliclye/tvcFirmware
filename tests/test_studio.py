@@ -84,6 +84,52 @@ class FlightSim3DTests(unittest.TestCase):
         self.assertGreaterEqual(result["success"], 8)
 
 
+class SensorTestImageTests(unittest.TestCase):
+    """The sensor-test firmware's SD records and serial lines, read by Studio."""
+
+    def test_sd_records_match_the_c_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe, out = Path(tmp) / "fixture", Path(tmp) / "session.bin"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Werror", "-I", str(ROOT / "Core" / "Inc"),
+                            str(ROOT / "tests" / "sensor_test_fixture.c"), "-o", str(exe)], check=True)
+            subprocess.run([str(exe), str(out)], check=True)
+            result = studio.launch.summarize_session(ROOT, out.read_bytes(), "test")
+        self.assertEqual(result["kind"], "sensortest")
+        r = result["report"]
+        self.assertTrue(r["passed"])
+        self.assertEqual(r["counts"]["gaps"], 0)
+        self.assertEqual((r["counts"]["imu"], r["counts"]["baro"], r["counts"]["adc"]), (4000, 500, 100))
+        self.assertAlmostEqual(r["rates_hz"]["imu"], 400, delta=1)
+        self.assertEqual(r["ids"], {"accel_id": 0x1E, "gyro_id": 0x0F, "baro_id": 0x60})
+        self.assertAlmostEqual(r["channels"]["accel_z_g"]["mean"], 1.0, delta=0.002)
+        self.assertAlmostEqual(r["channels"]["gyro_y_dps"]["mean"], -16 * 2000 / 32768, places=4)
+        self.assertEqual(r["channels"]["pressure_pa"]["mean"], 101325)
+        self.assertAlmostEqual(r["channels"]["vdda_v"]["mean"], 3.301)
+        self.assertEqual([c["key"] for c in r["checks"] if not c["now"]], ["humidity"])
+        self.assertEqual(studio.launch.sensor_csv_text(result["data_id"])["rows"], r["counts"]["records"])
+        zoom = studio.launch.sensor_window(result["data_id"], 2.0, 2.1)   # zoomed in: every sample
+        self.assertEqual(zoom["imu"]["step"], 1)
+        self.assertTrue(40 <= len(zoom["imu"]["t"]) <= 43)
+        with self.assertRaises(ValueError):
+            studio.launch.sensor_window("missing", 0, 1)
+
+    def test_serial_lines(self):
+        kind, t = studio.launch.parse_line("T,1234,10,-20,998,150,-5,0,2650,101325,2412,452,3301,1234,3100")
+        self.assertEqual(kind, "sensors")
+        self.assertEqual(t["accel_g"], [0.01, -0.02, 0.998])
+        self.assertEqual(t["gyro_dps"], [1.5, -0.05, 0.0])
+        self.assertEqual((t["pressure_pa"], t["humidity_pct"], t["vdda_v"]), (101325, 45.2, 3.301))
+        kind, q = studio.launch.parse_line(f"Q,5000,{(1 << 14) - 1 - (1 << 12)},{(1 << 14) - 1},30,15,96,2000,0,250,1,0,0,0,0,7,3")
+        self.assertEqual(kind, "sensor_checks")
+        self.assertFalse(q["checks"]["sd"])
+        self.assertTrue(q["boot"]["sd"] and q["checks"]["supply"])
+        self.assertEqual((q["ids"], q["session"], q["overruns"]), ([30, 15, 96], 7, 3))
+
+    def test_flash_accepts_the_sensor_test_image(self):
+        self.assertIn("sensortest", studio.launch.IMAGES)
+        self.assertIn("sensortest", studio.launch.image_info(ROOT)["images"])
+
+
 class StudioTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls): cls.native = studio.NativeController()

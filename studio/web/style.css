@@ -72,7 +72,7 @@ pre.log{background:var(--log-bg);color:var(--log-text);font-size:10px;line-heigh
 #gimbal .controls{grid-template-columns:1fr}
 
 /* ---- install on board ---- */
-.install-button{margin-top:22px;width:100%}.led-brightness{margin-top:14px}.led-brightness input{accent-color:var(--purple)}
+.install-button{margin-top:22px;width:100%}.sensor-test-button{margin-top:8px}.led-brightness{margin-top:14px}.led-brightness input{accent-color:var(--purple)}
 .image-choice{display:grid;gap:10px}.choice{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer}
 .choice p{margin:4px 0 0;font-size:11px;color:var(--muted);line-height:1.5}.choice input{margin-top:3px;accent-color:var(--purple)}
 .install-steps{list-style:none;padding:0;margin:8px 0 14px;display:grid;gap:10px}.install-steps li{display:flex;gap:10px;align-items:center;font-size:13px}
@@ -102,6 +102,16 @@ input[type=number],input[type=text],select{color:var(--text)}
 @keyframes term-blink{50%{opacity:.25}}
 
 /* ---- manual TVC joystick ---- */
+.sensor-checks{list-style:none;padding:0;margin:16px 0 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px 18px;font-size:12px}
+.sensor-checks-log time{width:130px;flex:none}.sensor-checks-log li>b{font-size:10px;letter-spacing:.8px;min-width:34px}.sensor-checks-log li.pass>b{color:var(--green)}.sensor-checks-log li.fail>b{color:var(--red)}
+.sensor-checks li{display:flex;gap:10px;align-items:baseline}.sensor-checks b{font-size:10px;letter-spacing:.8px;min-width:34px}
+.sensor-checks .pass b{color:var(--green)}.sensor-checks .fail b{color:var(--red)}.sensor-checks .fail{color:var(--text)}
+.sensor-mode .log-grid{grid-template-columns:1fr}.sensor-mode .sensor-checks-log{columns:2;column-gap:32px}.sensor-mode .sensor-checks-log li{break-inside:avoid}
+.sensor-zoom-bar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:4px 2px}.sensor-zoom-bar .mono{font-size:12px}
+.sensor-chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.sensor-plot{position:relative;height:230px;margin-top:10px}.sensor-chart{position:absolute;inset:0;width:100%;height:100%}.sensor-chart.overlay{cursor:crosshair}
+.sensor-legend{flex-wrap:wrap;justify-content:flex-end;font-variant-numeric:tabular-nums}
+@media(max-width:1150px){.sensor-chart-grid{grid-template-columns:1fr}.sensor-mode .sensor-checks-log{columns:1}}
 .toolbar-spacer{flex:1}.fs-only{display:none!important}
 .sim-view.fullscreen{position:fixed;inset:0;z-index:1000;margin:0;border-radius:0;border:0;padding:0;background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .sim-view.fullscreen .fs-only{display:inline-flex!important;gap:8px}

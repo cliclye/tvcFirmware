@@ -76,6 +76,9 @@ bool DataLogger_Init(DataLogger *logger, const char *header_text);
  * in dropped_records. */
 bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record);
 
+/* Same, for any other 32-byte record layout (the sensor-test image's records). */
+bool DataLogger_LogRaw(DataLogger *logger, const void *record);
+
 /* Queue the partly filled sector so a power loss costs at most ~1 s (it keeps filling). */
 bool DataLogger_Flush(DataLogger *logger);
 

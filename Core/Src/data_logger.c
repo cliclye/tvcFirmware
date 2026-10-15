@@ -173,6 +173,11 @@ static bool enqueue_fill(DataLogger *logger, bool advance)
 
 bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record)
 {
+    return DataLogger_LogRaw(logger, record);
+}
+
+bool DataLogger_LogRaw(DataLogger *logger, const void *record)
+{
     if (!logger->initialized || logger->region_full) {
         return false;
     }

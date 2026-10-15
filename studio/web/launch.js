@@ -316,13 +316,21 @@ function renderVehicleResults() {
 }
 
 /* ------------------------------------------------------------------ build & flash */
+const IMAGE_NAMES = {bench: "Bench image", flight: "Flight image", sensortest: "Sensor test image"};
+const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
+  el("ol", {class: "steps"}, el("li", {text: "Put a microSD card in the board (it records every reading)."}),
+    el("li", {text: "Lay the board flat and still. Unplug USB-C, wait 2 s, plug it back in."}),
+    el("li", {text: "LEDs red → green → blue, one beep, then 3 s of fast green blinking while it tests. Don't touch it."}),
+    el("li", {text: "Two short beeps + steady green = every sensor passed. Three long beeps + red blinking = a failure: 1 blink IMU, 2 barometer, 3 SD card, 4 power."}),
+    el("li", {text: "Leave it running as long as you like (blue blinks while recording, ~9 min of space), then read the card in Flight logs for every value."})),
+  el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2 the Live board page shows the values live."})];
 function renderImages() {
   const info = buildInfo; if (!info) return;
   const list = $("images"); list.replaceChildren();
-  for (const key of ["bench", "flight"]) {
+  for (const key of ["bench", "flight", "sensortest"]) {
     const image = info.images[key];
     list.append(el("div", {class: `image-row ${image && !image.stale ? "" : "stale"}`},
-      el("strong", {text: key === "bench" ? "Bench image" : "Flight image"}),
+      el("strong", {text: IMAGE_NAMES[key]}),
       el("span", {text: image ? `${(image.size / 1024).toFixed(1)} KB · ${fmtTime(image.built)}${image.stale ? " · OUT OF DATE" : ""}` : "not built"}),
       el("code", {text: image ? image.sha256.slice(0, 16) + "…" : ""})));
   }
@@ -342,7 +350,7 @@ action("build", async () => {
     buildInfo = result; $("build-log").textContent = result.log;
     renderImages();
     notice(result.ok ? "Build finished." : "Build failed. Open the build log.");
-  } finally { $("build").disabled = false; $("build").innerHTML = "Build bench + flight images <span>↗</span>"; }
+  } finally { $("build").disabled = false; $("build").innerHTML = "Build all images <span>↗</span>"; }
 });
 let dfuDevices = [];
 action("dfu-refresh", async () => {
@@ -356,7 +364,7 @@ async function flashImage(key) {
   if (!buildInfo || !buildInfo.images[key]) throw new Error("Build the firmware first.");
   const image = buildInfo.images[key];
   if (image.stale) throw new Error("This image is older than your saved setup. Build again.");
-  const body = [el("p", {text: `${key === "bench" ? "Bench" : "Flight"} image · ${(image.size / 1024).toFixed(1)} KB`}), el("p", {class: "mono", text: image.sha256})];
+  const body = [el("p", {text: `${IMAGE_NAMES[key]} · ${(image.size / 1024).toFixed(1)} KB`}), el("p", {class: "mono", text: image.sha256})];
   if (key === "flight") {
     const missing = sectionMissing("bench");
     if (missing.length) body.push(el("p", {class: "warn-text", text: `The bench checklist isn't finished (${missing.length} item${missing.length > 1 ? "s" : ""} open). The flight image arms itself on the pad.`}));
@@ -376,10 +384,12 @@ async function flashImage(key) {
     renderImages(); renderChecklists();
     $("flash-status").textContent = `Flashed and verified: ${key} image. Now unplug USB and the battery to power-cycle.`;
     $("flash-status").className = "assessment good";
+    if (key === "sensortest") await confirmModal("Sensor test installed", SENSOR_TEST_STEPS, "OK");
   } catch (error) { $("flash-log").textContent = error.message; $("flash-status").textContent = "Flashing failed. See the log; the board stays in DFU."; throw error; }
 }
 action("flash-bench", () => flashImage("bench"));
 action("flash-flight", () => flashImage("flight"));
+action("flash-sensortest", () => flashImage("sensortest"));
 
 /* ------------------------------------------------------------------ live board */
 function showLivePorts(ports, current) {
@@ -396,6 +406,34 @@ async function pollLive() {
   try { liveStatus = await api("monitor/status", {}); renderLive(); }
   catch (error) { notice(error.message); return; }
   if (liveStatus.connected) liveTimer = setTimeout(pollLive, 250);
+}
+const SENSOR_CHECK_TEXT = {accel_id: "IMU accelerometer answers", gyro_id: "IMU gyroscope answers", baro_id: "Barometer answers",
+  accel_1g: "Accelerometer reads 1 g at rest", gyro_still: "Gyroscope quiet at rest", imu_alive: "IMU values change (not stuck)",
+  imu_rate: "IMU read every time", pressure: "Pressure 60–110 kPa", baro_temp: "Barometer temperature sane", humidity: "Humidity sane and changing",
+  baro_rate: "Barometer read every time", accel_temp: "IMU die temperature sane", sd: "SD card recording, nothing lost", supply: "3.3 V rail 3.0–3.6 V"};
+function checkList(rows) {
+  return rows.map(([text, pass, note]) => el("li", {class: pass ? "pass" : "fail"}, el("b", {text: pass ? "PASS" : "FAIL"}), el("span", {text}),
+    note ? el("span", {class: "help-inline", text: note}) : ""));
+}
+function renderSensorTest(s) {
+  const v = s.latest.sensors, q = s.latest.sensor_checks, age = s.age.sensors;
+  $("live-sensors").hidden = !v && !q;
+  if (!v && !q) return;
+  $("sensor-age").textContent = age == null ? "no data" : age > 1.5 ? `STALE ${age.toFixed(0)} s` : "live";
+  $("sensor-age").className = age != null && age <= 1.5 ? "chip good" : "chip";
+  const fmt = (x, d) => x.toFixed(d);
+  const tiles = v ? [["Accel X / Y / Z", `${v.accel_g.map(x => fmt(x, 3)).join(" / ")} g`], ["|accel|", `${fmt(Math.hypot(...v.accel_g), 3)} g`],
+    ["Gyro X / Y / Z", `${v.gyro_dps.map(x => fmt(x, 2)).join(" / ")} °/s`], ["IMU temperature", `${fmt(v.imu_temp_c, 1)} °C`],
+    ["Pressure", `${fmt(v.pressure_pa / 100, 2)} hPa`], ["Baro temperature", `${fmt(v.baro_temp_c, 2)} °C`], ["Humidity", `${fmt(v.humidity_pct, 1)} %`],
+    ["3.3 V rail", `${fmt(v.vdda_v, 3)} V`], ["Battery pin (PA4)", `${fmt(v.batt_pin_v, 3)} V`], ["MCU temperature", `${fmt(v.mcu_temp_c, 1)} °C`]] : [];
+  if (q) tiles.push(["IMU samples / errors", `${q.imu_samples} / ${q.imu_errors}`], ["Baro samples / errors", `${q.baro_samples} / ${q.baro_errors}`],
+    ["SD", q.sd ? `session ${q.session} · ${q.records} records` : "NO CARD"], ["SD dropped / errors", `${q.dropped} / ${q.write_errors}`]);
+  $("sensor-values").replaceChildren(...tiles.map(([label, value]) => { const t = textNode("div", label); t.append(textNode("strong", value)); return t; }));
+  if (q) {
+    const keys = Object.keys(SENSOR_CHECK_TEXT), failed = keys.filter(k => !q.checks[k]);
+    $("sensor-headline").textContent = failed.length ? `${failed.length} check${failed.length > 1 ? "s" : ""} failing` : "Every sensor passes";
+    $("sensor-checks").replaceChildren(...checkList(keys.map(k => [SENSOR_CHECK_TEXT[k], q.checks[k], q.boot[k] === q.checks[k] ? "" : q.boot[k] ? "(passed at power-up)" : "(failed at power-up)"])));
+  } else $("sensor-headline").textContent = "Waiting for the 1 Hz check line…";
 }
 function renderLive() {
   const s = liveStatus || {connected: false, latest: {}, age: {}, lines: []};
@@ -416,6 +454,7 @@ function renderLive() {
       .forEach(([label, value]) => { const t = textNode("div", label); t.append(textNode("strong", String(value)));
         if (["FAIL", "YES"].includes(String(value)) && label !== "Armed") t.className = "bad"; tiles.append(t); });
   } else $("live-headline").textContent = s.connected ? "Waiting for the 1 Hz status line…" : "—";
+  renderSensorTest(s);
   const bench = s.latest.bench, flight = s.latest.flight;
   let tx = null, ty = null;
   if (bench && s.age.bench < 1.5) { tx = bench.tilt_x; ty = bench.tilt_y; $("live-mode").textContent = "bench image"; }
@@ -588,7 +627,181 @@ $("log-file").onchange = async () => {
     result.source = file.name; showLog(result);
   } catch (error) { notice(error.message); } finally { $("log-file").value = ""; }
 };
+function showSensorLog(result) {
+  logData = result; $("log-result").hidden = false; $("log-range").hidden = true; $("log-result").classList.add("sensor-mode");
+  const r = result.report, tile = (label, value, cls = "") => el("div", {class: cls}, el("span", {text: label}), el("strong", {text: value}));
+  const ch = r.channels, mean = (k, d, unit) => ch[k] ? `${ch[k].mean.toFixed(d)}${unit}` : "—";
+  $("log-summary").replaceChildren(tile("SENSOR TEST", r.passed ? "PASSED" : "FAILED", r.passed ? "" : "bad"), tile("SESSION", String(result.session)),
+    tile("DURATION", `${r.duration_s.toFixed(1)} s`), tile("IMU RATE", `${r.rates_hz.imu.toFixed(0)} Hz`), tile("BARO RATE", `${r.rates_hz.baro.toFixed(0)} Hz`),
+    tile("RECORDS", String(r.counts.records)), tile("GAPS", String(r.counts.gaps), r.counts.gaps ? "bad" : ""),
+    tile("SD LOST", r.sd ? String(r.sd.dropped + r.sd.write_errors) : "—", r.sd && r.sd.dropped + r.sd.write_errors ? "bad" : ""));
+  $("log-title").textContent = `Sensor test · session ${result.session}`;
+  $("log-title").previousElementSibling.textContent = "RESULTS";
+  $("log-header").textContent = `${result.header}  ·  ${result.source}`;
+  const stat = (k, d, unit) => ch[k] ? `${ch[k].mean.toFixed(d)} ± ${ch[k].sd.toFixed(d + 1)} ${unit} (min ${ch[k].min.toFixed(d)}, max ${ch[k].max.toFixed(d)})` : "no data";
+  const ids = r.ids ? `accel 0x${r.ids.accel_id.toString(16).toUpperCase()}, gyro 0x${r.ids.gyro_id.toString(16).toUpperCase()}, baro 0x${r.ids.baro_id.toString(16).toUpperCase()}` : "—";
+  $("log-events").replaceChildren(...checkList(r.checks.map(c => [c.text, c.boot, c.now === c.boot ? "" : c.now ? "(passes now)" : "(failing at the end)"])),
+    ...[["Chip IDs", ids], ["Accel X", stat("accel_x_g", 3, "g")], ["Accel Y", stat("accel_y_g", 3, "g")], ["Accel Z", stat("accel_z_g", 3, "g")],
+      ["Gyro X", stat("gyro_x_dps", 2, "°/s")], ["Gyro Y", stat("gyro_y_dps", 2, "°/s")], ["Gyro Z", stat("gyro_z_dps", 2, "°/s")],
+      ["IMU temperature", stat("imu_temp_c", 1, "°C")], ["IMU read time", stat("read_us", 0, "µs")], ["Pressure", stat("pressure_pa", 0, "Pa")],
+      ["Baro temperature", stat("baro_temp_c", 2, "°C")], ["Humidity", stat("humidity_pct", 1, "%")], ["3.3 V rail", stat("vdda_v", 3, "V")],
+      ["Battery pin (PA4)", stat("batt_pin_v", 3, "V")], ["MCU temperature", stat("mcu_temp_c", 1, "°C")], ["Loop time (max)", stat("max_loop_us", 0, "µs")]]
+      .map(([label, value]) => el("li", {}, el("time", {text: label}), el("span", {class: "mono", text: value}))));
+  $("log-events").className = "events sensor-checks-log";
+  $("log-sessions").replaceChildren();
+  if (result.available_sessions && result.available_sessions.length > 1) {
+    $("log-sessions").append(el("span", {class: "help", text: "Other sessions on this card: "}));
+    result.available_sessions.slice().reverse().forEach(n => $("log-sessions").append(el("button", {class: n === result.session ? "small selected" : "small quiet", text: String(n),
+      onclick: () => { $("session-number").value = n; $("sd-read").click(); }})));
+  }
+  sensorView.init(result);
+}
+
+/* ---- sensor-test charts: one per sensor, hover for exact values, drag to zoom (full-rate data
+ * is fetched for the zoomed window), double-click or Reset to see the whole session ---- */
+const SENSOR_CHARTS = [
+  {title: "Accelerometer", unit: "g", lines: [["imu", "accel_x_g", "X"], ["imu", "accel_y_g", "Y"], ["imu", "accel_z_g", "Z"], ["imu", "accel_mag", "|a|"]], digits: 3},
+  {title: "Gyroscope", unit: "°/s", lines: [["imu", "gyro_x_dps", "X"], ["imu", "gyro_y_dps", "Y"], ["imu", "gyro_z_dps", "Z"]], digits: 2},
+  {title: "Pressure", unit: "hPa", lines: [["baro", "pressure_hpa", "pressure"]], digits: 2},
+  {title: "Altitude change (from pressure)", unit: "m", lines: [["baro", "altitude_m", "height"]], digits: 2},
+  {title: "Temperatures", unit: "°C", lines: [["baro", "baro_temp_c", "barometer"], ["imu", "imu_temp_c", "IMU"], ["adc", "mcu_temp_c", "MCU"]], digits: 2},
+  {title: "Humidity", unit: "%", lines: [["baro", "humidity_pct", "humidity"]], digits: 1},
+  {title: "Power", unit: "V", lines: [["adc", "vdda_v", "3.3 V rail"], ["adc", "batt_pin_v", "battery pin"]], digits: 3},
+  {title: "Timing", unit: "µs", lines: [["imu", "read_us", "IMU read"], ["adc", "max_loop_us", "slowest loop"]], digits: 0},
+];
+function derive(series, p0) {
+  const imu = series.imu, baro = series.baro;
+  imu.accel_mag = imu.t.map((_, i) => Math.hypot(imu.accel_x_g[i], imu.accel_y_g[i], imu.accel_z_g[i]));
+  baro.pressure_hpa = baro.pressure_pa.map(p => p / 100);
+  baro.altitude_m = baro.pressure_pa.map(p => 44330 * (1 - Math.pow(p / p0, 0.190295)));
+  return series;
+}
+function nearest(t, x) { let lo = 0, hi = t.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (t[m] < x) lo = m; else hi = m; } return Math.abs(t[lo] - x) <= Math.abs(t[hi] - x) ? lo : hi; }
+const sensorColor = n => [...pal().series, pal().term ? "#5ac8fa" : "#3b82f6"][n % 4];
+const sensorView = {
+  result: null, overview: null, detail: null, full: [0, 1], view: [0, 1], hover: null, drag: null, cards: [], fetchTimer: null, seq: 0,
+  init(result) {
+    this.result = result;
+    const S = result.series, p0 = S.baro.pressure_pa.length ? S.baro.pressure_pa.slice(0, 25).reduce((a, b) => a + b, 0) / Math.min(25, S.baro.pressure_pa.length) : 101325;
+    this.p0 = p0; this.overview = derive(S, p0); this.detail = null;
+    const ts = ["imu", "baro", "adc"].flatMap(g => S[g].t.length ? [S[g].t[0], S[g].t[S[g].t.length - 1]] : []);
+    this.full = [Math.min(...ts), Math.max(...ts)]; this.view = [...this.full];
+    const wrap = $("log-charts"); wrap.replaceChildren();
+    const bar = el("div", {class: "sensor-zoom-bar"}, el("span", {id: "sensor-range", class: "mono"}),
+      el("span", {class: "help-inline", text: "Hover to read values · drag across a chart to zoom in · double-click to zoom out"}),
+      el("button", {class: "small", text: "Reset zoom", onclick: () => this.setView(this.full)}));
+    wrap.append(bar);
+    const grid = el("div", {class: "sensor-chart-grid"}); wrap.append(grid);
+    this.cards = SENSOR_CHARTS.map(spec => {
+      const base = el("canvas", {class: "sensor-chart", role: "img", "aria-label": `${spec.title} chart`});
+      const over = el("canvas", {class: "sensor-chart overlay"});
+      const legend = el("div", {class: "legend sensor-legend"});
+      const card = el("article", {class: "card chart-card sensor-card"}, el("div", {class: "card-heading"}, el("h2", {text: `${spec.title} (${spec.unit})`}), legend),
+        el("div", {class: "sensor-plot"}, base, over));
+      grid.append(card);
+      const c = {spec, base, over, legend, layout: null};
+      over.addEventListener("mousemove", e => this.onMove(c, e));
+      over.addEventListener("mouseleave", () => { this.hover = null; if (!this.drag) this.drawOverlays(); });
+      over.addEventListener("mousedown", e => { this.drag = {card: c, x0: this.timeAt(c, e)}; });
+      over.addEventListener("dblclick", () => this.setView(this.full));
+      return c;
+    });
+    if (!this.mouseUpBound) { window.addEventListener("mouseup", e => this.onUp(e)); this.mouseUpBound = true; }
+    requestAnimationFrame(() => this.drawAll());
+  },
+  data() { const d = this.detail; return d && d.range[0] <= this.view[0] && d.range[1] >= this.view[1] ? d.series : this.overview; },
+  setView(range) {
+    const span = Math.max(0.005, range[1] - range[0]);
+    this.view = [Math.max(this.full[0], range[0]), Math.min(this.full[1], range[0] + span)];
+    this.drawAll();
+    clearTimeout(this.fetchTimer);
+    const zoomed = this.view[1] - this.view[0] < (this.full[1] - this.full[0]) * 0.98;
+    if (!zoomed) { this.detail = null; return; }
+    const seq = ++this.seq, want = [...this.view];
+    this.fetchTimer = setTimeout(async () => {
+      try {
+        const S = await api("logs/sensor-window", {id: this.result.data_id, t0: want[0], t1: want[1], points: 6000});
+        if (seq !== this.seq) return;
+        this.detail = {range: want, series: derive(S, this.p0), step: S.imu.step}; this.drawAll();
+      } catch (error) { notice(error.message); }
+    }, 120);
+  },
+  timeAt(c, e) { const r = c.over.getBoundingClientRect(), L = c.layout; return L.t0 + Math.max(0, Math.min(1, (e.clientX - r.left - L.left) / L.width)) * (L.t1 - L.t0); },
+  onMove(c, e) { if (!c.layout) return; this.hover = this.timeAt(c, e); this.drawOverlays(); },
+  onUp(e) {
+    const d = this.drag; this.drag = null; if (!d) return;
+    const t = this.timeAt(d.card, e), lo = Math.min(d.x0, t), hi = Math.max(d.x0, t);
+    if (hi - lo > (this.view[1] - this.view[0]) * 0.01) this.setView([lo, hi]); else this.drawOverlays();
+  },
+  drawAll() {
+    if (!this.cards.length || !this.cards[0].base.isConnected) return;
+    const S = this.data(), [t0, t1] = this.view, span = t1 - t0;
+    const detail = this.detail && S === this.detail.series;
+    $("sensor-range").textContent = `${t0.toFixed(3)} – ${t1.toFixed(3)} s  (${span < 1 ? (span * 1000).toFixed(0) + " ms" : span.toFixed(1) + " s"})` +
+      (detail ? (this.detail.step === 1 ? " · every sample" : ` · every ${this.detail.step}th sample`) : " · overview");
+    this.cards.forEach(c => this.drawChart(c, S));
+    this.drawOverlays();
+  },
+  drawChart(c, S) {
+    const canvas = c.base, rect = canvas.getBoundingClientRect(); if (!rect.width) return;
+    const k = window.devicePixelRatio || 1; canvas.width = rect.width * k; canvas.height = rect.height * k;
+    const ctx = canvas.getContext("2d"); ctx.scale(k, k);
+    const left = 56, top = 8, width = rect.width - 66, height = rect.height - 30, [t0, t1] = this.view;
+    const lines = c.spec.lines.map(([g, key, name]) => ({t: S[g].t, v: S[g][key], name})).filter(l => l.v && l.v.length);
+    let lo = Infinity, hi = -Infinity;
+    lines.forEach(l => { for (let i = 0; i < l.t.length; i++) if (l.t[i] >= t0 && l.t[i] <= t1) { lo = Math.min(lo, l.v[i]); hi = Math.max(hi, l.v[i]); } });
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (hi - lo < 1e-9) { lo -= 0.5 * Math.max(1e-3, Math.abs(lo) * 1e-3); hi = lo + Math.max(1e-3, Math.abs(lo) * 2e-3); }
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    c.layout = {left, top, width, height, t0, t1, lo, hi, lines};
+    const X = t => left + (t - t0) / (t1 - t0) * width, Y = v => top + (hi - v) / (hi - lo) * height;
+    ctx.font = pal().font(10); ctx.fillStyle = pal().muted; ctx.strokeStyle = pal().grid; ctx.lineWidth = 1;
+    const dec = Math.max(0, Math.min(4, Math.ceil(-Math.log10((hi - lo) / 4)) + 1));
+    for (let i = 0; i <= 4; i++) { const v = hi - i * (hi - lo) / 4, y = Y(v); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); ctx.fillText(v.toFixed(dec), 2, y + 3); }
+    const tdec = t1 - t0 < 0.5 ? 3 : t1 - t0 < 5 ? 2 : 1;
+    for (let i = 0; i <= 5; i++) { const v = t0 + i * (t1 - t0) / 5; ctx.fillText(`${v.toFixed(tdec)}s`, X(v) - 12, top + height + 18); }
+    ctx.save(); ctx.beginPath(); ctx.rect(left, top, width, height); ctx.clip();
+    lines.forEach((l, n) => {
+      /* min/max per pixel column, so noise and spikes survive any amount of zoom-out */
+      ctx.strokeStyle = sensorColor(n); ctx.lineWidth = 1.3; ctx.beginPath();
+      let col = null, mn = 0, mx = 0, started = false;
+      const flush = () => { if (col === null) return; const x = left + col + 0.5; if (!started) { ctx.moveTo(x, Y(mn)); started = true; } else ctx.lineTo(x, Y(mn)); if (mx !== mn) ctx.lineTo(x, Y(mx)); };
+      for (let i = 0; i < l.t.length; i++) {
+        if (l.t[i] < t0 - (t1 - t0) * 0.01 || l.t[i] > t1 + (t1 - t0) * 0.01) continue;
+        const cx = Math.round(X(l.t[i]) - left);
+        if (cx !== col) { flush(); col = cx; mn = mx = l.v[i]; } else { mn = Math.min(mn, l.v[i]); mx = Math.max(mx, l.v[i]); }
+      }
+      flush(); ctx.stroke();
+      if (t1 - t0 < 0.25) { ctx.fillStyle = sensorColor(n); for (let i = 0; i < l.t.length; i++) if (l.t[i] >= t0 && l.t[i] <= t1) ctx.fillRect(X(l.t[i]) - 1.5, Y(l.v[i]) - 1.5, 3, 3); }
+    });
+    ctx.restore();
+  },
+  drawOverlays() {
+    this.cards.forEach(c => {
+      const canvas = c.over, rect = canvas.getBoundingClientRect(), L = c.layout; if (!rect.width || !L) return;
+      const k = window.devicePixelRatio || 1; canvas.width = rect.width * k; canvas.height = rect.height * k;
+      const ctx = canvas.getContext("2d"); ctx.scale(k, k);
+      const X = t => L.left + (t - L.t0) / (L.t1 - L.t0) * L.width, Y = v => L.top + (L.hi - v) / (L.hi - L.lo) * L.height;
+      if (this.drag && this.hover != null) {
+        const a = X(this.drag.x0), b = X(this.hover);
+        ctx.fillStyle = "rgba(128,128,255,0.18)"; ctx.fillRect(Math.min(a, b), L.top, Math.abs(b - a), L.height);
+      }
+      const at = this.hover;
+      c.legend.replaceChildren(...L.lines.map((l, n) => {
+        let text = `● ${l.name}`;
+        if (at != null && l.t.length) { const i = nearest(l.t, at); text += ` ${l.v[i].toFixed(c.spec.digits)}`; }
+        return el("span", {style: `color:${sensorColor(n)}`, text});
+      }));
+      if (at == null) return;
+      ctx.strokeStyle = pal().muted; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X(at), L.top); ctx.lineTo(X(at), L.top + L.height); ctx.stroke(); ctx.setLineDash([]);
+      L.lines.forEach((l, n) => { if (!l.t.length) return; const i = nearest(l.t, at); ctx.fillStyle = sensorColor(n); ctx.beginPath(); ctx.arc(X(l.t[i]), Y(l.v[i]), 3.5, 0, 2 * Math.PI); ctx.fill(); });
+      ctx.fillStyle = pal().text; ctx.font = pal().font(10); ctx.fillText(`${at.toFixed(3)} s`, Math.min(X(at) + 5, L.left + L.width - 50), L.top + 11);
+    });
+  },
+};
 function showLog(result) {
+  if (result.kind === "sensortest") return showSensorLog(result);
+  $("log-range").hidden = false; $("log-events").className = "events"; $("log-result").classList.remove("sensor-mode"); $("log-title").previousElementSibling.textContent = "TIMELINE";
   logData = result; $("log-result").hidden = false;
   const s = result.summary, tile = (label, value, cls = "") => { const t = el("div", {class: cls}, el("span", {text: label}), el("strong", {text: value})); return t; };
   $("log-summary").replaceChildren(tile("SESSION", String(result.session)), tile("RECORDS", String(result.count)), tile("DURATION", `${s.duration_s.toFixed(1)} s`),
@@ -606,7 +819,7 @@ function showLog(result) {
   }
   drawLogCharts();
 }
-$("log-range").onchange = drawLogCharts;
+$("log-range").onchange = () => { if (logData && logData.kind !== "sensortest") drawLogCharts(); };
 function logWindow() {
   const cols = logData.columns, t = cols.indexOf("t_s"), st = cols.indexOf("state"), rows = logData.rows;
   if ($("log-range").value === "all" || !rows.length) return rows;
@@ -618,6 +831,7 @@ function logWindow() {
 }
 function drawLogCharts() {
   if (!logData) return;
+  if (logData.kind === "sensortest") return sensorView.drawAll();
   const cols = logData.columns, rows = logWindow(), col = name => cols.indexOf(name);
   const charts = [["Tilt (°)", ["tilt_x_deg", "tilt_y_deg"], ["X", "Y"]], ["TVC servos (µs)", ["servo_a_us", "servo_b_us"], ["A", "B"]],
     ["Rate (°/s)", ["gyro_x_dps", "gyro_y_dps", "gyro_z_dps"], ["X", "Y", "Z"]], ["Acceleration (g)", ["accel_x_g", "accel_y_g", "accel_z_g"], ["X", "Y", "Z (nose)"]],
@@ -652,8 +866,13 @@ function lineChart(canvas, t, series, events) {
     for (let j = 0; j < values.length; j += step) { const x = X(t[j]), y = Y(values[j]); if (j) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
     ctx.stroke(); });
 }
-action("log-csv", () => {
+action("log-csv", async () => {
   if (!logData) throw new Error("Read a session first.");
+  if (logData.kind === "sensortest") {
+    const out = await api("logs/sensor-csv", {id: logData.data_id});
+    download(out.name, "text/csv", out.csv);
+    return notice(`Exported ${out.rows.toLocaleString()} readings to ${out.name} (Downloads).`);
+  }
   download(`easytvc_session_${logData.session}.csv`, "text/csv", logData.columns.join(",") + "\n" + logData.rows.map(r => r.join(",")).join("\n"));
 });
 
@@ -706,7 +925,8 @@ async function installOnBoard(source) {
     const radio = el("input", {type: "radio", name: "install-image", value}); radio.checked = checked;
     return el("label", {class: "choice"}, radio, el("div", {}, el("strong", {text: title}), el("p", {text})));
   };
-  choice.append(option("bench", "Bench image (recommended for testing)", "Never arms. The gimbal follows the board by hand, so you can check the servos.", true),
+  choice.append(option("sensortest", "Sensor test", "Checks every sensor (IMU, barometer, temperatures, SD card, power) and records every reading to the SD card. Never arms; servos stay still.", source === "sensortest"),
+    option("bench", "Bench image (recommended for testing)", "Never arms. The gimbal follows the board by hand, so you can check the servos.", source !== "sensortest"),
     option("flight", "Flight image", benchOpen ? `Arms itself on the pad. ${benchOpen} bench check${benchOpen > 1 ? "s are" : " is"} still open.` : "Arms itself on the pad and runs TVC during boost.", false));
   const tune = el("p", {class: "help", text: `Installs: KP ${cfg.KP} · KI ${cfg.KI} · KD ${cfg.KD} · servo A ${cfg.SERVO_A_MIN_US}/${cfg.SERVO_A_CENTER_US}/${cfg.SERVO_A_MAX_US} µs · servo B ${cfg.SERVO_B_MIN_US}/${cfg.SERVO_B_CENTER_US}/${cfg.SERVO_B_MAX_US} µs · nose ${cfg.NOSE_AXIS} · LED ${cfg.LED_BRIGHTNESS_PCT} %`});
   if (!await confirmModal("Install on board", [choice, tune, el("p", {class: "help", text: "Plug the board in by USB-C. If it isn't in DFU mode yet, you'll be told how."})], "Install")) return;
@@ -714,7 +934,7 @@ async function installOnBoard(source) {
   if (image === "flight" && benchOpen && !await confirmModal("Bench checks are not done", [el("p", {class: "warn-text", text: "The flight image arms itself when it stands still and upright. Finish the bench checks first unless you know what you're doing."})], "Install flight image anyway")) return;
 
   installCancel = false;
-  const ui = installDialog(`Installing the ${image} image`);
+  const ui = installDialog(`Installing the ${IMAGE_NAMES[image].toLowerCase()}`);
   try {
     ui.step("save", "running");
     if (!same(cfg, savedCfg)) {
@@ -750,10 +970,11 @@ async function installOnBoard(source) {
     ui.step("flash", "running", "Installing… do not unplug (about 10 s)");
     const result = await api("dfu/flash", {image, sha256: target.sha256, serial: devices[0].serial});
     appState.flashed = {image, sha256: target.sha256, time: Date.now() / 1000};
-    if (image === "bench") toggleCheck("b-flash", true); else toggleCheck("p-flight", true);
+    if (image === "bench") toggleCheck("b-flash", true); else if (image === "flight") toggleCheck("p-flight", true);
     renderImages(); renderChecklists();
     ui.step("flash", "done", "Installed and verified: every byte matches");
-    ui.detail([el("strong", {text: "Now restart the board:"}),
+    if (image === "sensortest") ui.detail([...SENSOR_TEST_STEPS, el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);
+    else ui.detail([el("strong", {text: "Now restart the board:"}),
       el("p", {text: "Unplug USB-C, wait 2 s, plug it back in (connect the LiPo first if servos are plugged in). At power-up the LED shows red → green → blue, then the servos sweep."}),
       el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);
     ui.finish(true);
@@ -764,6 +985,7 @@ async function installOnBoard(source) {
   }
 }
 action("install-board", () => installOnBoard("setup"));
+action("install-sensortest", () => installOnBoard("sensortest"));
 action("rocket-install", () => installOnBoard("setup"));
 action("tune-install", () => installOnBoard("tune"));
 

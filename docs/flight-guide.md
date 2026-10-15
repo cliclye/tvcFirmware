@@ -84,6 +84,39 @@ Then **unplug USB and the battery** (a full power cycle). If the board comes up 
 on and the parachute servo open, it either saw a non-power-on reset or was moving when it
 powered up. That's the in-air safety mode, and a power cycle with the board at rest clears it.
 
+### Sensor test (`easytvc_sensortest` image), the quickest first check
+
+In Studio, click **◎ Sensor test** under *Install on board* (or *Flash sensor test* on Build &
+flash). It installs a firmware that never arms and never moves a servo. It checks every sensor,
+then records every reading to the SD card.
+
+1. Put a microSD card in the board, lay the board flat and still, and power it up.
+2. LEDs go red, green, blue, then one beep. Green blinks fast for 3 s while it tests: don't touch it.
+3. **Two short beeps + steady green**: everything passed. **Three long beeps + red blinking N
+   times**: group N failed (1 IMU, 2 barometer, 3 SD card, 4 power).
+4. Leave it running as long as you want (blue blinks while recording; one power-up holds about
+   9 minutes). Move it, warm it with your hand, blow on the barometer: it's all recorded.
+5. Put the card in your Mac, **Flight logs → Read from SD card**. Studio shows each check
+   (pass/fail at power-up and at the end), every channel's mean, noise and range, charts, and
+   **CSV ↓** exports every single reading.
+
+What it records:
+
+| Sensor | Rate | Values |
+|---|---|---|
+| BMI088 accelerometer + gyroscope | 400 Hz (its full output rate) | raw counts for all 6 axes, read time, error count |
+| BMI088 die temperature | 10 Hz | °C |
+| BME280 | 50 Hz | pressure, temperature, humidity, and the raw ADC values behind them |
+| STM32 ADC | 10 Hz | battery pin (PA4) voltage, 3.3 V rail (from the factory reference), MCU temperature |
+| Status | 1 Hz | chip IDs, check results, sample/error counters, SD dropped/write errors, loop timing |
+
+The checks: chip IDs answer (0x1E, 0x0F, 0x60); 1 g at rest; gyro bias under 5 °/s and noise
+under 3 °/s; values not stuck; 99 % of IMU and 95 % of barometer reads succeed; pressure 60–110
+kPa; temperatures and humidity sane; SD recording with nothing lost; 3.3 V rail 3.0–3.6 V. "1 g"
+and "gyro quiet" are judged only during the first 3 s, so picking the board up later doesn't fail
+them. With a USB-UART on TX2/RX2, **Live board** shows the values and checks live (USB-C on the
+board has no serial port yet).
+
 ## 4. Bench checks (`easytvc_bench` image). Do all of them.
 
 The bench image never arms. The gimbal always tries to hold the motor so that it would push the

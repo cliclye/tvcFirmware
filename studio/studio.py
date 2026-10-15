@@ -510,6 +510,13 @@ class Handler(BaseHTTPRequestHandler):
             return {"disks": launch.external_disks(), "folder": str(launch.flights_dir(create=False))}
         if path == "/api/logs/read-sd":
             return launch.read_sd(server.project, data.get("disk"), data.get("session"))
+        if path == "/api/logs/sensor-window":
+            t0, t1 = data.get("t0"), data.get("t1")
+            for v in (t0, t1):
+                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))): raise ValueError("Bad time range.")
+            return launch.sensor_window(data.get("id"), t0, t1, data.get("points", 6000))
+        if path == "/api/logs/sensor-csv":
+            return launch.sensor_csv_text(data.get("id"))
         return None
 
     def do_POST(self):

@@ -25,6 +25,7 @@
       <button class="nav-item" data-tab="guide">⊞ <span>Guide</span></button>
     </nav>
     <button id="install-board" class="primary install-button">⇩ Install on board</button>
+    <button id="install-sensortest" class="install-button sensor-test-button" title="Install a firmware that checks every sensor and logs all readings to SD">◎ Sensor test</button>
     <div class="sidebar-go" id="sidebar-go"><span class="go-light"></span><div><strong>NO-GO</strong><p>Open the launch checklist.</p></div></div>
     <div class="theme-switch" role="group" aria-label="Appearance"><button data-theme-choice="light">Light</button><button data-theme-choice="dark">Dark</button><button data-theme-choice="terminal">Term</button><button data-theme-choice="system">System</button></div>
     <div class="sidebar-note"><span class="dot"></span> Runs on your Mac<p>Nothing leaves this computer.</p></div>
@@ -165,7 +166,7 @@
         <article class="card"><span class="eyebrow">STEP 1</span><h2>Build firmware</h2>
           <div id="build-status" class="assessment">—</div>
           <div id="images"></div>
-          <button id="build" class="primary">Build bench + flight images <span>↗</span></button>
+          <button id="build" class="primary">Build all images <span>↗</span></button>
           <details><summary>Build log</summary><pre id="build-log" class="log">No build run yet.</pre></details></article>
         <article class="card"><span class="eyebrow">STEP 2</span><h2>Put the board in DFU mode</h2>
           <ol class="steps"><li>Disconnect the LiPo.</li><li>Hold <strong>BOOT</strong>.</li><li>Plug in USB-C, or tap <strong>RST</strong>.</li><li>Let go of BOOT.</li></ol>
@@ -173,7 +174,7 @@
           <button id="dfu-refresh">Look for the board</button></article>
         <article class="card"><span class="eyebrow">STEP 3</span><h2>Flash</h2>
           <p class="help">Always flash the <strong>bench</strong> image first and pass every bench check before you flash the <strong>flight</strong> image.</p>
-          <div class="actions"><button id="flash-bench">Flash bench image</button><button id="flash-flight" class="primary">Flash flight image</button></div>
+          <div class="actions"><button id="flash-bench">Flash bench image</button><button id="flash-flight" class="primary">Flash flight image</button><button id="flash-sensortest">Flash sensor test</button></div>
           <div id="flash-status" class="assessment">—</div>
           <details><summary>Flash log</summary><pre id="flash-log" class="log">—</pre></details>
           <p class="help">Afterwards, <strong>unplug USB and the battery</strong> to power-cycle. A red LED with the parachute servo open means safe mode; power-cycle again with the board at rest.</p></article>
@@ -190,6 +191,8 @@
           <div id="nose-suggest" class="assessment">Stand the rocket nose-up with the bench image running to detect the nose axis.</div>
           <button id="nose-apply" class="primary" hidden>Use this nose axis</button></article>
       </div>
+      <article id="live-sensors" class="card" hidden><div class="card-heading"><div><span class="eyebrow">SENSOR TEST · 10 Hz</span><h2 id="sensor-headline">—</h2></div><span id="sensor-age" class="chip">—</span></div>
+        <div id="sensor-values" class="telemetry-grid"></div><ul id="sensor-checks" class="sensor-checks"></ul></article>
       <article class="card"><details><summary>Raw lines</summary><pre id="live-lines" class="log">—</pre></details></article>
     </section>
 
@@ -206,7 +209,7 @@
       <div id="log-result" hidden>
         <div class="metrics wide" id="log-summary"></div>
         <div class="log-grid">
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">TIMELINE</span><h2 id="log-title">Session</h2></div><div><select id="log-range"><option value="flight">Flight (arm → +30 s)</option><option value="all">Whole session</option></select> <button id="log-csv" class="quiet">CSV ↓</button></div></div><ol id="log-events" class="events"></ol><p id="log-header" class="help mono"></p><div id="log-sessions"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">TIMELINE</span><h2 id="log-title">Session</h2></div><div><select id="log-range" aria-label="Time range"><option value="flight">Flight (arm → +30 s)</option><option value="all">Whole session</option></select> <button id="log-csv" class="quiet">CSV ↓</button></div></div><ol id="log-events" class="events"></ol><p id="log-header" class="help mono"></p><div id="log-sessions"></div></article>
           <div id="log-charts"></div>
         </div>
       </div>
