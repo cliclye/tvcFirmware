@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "controller.h"
 #include "flight_sim3d.h"
 
 static float rows[6000 * SIM3D_COLUMN_COUNT];
@@ -33,6 +34,7 @@ static void defaults(float *p)
     p[SIM3D_THRUST_SCALE] = 1; p[SIM3D_SITE_ALT_M] = 0; p[SIM3D_TEMP_C] = 15; p[SIM3D_NOZZLE_ARM_M] = 0.285f;
     p[SIM3D_MOTOR_GIMBAL_INERTIA] = 4.4e-5f; p[SIM3D_SERVO_STALL_NM] = 0.2f; p[SIM3D_IMU_AHEAD_M] = -0.005f;
     p[SIM3D_TURBULENCE_M_S] = 0.5f; p[SIM3D_GYRO_LPF_HZ] = 47; p[SIM3D_ACCEL_LPF_HZ] = 145;
+    p[SIM3D_ROLL_TORQUE_NMM] = 0.1f;
     p[SIM3D_WIND_DIR_DEG] = 30; p[SIM3D_PAD_TILT_DEG] = 1; p[SIM3D_MISALIGN_DEG] = 0.5f; p[SIM3D_GYRO_BIAS_DPS] = 0.5f;
     p[SIM3D_NOISE] = 1; p[SIM3D_SEED] = 1; p[SIM3D_TOWER_M] = 0.3f; p[SIM3D_IGNITION_S] = 5;
 }
@@ -207,6 +209,43 @@ int main(void)
     const float bad_t[] = {0.1f, 0.05f};
     const float bad_f[] = {1.0f, 2.0f};
     assert(EasyTVC_Sim3DSetCurve(bad_t, bad_f, 2) < 0);
+
+    /* 7. roll: spun up to 1500 deg/s half a second into boost, the TVC still holds */
+    defaults(p);
+    p[SIM3D_MISALIGN_DEG] = 1.0f;
+    assert(EasyTVC_Sim3DBegin(p, SIM3D_PARAM_COUNT) == 0);
+    got = EasyTVC_Sim3DAdvance(p[SIM3D_IGNITION_S] + 0.5f, live_rows, 6000, live_sum, SIM3D_SUMMARY_COUNT);
+    assert(EasyTVC_Sim3DInject(SIM3D_INJECT_SPIN, 1500, 0) == 0);
+    while (live_sum[SIM3D_SUM_DONE] < 0.5f && got < 6000)
+        got += EasyTVC_Sim3DAdvance(0.5f, live_rows + got * SIM3D_COLUMN_COUNT, 6000 - got, live_sum, SIM3D_SUMMARY_COUNT);
+    printf("  spun to 1500 deg/s mid-boost: max roll %.0f deg/s, boost tilt %.1f deg, gave up %g\n",
+           live_sum[SIM3D_SUM_MAX_ROLL_DPS], live_sum[SIM3D_SUM_MAX_BOOST_TILT], live_sum[SIM3D_SUM_TVC_FAULT]);
+    assert(live_sum[SIM3D_SUM_MAX_ROLL_DPS] > 1200.0f && live_sum[SIM3D_SUM_TVC_FAULT] == 0.0f &&
+           live_sum[SIM3D_SUM_MAX_BOOST_TILT] < 10.0f);
+
+    /* 8. controller alone: a steady 5 deg tilt seen by a body rolling at 720 deg/s must not read as
+     * tilt rate (the D term), and the command must turn with the body to stay aimed */
+    {
+        EasyTVCSettings settings;
+        EasyTVC_SettingsDefault(&settings);
+        for (unsigned i = 0; i < 2; ++i) { settings.axis[i].kp = 8; settings.axis[i].ki = 0; settings.axis[i].kd = 0.8f;
+            settings.axis[i].output_rate_limit = 100; settings.axis[i].output_limit = 1; }
+        EasyTVCController c;
+        EasyTVC_ControllerReset(&c);
+        const float tilt = 5.0f * 0.01745329f, rate = 720.0f * 0.01745329f, dt = 0.005f;
+        float worst = 0;
+        for (unsigned k = 0; k < 200; ++k) {
+            const float roll = rate * dt * (float)k;   /* q = fixed tilt about world X, then spin about the body axis */
+            const float cx = cosf(0.5f * tilt), sx = sinf(0.5f * tilt), cz = cosf(0.5f * roll), sz = sinf(0.5f * roll);
+            const EasyTVCQuaternion q = {cx * cz, sx * cz, -sx * sz, cx * sz};
+            const EasyTVCControlOutput o = EasyTVC_ControllerStep(&c, &settings, &q, 10 + 5 * k, 10 + 5 * k, dt, true, true, true);
+            assert(o.enabled);
+            const float mag = sqrtf(o.command[0] * o.command[0] + o.command[1] * o.command[1]);
+            if (k > 20) worst = fmaxf(worst, fabsf(mag - 8.0f * tilt));
+        }
+        printf("  controller at 720 deg/s roll: |command| stays at KP*tilt within %.3f\n", worst);
+        assert(worst < 0.02f);
+    }
 
     puts("3D sim tests passed: nominal flight, no-authority tumble, reversed servo, pad tilt, overweight");
     return 0;

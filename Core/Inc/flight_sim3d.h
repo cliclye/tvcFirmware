@@ -55,6 +55,8 @@ enum {
     SIM3D_IMU_AHEAD_M,                    /* IMU position ahead of the CG (lever-arm accelerations) */
     SIM3D_TURBULENCE_M_S,                 /* Dryden-like turbulence intensity, m/s RMS */
     SIM3D_GYRO_LPF_HZ, SIM3D_ACCEL_LPF_HZ, /* BMI088 internal filters (47 / ~145 Hz at 400 Hz ODR) */
+    /* roll: a finless rocket has nothing to stop it rolling */
+    SIM3D_ROLL_TORQUE_NMM,                /* steady roll torque from asymmetries / motor swirl, N*mm */
     SIM3D_IGNITION_S,
     SIM3D_PARAM_COUNT
 };
@@ -69,6 +71,7 @@ enum {
     SIM3D_COL_TQ_TVC_X, SIM3D_COL_TQ_TVC_Y, SIM3D_COL_TQ_AERO_X, SIM3D_COL_TQ_AERO_Y,
     SIM3D_COL_SERVO_FAULT,                /* bit0 servo A jammed, bit1 servo B jammed, bit2 manual TVC */
     SIM3D_COL_WIND,                       /* horizontal wind speed at the rocket, m/s */
+    SIM3D_COL_ROLL_RATE,                  /* body roll rate, deg/s */
     SIM3D_COLUMN_COUNT
 };
 
@@ -77,7 +80,9 @@ enum {
     SIM3D_SUM_DRIFT_M, SIM3D_SUM_LANDING_SPEED, SIM3D_SUM_CHUTE_T, SIM3D_SUM_CHUTE_SPEED,
     SIM3D_SUM_ARMED_T, SIM3D_SUM_LAUNCH_T, SIM3D_SUM_TVC_FAULT, SIM3D_SUM_SATURATION_PCT,
     SIM3D_SUM_FLIGHT_TIME, SIM3D_SUM_FINAL_STATE, SIM3D_SUM_UNDER_CHUTE, SIM3D_SUM_EST_ERROR_DEG,
-    SIM3D_SUM_LIFTOFF, SIM3D_SUM_DONE, SIM3D_SUM_TIME, SIM3D_SUMMARY_COUNT
+    SIM3D_SUM_LIFTOFF, SIM3D_SUM_DONE, SIM3D_SUM_TIME,
+    SIM3D_SUM_MAX_ROLL_DPS,               /* fastest roll during boost */
+    SIM3D_SUMMARY_COUNT
 };
 
 #define SIM3D_ROW_PERIOD_S 0.02f
@@ -100,6 +105,7 @@ enum {
     SIM3D_INJECT_FREE_SERVO = 4,   /* a = 0 / 1: release a jammed servo */
     SIM3D_INJECT_MANUAL = 5,       /* manual TVC: a, b = commands -1..1 for servo A / B (overrides the PID) */
     SIM3D_INJECT_AUTO = 6,         /* hand TVC back to the flight software */
+    SIM3D_INJECT_SPIN = 7,         /* a = roll rate added, deg/s */
 };
 int EasyTVC_Sim3DInject(int kind, float a, float b);
 

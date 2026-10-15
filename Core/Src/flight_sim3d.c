@@ -225,6 +225,7 @@ static bool valid_params(const float *p)
         p[SIM3D_SERVO_STALL_NM] > 0.005f && p[SIM3D_SERVO_STALL_NM] < 5.0f &&
         fabsf(p[SIM3D_IMU_AHEAD_M]) < p[SIM3D_LENGTH_M] && p[SIM3D_TURBULENCE_M_S] >= 0.0f && p[SIM3D_TURBULENCE_M_S] <= 10.0f &&
         p[SIM3D_GYRO_LPF_HZ] >= 5.0f && p[SIM3D_GYRO_LPF_HZ] <= 500.0f && p[SIM3D_ACCEL_LPF_HZ] >= 5.0f && p[SIM3D_ACCEL_LPF_HZ] <= 500.0f &&
+        fabsf(p[SIM3D_ROLL_TORQUE_NMM]) <= 50.0f &&
         ((int)p[SIM3D_THRUST_PROFILE] != 2 || curve_n > 1);
 }
 
@@ -426,9 +427,15 @@ static void sim_step(Sim *s, float *rows, unsigned max_rows, unsigned *row_count
     const float aero_damping = s->off_pad && !s->chute_open ? 0.5f * rho * speed_air * area * p[SIM3D_CN_ALPHA] * d * d : 0.0f;
     const float nozzle = p[SIM3D_NOZZLE_ARM_M] + cg_shift;
     const float jet_damping = mdot * nozzle * nozzle;
+    /* roll: steady torque from asymmetries and motor swirl while the motor burns; damped only by
+     * skin friction (Cf ~0.005 over the wetted tube) and the exhaust's own spin */
+    const float roll_torque = thrust > 0.0f ? p[SIM3D_ROLL_TORQUE_NMM] * 1e-3f : 0.0f;
+    const float roll_damping = (s->off_pad ? 0.5f * rho * speed_air * 0.005f * 3.14159265f * 2.0f * r * p[SIM3D_LENGTH_M] * r * r : 0.0f) +
+        mdot * 0.25f * r * r;
     const float damping = aero_damping + jet_damping;
     const float torque[3] = {s->tq_tvc[0] + s->tq_aero[0] - damping * s->w[0],
-                             s->tq_tvc[1] + s->tq_aero[1] - damping * s->w[1], 0};
+                             s->tq_tvc[1] + s->tq_aero[1] - damping * s->w[1],
+                             roll_torque - roll_damping * s->w[2]};
 
     /* ---- integrate ---- */
     const float weight = mass * G0;
@@ -584,6 +591,7 @@ static void sim_step(Sim *s, float *rows, unsigned max_rows, unsigned *row_count
         EasyTVC_ControllerTilt(&tq, truth);
         if (out.flight.state == EASYTVC_FLIGHT_BOOST) {
             s->summary[SIM3D_SUM_MAX_BOOST_TILT] = fmaxf(s->summary[SIM3D_SUM_MAX_BOOST_TILT], tilt_now);
+            s->summary[SIM3D_SUM_MAX_ROLL_DPS] = fmaxf(s->summary[SIM3D_SUM_MAX_ROLL_DPS], fabsf(s->w[2]) / DEG);
             s->summary[SIM3D_SUM_EST_ERROR_DEG] = fmaxf(s->summary[SIM3D_SUM_EST_ERROR_DEG],
                 fmaxf(fabsf(est[0] - truth[0]), fabsf(est[1] - truth[1])) / DEG);
         }
@@ -613,6 +621,7 @@ static void sim_step(Sim *s, float *rows, unsigned max_rows, unsigned *row_count
             row[SIM3D_COL_TQ_AERO_X] = s->tq_aero[0]; row[SIM3D_COL_TQ_AERO_Y] = s->tq_aero[1];
             row[SIM3D_COL_SERVO_FAULT] = (float)((s->jammed[0] ? 1 : 0) | (s->jammed[1] ? 2 : 0) | (s->manual ? 4 : 0));
             row[SIM3D_COL_WIND] = s->wind_h;
+            row[SIM3D_COL_ROLL_RATE] = s->w[2] / DEG;
             ++(*row_count);
         }
     }
@@ -672,6 +681,10 @@ int EasyTVC_Sim3DInject(int kind, float a, float b)
         if (!s->off_pad) return -2;   /* a held rocket cannot be kicked */
         s->w[0] += clampf(a, -500.0f, 500.0f) * DEG;
         s->w[1] += clampf(b, -500.0f, 500.0f) * DEG;
+        return 0;
+    case SIM3D_INJECT_SPIN:
+        if (!s->off_pad) return -2;
+        s->w[2] += clampf(a, -2000.0f, 2000.0f) * DEG;
         return 0;
     case SIM3D_INJECT_GUST:
         s->gust_extra = clampf(a, -30.0f, 30.0f);

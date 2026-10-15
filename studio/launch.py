@@ -566,7 +566,7 @@ SIM3D_PARAMS = (
     "inertia_burnout", "planform_area_m2", "planform_ahead_m",
     "servo_deadband_us", "servo_backlash_deg", "servo_tau_s",
     "thrust_scale", "site_alt_m", "temp_c", "nozzle_arm_m", "motor_gimbal_inertia", "servo_stall_nm",
-    "imu_ahead_m", "turbulence_m_s", "gyro_lpf_hz", "accel_lpf_hz", "ignition_s",
+    "imu_ahead_m", "turbulence_m_s", "gyro_lpf_hz", "accel_lpf_hz", "roll_torque_nmm", "ignition_s",
 )
 # Estes E12, NAR certification data (thrustcurve.org, C. J. Kobel 2012): 27.2 N*s, 33 N peak
 E12_CURVE = [[0.052, 5.045], [0.096, 9.910], [0.196, 24.144], [0.251, 31.351], [0.287, 32.973], [0.300, 29.910],
@@ -600,10 +600,10 @@ def parse_eng(text: str) -> dict:
 SIM3D_COLUMNS = ("t", "x", "y", "z", "qw", "qx", "qy", "qz", "speed", "vz", "tilt_x", "tilt_y",
                  "gimbal_a", "gimbal_b", "state", "tvc", "chute", "thrust", "est_tilt_x", "est_tilt_y", "armed",
                  "pulse_a", "pulse_b", "horn_a", "horn_b", "alpha",
-                 "tq_tvc_x", "tq_tvc_y", "tq_aero_x", "tq_aero_y", "servo_fault", "wind")
+                 "tq_tvc_x", "tq_tvc_y", "tq_aero_x", "tq_aero_y", "servo_fault", "wind", "roll_rate")
 SIM3D_SUMMARY = ("apogee_m", "apogee_t", "max_speed", "max_boost_tilt", "drift_m", "landing_speed",
                  "chute_t", "chute_speed", "armed_t", "launch_t", "tvc_fault", "saturation_pct",
-                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff", "done", "time")
+                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff", "done", "time", "max_roll_dps")
 # (low, high, default) for the simulation-only inputs
 SIM_INPUTS = {
     "cn_alpha": (0, 10, 2.0), "wind_m_s": (0, 25, 2), "gust_m_s": (0, 35, 4),
@@ -611,6 +611,7 @@ SIM_INPUTS = {
     "gyro_bias_dps": (0, 10, 0.5), "noise": (0, 3, 1), "seed": (0, 100000, 1),
     "reverse_servo_a": (0, 1, 0), "tower_m": (0, 3, 0.3), "thrust_profile": (0, 2, 2),
     "site_alt_m": (-400, 4000, 0), "temp_c": (-30, 50, 15), "turbulence_m_s": (0, 5, 0.5),
+    "roll_torque_nmm": (-20, 20, 0.1),
 }
 
 
@@ -676,6 +677,8 @@ def sim_verdict(s: dict, config: dict) -> list:
         add("warn", f"Held, but tilted up to {s['max_boost_tilt']:.1f}° during boost.")
     elif s["launch_t"] >= 0:
         add("good", f"Stable boost: worst tilt {s['max_boost_tilt']:.1f}°.")
+    if s.get("max_roll_dps", 0) > 720:
+        add("warn", f"Rolling up to {s['max_roll_dps']:.0f}°/s during boost. The TVC compensates, but find the asymmetry (a lug, a crooked motor mount) before it gets worse.")
     if s["saturation_pct"] > 10:
         add("warn", f"The gimbal was at full travel {s['saturation_pct']:.0f}% of the burn: little margin left.")
     if config["CHUTE_CHANNEL"]:
@@ -710,7 +713,8 @@ def run_sim3d(native, config, vehicle, sim):
 
 def run_sim3d_batch(native, config, vehicle, sim, count=40):
     """Monte Carlo: random wind direction/strength, turbulence, misalignment, pad tilt, sensor noise seed,
-    plus build and motor spread: thrust +-5 %, CG +-5 mm, inertia +-10 %."""
+    plus build and motor spread: thrust +-5 %, CG +-5 mm, inertia +-10 %, and a random roll torque
+    (either direction, up to 5x the set value) because nothing on a finless rocket stops it rolling."""
     import random
     count = max(5, min(200, int(count)))
     rng = random.Random(int(sim.get("seed", 1)))
@@ -738,6 +742,8 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
         k = rng.uniform(0.9, 1.1)
         params[at("inertia")] *= k
         params[at("inertia_burnout")] *= k
+        roll = max(abs(sim["roll_torque_nmm"]), 0.1) * 5
+        params[at("roll_torque_nmm")] = rng.uniform(-roll, roll)
         _, summary = native.sim3d(params, rows=False, curve=motor_curve(vehicle))
         s = dict(zip(SIM3D_SUMMARY, summary))
         success = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"] and
@@ -891,7 +897,7 @@ def gimbal_angle_deg(pulse_offset_us, model):
 
 
 # ---- live flight: the same engine, advanced in small slices as wall time passes ----
-INJECTIONS = {"kick": 1, "gust": 2, "jam": 3, "free": 4, "manual": 5, "auto": 6}
+INJECTIONS = {"kick": 1, "gust": 2, "jam": 3, "free": 4, "manual": 5, "auto": 6, "spin": 7}
 
 
 def live_start(native, config, vehicle, sim):

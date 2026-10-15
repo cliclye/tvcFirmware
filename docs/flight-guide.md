@@ -181,7 +181,18 @@ What the physics includes:
   servo stall torque (servos slow down under load), backlash, deadband and response time.
 - **Sensors**: the IMU's real offset from the CG (so spin shows up as false acceleration), the
   BMI088's own low-pass filters and quantization, gyro bias and noise.
-- **40 random flights** also vary thrust ±5 %, CG ±5 mm and inertia ±10 %.
+- **Roll**: a finless rocket has nothing stopping it rolling. A steady roll torque (asymmetry,
+  motor swirl; 0.1 N·mm gives about 60°/s by burnout) spins it up against skin-friction damping,
+  and the gyroscopic coupling between roll and pitch/yaw is in the rigid-body equations.
+- **40 random flights** also vary thrust ±5 %, CG ±5 mm, inertia ±10 % and a random roll torque.
+
+**Roll and the TVC.** The servos push in the rocket's own frame, so roll matters. The controller
+takes the tilt from the full attitude quaternion (always in the current body frame), carries the
+derivative across the roll between samples so spin doesn't read as tilt rate, and aims each command
+15 ms ahead of the roll to cover the servo lag (`EASYTVC_ROLL_LEAD_S` in `controller.h`). Before
+this the sim lost control above ~500°/s of roll; now it holds up to 2000°/s. Studio warns if a
+flight rolls past 720°/s: look for what's twisting it (a launch lug, a crooked motor mount).
+**Spin 720°/s** in Fly live tests it.
 
 **Manual TVC**: while flying live, the joystick beside the view switches the TVC from Auto to
 Manual. The flight software still runs the pad arming, launch detection and parachute, but the

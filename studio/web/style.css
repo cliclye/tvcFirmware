@@ -102,6 +102,22 @@ input[type=number],input[type=text],select{color:var(--text)}
 @keyframes term-blink{50%{opacity:.25}}
 
 /* ---- manual TVC joystick ---- */
+.toolbar-spacer{flex:1}.fs-only{display:none!important}
+.sim-view.fullscreen{position:fixed;inset:0;z-index:1000;margin:0;border-radius:0;border:0;padding:0;background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.sim-view.fullscreen .fs-only{display:inline-flex!important;gap:8px}
+.sim-view.fullscreen .view-wrap{flex:1;min-height:0}
+.sim-view.fullscreen .view-panes{height:100%;grid-auto-rows:1fr}
+.sim-view.fullscreen .pane{height:100%;min-height:0}
+.sim-view.fullscreen .pane canvas,.sim-view.fullscreen .view-panes .gim-canvas{height:100%}
+.sim-view.fullscreen .view-wrap{flex-direction:row}
+.sim-view.fullscreen .stick-panel{width:240px;overflow:auto;border-left:1px solid var(--line);border-top:0}
+.sim-view.fullscreen .view-panes.split{grid-template-columns:1fr 1fr}
+.sim-view.fullscreen .view-panes.split .pane+.pane{border-left:1px solid var(--line);border-top:0}
+.sim-view.fullscreen .view-toolbar{flex-wrap:nowrap;overflow-x:auto}.sim-view.fullscreen .view-toolbar button,.sim-view.fullscreen .view-toolbar label{white-space:nowrap;flex:none}
+@media(max-width:760px){.sim-view.fullscreen .view-panes.split{grid-template-columns:1fr}.sim-view.fullscreen .view-panes.split .pane+.pane{border-left:0;border-top:1px solid var(--line)}}
+.sim-view.fullscreen #sim-empty{inset:0}
+body.sim-fs{overflow:hidden}
+body.sim-fs #notice{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:1100;max-width:70vw;margin:0}
 .view-wrap{position:relative;display:flex}.view-wrap>.view-panes{flex:1;min-width:0}
 .stick-panel{width:220px;flex:none;border-left:1px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--card)}
 .stick-head{display:flex;justify-content:space-between;align-items:center}

@@ -118,6 +118,9 @@
               <label class="inline">Gimbal <select id="gim-source" aria-label="What drives the gimbal view"><option value="sim">flight playback</option><option value="manual">manual &amp; self test</option><option value="live">live board</option></select></label>
               <label class="inline"><input id="sim-follow" type="checkbox" checked> follow rocket</label>
               <label class="inline"><input id="sim-true-scale" type="checkbox"> true scale</label>
+              <span class="toolbar-spacer"></span>
+              <span class="fs-only fs-actions"><button id="fs-run" class="small">Run flight</button><button id="fs-live" class="small primary">Fly live</button></span>
+              <button id="sim-fullscreen" class="small" title="Full screen (F)" aria-label="Full screen flight view">⛶ Full screen</button>
             </div>
             <div class="view-wrap">
             <div id="view-panes" class="view-panes split">
@@ -137,7 +140,7 @@
             </div>
             <div id="live-bar" class="live-bar" hidden><span class="live-dot">● LIVE</span>
               <span class="help-inline">The flight software is flying it now. Push it:</span>
-              <button id="inj-kick" class="small">Kick ⟲</button><button id="inj-gust" class="small">Gust 8 m/s</button>
+              <button id="inj-kick" class="small">Kick ⟲</button><button id="inj-spin" class="small">Spin 720°/s</button><button id="inj-gust" class="small">Gust 8 m/s</button>
               <button id="inj-jam-a" class="small">Jam servo A</button><button id="inj-jam-b" class="small">Jam servo B</button>
               <button id="inj-free" class="small quiet">Free servos</button><button id="live-stop" class="small quiet">Stop</button></div>
             <div class="sim-controls"><button id="sim-play" class="primary small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>

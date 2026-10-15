@@ -60,7 +60,8 @@ const SIM_GROUPS = [
   ["Aerodynamics", [["cn_alpha", "Nose normal-force slope CNα · /rad (Barrowman 2)", .1]]],
   ["Conditions", [["wind_m_s", "Wind · m/s", .5], ["gust_m_s", "Gusts up to · m/s", .5], ["wind_dir_deg", "Wind from · °", 5],
     ["pad_tilt_deg", "Pad lean · °", .5], ["misalign_deg", "Motor misalignment · °", .1], ["gyro_bias_dps", "Gyro bias · °/s", .1],
-    ["noise", "Sensor noise × (1 = BMI088)", .1], ["seed", "Random seed", 1]]],
+    ["noise", "Sensor noise × (1 = BMI088)", .1], ["seed", "Random seed", 1],
+    ["roll_torque_nmm", "Roll torque · N·mm (asymmetry, motor swirl)", .05]]],
   ["Atmosphere", [["site_alt_m", "Launch site altitude · m", 10], ["temp_c", "Air temperature · °C", 1],
     ["turbulence_m_s", "Turbulence · m/s RMS", .1]]],
   ["Launch", [["tower_m", "Tower / guide length · m", .1]]],
@@ -129,6 +130,7 @@ function renderSimSummary() {
     tile("MAX SPEED", `${s.max_speed.toFixed(0)} m/s`), tile("WORST BOOST TILT", `${s.max_boost_tilt.toFixed(1)}°`, s.tvc_fault ? "bad" : ""),
     tile("PARACHUTE", s.chute_t < 0 ? "never" : `${s.chute_t.toFixed(1)} s · ${s.chute_speed.toFixed(0)} m/s`, s.chute_t < 0 ? "bad" : ""),
     tile("LANDING", s.landing_speed ? `${s.landing_speed.toFixed(1)} m/s` : "—", s.landing_speed > 9 ? "bad" : ""),
+    tile("MAX ROLL", `${(s.max_roll_dps || 0).toFixed(0)}°/s`, s.max_roll_dps > 720 ? "warn" : ""),
     tile("DRIFT", `${s.drift_m.toFixed(0)} m`), tile("ARMED AFTER", s.armed_t < 0 ? "never" : `${s.armed_t.toFixed(1)} s`, s.armed_t < 0 ? "bad" : ""));
   const m = simResult.model;
   $("sim-model").replaceChildren(tile("ROCKET", `${m.length_mm.toFixed(0)} mm · ${m.mass_wet_g.toFixed(0)} g`),
@@ -151,6 +153,7 @@ function drawSimCharts() {
   const charts = [["Altitude (m) · speed (m/s)", [c("z"), c("speed")], ["altitude", "speed"]],
     ["Tilt (°): true vs the board's estimate", [c("tilt_x"), c("tilt_y"), c("est_tilt_x")], ["X true", "Y true", "X estimate"]],
     ["Gimbal (°)", [c("gimbal_a"), c("gimbal_b")], ["A", "B"]],
+    ["Roll rate (°/s): nothing stops a finless rocket rolling; the TVC compensates", [c("roll_rate")], ["roll"]],
     ["What turns the rocket, about X (N·m): TVC vs air", [c("tq_tvc_x"), c("tq_aero_x")], ["TVC (thrust × gimbal arm)", "air (CP ahead of CG)"]],
     ["What turns the rocket, about Y (N·m)", [c("tq_tvc_y"), c("tq_aero_y")], ["TVC", "air"]]];
   const wrap = $("sim-charts"); wrap.replaceChildren();
@@ -302,7 +305,7 @@ function drawScene() {
   /* HUD */
   const ig = simResult.ignition_s, st = SIM_STATES[row[C.state]] || "?";
   const hudW = pal().term ? 300 : 235, col2 = pal().term ? 168 : 140;
-  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, hudW, 132); ctx.strokeStyle = pal().line; ctx.strokeRect(12, 12, hudW, 132);
+  ctx.fillStyle = pal().hud; ctx.fillRect(12, 12, hudW, 150); ctx.strokeStyle = pal().line; ctx.strokeRect(12, 12, hudW, 150);
   ctx.fillStyle = STATE_COLORS[row[C.state]] || pal().text; ctx.font = pal().font(15, "600");
   ctx.fillText(row[C.chute] && st !== "LANDED" ? `${st} · CHUTE` : st, 24, 36);
   ctx.fillStyle = pal().text; ctx.font = pal().font(12);
@@ -311,7 +314,8 @@ function drawScene() {
    [`alt ${row[C.z].toFixed(1)} m`, `speed ${row[C.speed].toFixed(1)} m/s`],
    [`tilt X ${row[C.tilt_x].toFixed(1)}°`, `Y ${row[C.tilt_y].toFixed(1)}°`],
    [`gimbal A ${row[C.gimbal_a].toFixed(2)}°`, `B ${row[C.gimbal_b].toFixed(2)}°`],
-   [`thrust ${row[C.thrust].toFixed(1)} N`, row[C.tvc] ? "TVC active" : "TVC off"]]
+   [`thrust ${row[C.thrust].toFixed(1)} N`, row[C.tvc] ? "TVC active" : "TVC off"],
+   [`roll ${row[C.roll_rate].toFixed(0)}°/s`, ""]]
     .forEach(([a, b], i) => { ctx.fillText(a, 24, 58 + i * 18); ctx.fillText(b, col2, 58 + i * 18); });
   ctx.fillStyle = pal().muted; ctx.font = pal().font(10);
   ctx.fillText(`drag to orbit · scroll to zoom · rocket ${scale > 1.05 ? `enlarged ${scale.toFixed(0)}×` : "true scale"} · motor gimbal shown ×4`, 12, H - 10);
@@ -451,6 +455,7 @@ async function inject(kind, a, b, message) {
 }
 action("inj-kick", () => { const ang = Math.random() * 2 * Math.PI;
   return inject("kick", 45 * Math.cos(ang), 45 * Math.sin(ang), "Kicked: 45°/s of spin added. Watch the gimbal swing to catch it."); });
+action("inj-spin", () => inject("spin", 720, 0, "Spun: +720°/s of roll. The controller turns its commands with the body to keep pushing the right way."));
 action("inj-gust", () => inject("gust", 8, 2, "Gust: +8 m/s of side wind for 2 s."));
 action("inj-jam-a", () => inject("jam", 0, 0, "Servo A jammed where it is: axis X has no control now."));
 action("inj-jam-b", () => inject("jam", 1, 0, "Servo B jammed where it is: axis Y has no control now."));
@@ -526,3 +531,34 @@ function drawStick() {
   window.addEventListener("keyup", e => { stick.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
   setInterval(updateStick, 33);
 })();
+
+/* ------------------------------------------------------------------ full-screen flight view
+ * The flight card (3D view, gimbal, joystick, live disturbances, playback) fills the window, and
+ * the window goes full screen where the browser allows it. F toggles, Esc leaves. */
+const fsEl = () => document.querySelector(".sim-view");
+const nativeFs = () => document.fullscreenElement || document.webkitFullscreenElement;
+function setSimFullscreen(on) {
+  const card = fsEl();
+  if (!card || card.classList.contains("fullscreen") === on) return;
+  card.classList.toggle("fullscreen", on);
+  document.body.classList.toggle("sim-fs", on);
+  $("sim-fullscreen").textContent = on ? "✕ Exit full screen" : "⛶ Full screen";
+  const root = document.documentElement;
+  try {
+    if (on && !nativeFs()) (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root)?.catch?.(() => {});
+    if (!on && nativeFs()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)?.catch?.(() => {});
+  } catch { /* the overlay alone still works */ }
+  if (on) notice("Full screen: F or Esc to leave. Fly live, then Manual on the joystick to steer.");
+}
+$("sim-fullscreen").onclick = () => setSimFullscreen(!fsEl().classList.contains("fullscreen"));
+$("fs-run").onclick = () => $("sim-run").click();
+$("fs-live").onclick = () => $("sim-live").click();
+const fsLeft = () => { if (!nativeFs()) setSimFullscreen(false); };
+document.addEventListener("fullscreenchange", fsLeft);
+document.addEventListener("webkitfullscreenchange", fsLeft);
+window.addEventListener("keydown", e => {
+  if (/input|select|textarea/i.test(document.activeElement.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
+  const onSim = !$("sim3d").hidden;
+  if (e.key === "Escape" && fsEl().classList.contains("fullscreen")) setSimFullscreen(false);
+  else if ((e.key === "f" || e.key === "F") && onSim) { setSimFullscreen(!fsEl().classList.contains("fullscreen")); e.preventDefault(); }
+});

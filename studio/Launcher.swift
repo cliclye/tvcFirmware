@@ -101,6 +101,7 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
         if let window = window { window.makeKeyAndOrderFront(nil); return }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        if #available(macOS 12.3, *) { configuration.preferences.isElementFullscreenEnabled = true }   /* flight view full screen */
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -109,6 +110,7 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
                               backing: .buffered, defer: false)
         window.title = "EasyTVC Studio"
         window.minSize = NSSize(width: 820, height: 560)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.contentView = view
         window.setFrameAutosaveName("EasyTVCStudioMain")
         window.center()
