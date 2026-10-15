@@ -94,3 +94,19 @@ pre.log{background:var(--log-bg);color:var(--log-text);font-size:10px;line-heigh
 .theme-switch button{flex:1;border:0;border-radius:0;padding:6px 4px;font-size:11px;background:var(--card);color:var(--muted)}
 .theme-switch button+button{border-left:1px solid var(--line)}.theme-switch button.selected{background:var(--purple);color:white}
 input[type=number],input[type=text],select{color:var(--text)}
+
+/* ---- live flight ---- */
+.live-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 14px;border-top:1px solid var(--line);background:color-mix(in srgb, var(--red) 6%, transparent)}
+.live-dot{color:var(--red);font-weight:700;letter-spacing:.1em;animation:term-blink 1.2s steps(1) infinite}
+.help-inline{font-size:11px;color:var(--muted);margin-right:6px}
+@keyframes term-blink{50%{opacity:.25}}
+
+/* ---- manual TVC joystick ---- */
+.view-wrap{position:relative;display:flex}.view-wrap>.view-panes{flex:1;min-width:0}
+.stick-panel{width:220px;flex:none;border-left:1px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--card)}
+.stick-head{display:flex;justify-content:space-between;align-items:center}
+.stick{width:190px;height:190px;align-self:center;touch-action:none;cursor:grab;border:1px solid var(--line);border-radius:50%}
+.stick-panel.manual .stick{border-color:var(--red)}
+.stick-readout{text-align:center;font-size:12px}.stick-field input{width:100%}
+@media(max-width:1150px){.view-wrap{flex-direction:column}.stick-panel{width:auto;border-left:0;border-top:1px solid var(--line)}}
+.vehicle-curve{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-top:10px}.vehicle-curve .help{margin:0}

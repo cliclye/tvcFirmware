@@ -159,14 +159,56 @@ class NativeController:
         self.lib.EasyTVC_Sim3D.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint,
             ctypes.POINTER(ctypes.c_float), ctypes.c_uint, ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
         self.lib.EasyTVC_Sim3D.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DBegin.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DBegin.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DAdvance.argtypes = [ctypes.c_float, ctypes.POINTER(ctypes.c_float), ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DAdvance.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DInject.argtypes = [ctypes.c_int, ctypes.c_float, ctypes.c_float]
+        self.lib.EasyTVC_Sim3DInject.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DSetCurve.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DSetCurve.restype = ctypes.c_int
+        self.sim_lock = threading.Lock()   # the C engine keeps one batch and one live instance
 
-    def sim3d(self, params, rows=True):
+    def _set_curve(self, curve):
+        """Caller holds sim_lock. The C engine keeps the curve for the runs that follow."""
+        if not curve:
+            return
+        times = (ctypes.c_float * len(curve))(*[float(t) for t, _ in curve])
+        force = (ctypes.c_float * len(curve))(*[float(f) for _, f in curve])
+        if self.lib.EasyTVC_Sim3DSetCurve(times, force, len(curve)) != 0:
+            raise ValueError("The thrust curve was rejected.")
+
+    def sim3d_begin(self, params, curve=None):
+        p = (ctypes.c_float * len(params))(*params)
+        with self.sim_lock:
+            self._set_curve(curve)
+            if self.lib.EasyTVC_Sim3DBegin(p, len(params)) != 0:
+                raise ValueError("The simulator rejected these settings (check servo limits and vehicle numbers).")
+
+    def sim3d_advance(self, seconds):
+        columns, max_rows = len(launch.SIM3D_COLUMNS), 200
+        out = (ctypes.c_float * (columns * max_rows))()
+        summary = (ctypes.c_float * len(launch.SIM3D_SUMMARY))()
+        with self.sim_lock:
+            n = self.lib.EasyTVC_Sim3DAdvance(seconds, out, max_rows, summary, len(launch.SIM3D_SUMMARY))
+        if n < 0:
+            raise ValueError("No live flight is running.")
+        return [[round(float(out[i * columns + j]), 5) for j in range(columns)] for i in range(n)], [float(v) for v in summary]
+
+    def sim3d_inject(self, kind, a, b):
+        with self.sim_lock:
+            return self.lib.EasyTVC_Sim3DInject(kind, a, b)
+
+    def sim3d(self, params, rows=True, curve=None):
         """6-DOF flight with the firmware in the loop. Returns (rows, summary)."""
         columns, max_rows = len(launch.SIM3D_COLUMNS), 6000
         p = (ctypes.c_float * len(params))(*params)
         out = (ctypes.c_float * (columns * max_rows))()
         summary = (ctypes.c_float * len(launch.SIM3D_SUMMARY))()
-        n = self.lib.EasyTVC_Sim3D(p, len(params), out, max_rows, summary, len(launch.SIM3D_SUMMARY))
+        with self.sim_lock:
+            self._set_curve(curve)
+            n = self.lib.EasyTVC_Sim3D(p, len(params), out, max_rows, summary, len(launch.SIM3D_SUMMARY))
         if n < 0:
             raise ValueError("The simulator rejected these settings (check servo limits and vehicle numbers).")
         values = [float(v) for v in summary]
@@ -422,6 +464,17 @@ class Handler(BaseHTTPRequestHandler):
             return {"sim": launch.sim_defaults()}
         if path == "/api/sim3d/run":
             return launch.run_sim3d(server.native, data.get("config"), data.get("vehicle"), data.get("sim"))
+        if path == "/api/sim3d/live/start":
+            return launch.live_start(server.native, data.get("config"), data.get("vehicle"), data.get("sim"))
+        if path == "/api/sim3d/live/step":
+            return launch.live_step(server.native, data.get("config"), data.get("seconds"), data.get("manual"))
+        if path == "/api/motor/parse-eng":
+            text = data.get("text")
+            if not isinstance(text, str) or len(text) > 20000:
+                raise ValueError("Paste or open a .eng file (up to 20 kB).")
+            return launch.parse_eng(text)
+        if path == "/api/sim3d/live/inject":
+            return launch.live_inject(server.native, data.get("kind"), data.get("a", 0.0), data.get("b", 0.0))
         if path == "/api/sim3d/batch":
             return launch.run_sim3d_batch(server.native, data.get("config"), data.get("vehicle"), data.get("sim"), data.get("count", 40))
         if path == "/api/rocket/model":

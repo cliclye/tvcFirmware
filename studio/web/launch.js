@@ -177,6 +177,18 @@ function vField(object, key, label, step = 1) {
 function renderVehicle() {
   if (!vehicle) return;
   const m = vehicle.motor;
+  const curve = Array.isArray(m.curve) ? m.curve : null;
+  const impulse = curve ? curve.reduce((acc, [t, f], i) => acc + 0.5 * (f + (i ? curve[i - 1][1] : 0)) * (t - (i ? curve[i - 1][0] : 0)), 0) : null;
+  const engInput = el("input", {type: "file", accept: ".eng,.txt", hidden: ""});
+  engInput.onchange = async () => {
+    try { const file = engInput.files[0]; if (!file) return;
+      const info = await api("motor/parse-eng", {text: await file.text()});
+      Object.assign(m, {name: info.name, avg_thrust_n: info.avg_thrust_n, burn_s: info.burn_s, total_mass_g: info.total_mass_g,
+        prop_mass_g: info.prop_mass_g, diameter_mm: info.diameter_mm, length_mm: info.length_mm, curve: info.curve});
+      renderVehicle(); vehicleChanged(); notice(`Loaded ${info.name}: ${info.impulse_ns} N·s, ${info.curve.length} points.`);
+    } catch (error) { notice(error.message); } };
+  $("vehicle-curve").replaceChildren(el("span", {class: "help", text: curve ? `Thrust curve: ${curve.length} measured points, ${impulse.toFixed(1)} N·s, peak ${Math.max(...curve.map(p => p[1])).toFixed(1)} N.` : "No measured curve: the sim uses a generic shape."}),
+    el("button", {class: "small", text: "Open .eng…", onclick: () => engInput.click()}), engInput);
   $("vehicle-motor").replaceChildren(vField(m, "name", "Motor"), vField(m, "avg_thrust_n", "Avg thrust · N", .5), vField(m, "burn_s", "Burn time · s", .1),
     vField(m, "total_mass_g", "Motor mass · g"), vField(m, "prop_mass_g", "Propellant · g"), vField(vehicle, "diameter_mm", "Body diameter · mm"),
     vField(vehicle, "cd", "Body drag coeff.", .05), vField(vehicle, "chute_diameter_cm", "Parachute · cm"), vField(vehicle, "chute_cd", "Chute drag coeff.", .05));

@@ -61,6 +61,8 @@ const SIM_GROUPS = [
   ["Conditions", [["wind_m_s", "Wind · m/s", .5], ["gust_m_s", "Gusts up to · m/s", .5], ["wind_dir_deg", "Wind from · °", 5],
     ["pad_tilt_deg", "Pad lean · °", .5], ["misalign_deg", "Motor misalignment · °", .1], ["gyro_bias_dps", "Gyro bias · °/s", .1],
     ["noise", "Sensor noise × (1 = BMI088)", .1], ["seed", "Random seed", 1]]],
+  ["Atmosphere", [["site_alt_m", "Launch site altitude · m", 10], ["temp_c", "Air temperature · °C", 1],
+    ["turbulence_m_s", "Turbulence · m/s RMS", .1]]],
   ["Launch", [["tower_m", "Tower / guide length · m", .1]]],
 ];
 
@@ -81,7 +83,7 @@ function renderSimInputs() {
     wrap.append(el("h3", {class: "sub", text: title}), el("div", {class: "field-grid"}, ...fields.map(f => simField(...f))));
   }
   const profile = el("select", {"aria-label": "Thrust curve"});
-  [[1, "Ignition spike (Estes-like)"], [0, "Flat average"]].forEach(([v, n]) => { const o = el("option", {text: n}); o.value = v; profile.append(o); });
+  [[2, "Measured curve (motor in Rocket setup)"], [1, "Ignition spike (generic)"], [0, "Flat average"]].forEach(([v, n]) => { const o = el("option", {text: n}); o.value = v; profile.append(o); });
   profile.value = String(sim.thrust_profile);
   profile.onchange = () => { sim.thrust_profile = Number(profile.value); simChanged(); };
   const reverse = el("input", {type: "checkbox"}); reverse.checked = sim.reverse_servo_a === 1;
@@ -98,6 +100,7 @@ function simRequest() {
 /* ------------------------------------------------------------------ run */
 /* Shared by the 3D sim and TVC gimbal pages. Starts playback at T-1.5 s. */
 async function runSimFlight() {
+  if (typeof stopLive === "function" && live.active) stopLive();
   $("sim-run").disabled = true; $("sim-run").textContent = "Simulating…";
   try {
     simResult = await api("sim3d/run", simRequest());
@@ -141,13 +144,15 @@ function simEvents() {
   return out.sort((a, b) => a.t - b.t);
 }
 function drawSimCharts() {
-  if (!simResult) return;
+  if (!simResult || !simResult.rows.length) return;
   const ig = simResult.ignition_s;
   const rows = simResult.rows.filter(r => r[0] >= ig - 1);
   const t = rows.map(r => r[0]), c = name => rows.map(r => r[simCol[name]]);
   const charts = [["Altitude (m) · speed (m/s)", [c("z"), c("speed")], ["altitude", "speed"]],
     ["Tilt (°): true vs the board's estimate", [c("tilt_x"), c("tilt_y"), c("est_tilt_x")], ["X true", "Y true", "X estimate"]],
-    ["Gimbal (°)", [c("gimbal_a"), c("gimbal_b")], ["A", "B"]]];
+    ["Gimbal (°)", [c("gimbal_a"), c("gimbal_b")], ["A", "B"]],
+    ["What turns the rocket, about X (N·m): TVC vs air", [c("tq_tvc_x"), c("tq_aero_x")], ["TVC (thrust × gimbal arm)", "air (CP ahead of CG)"]],
+    ["What turns the rocket, about Y (N·m)", [c("tq_tvc_y"), c("tq_aero_y")], ["TVC", "air"]]];
   const wrap = $("sim-charts"); wrap.replaceChildren();
   const events = simEvents();
   charts.forEach(([title, series, names]) => {
@@ -186,6 +191,7 @@ function scatter(canvas, runs) {
 
 /* ------------------------------------------------------------------ 3D view */
 function rowAt(t) {
+  if (!simResult.rows.length) return null;
   const r = simResult.rows; let lo = 0, hi = r.length - 1;
   while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (r[mid][0] <= t) lo = mid; else hi = mid; }
   return r[lo];
@@ -210,7 +216,7 @@ function drawScene() {
   const W = rect.width, H = rect.height;
   const sky = ctx.createLinearGradient(0, 0, 0, H); sky.addColorStop(0, pal().sky0); sky.addColorStop(1, pal().sky1);
   ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-  if (!simResult) return;
+  if (!simResult || !simResult.rows.length) return;
 
   const row = rowAt(play.t), C = simCol;
   const pos = [row[C.x], row[C.y], row[C.z]], q = [row[C.qw], row[C.qx], row[C.qy], row[C.qz]];
@@ -316,17 +322,18 @@ function drawScene() {
  * The step is clamped: after the window was hidden or in the background, requestAnimationFrame
  * resumes with a huge gap, which used to jump straight to the end of the flight and stop, so the
  * next Play click looked like it did nothing. */
-function playbackEnd() { return simResult ? simResult.rows[simResult.rows.length - 1][0] : 0; }
-function playbackStart() { return simResult ? Math.max(simResult.rows[0][0], simResult.ignition_s - 1.5) : 0; }
+function playbackEnd() { return simResult && simResult.rows.length ? simResult.rows[simResult.rows.length - 1][0] : 0; }
+function playbackStart() { return simResult && simResult.rows.length ? Math.max(simResult.rows[0][0], simResult.ignition_s - 1.5) : 0; }
 function tick(now) {
   const dt = Math.max(0, Math.min(0.1, (now - (play.last || now)) / 1000));
   play.last = now;
-  if (simResult && play.playing && !$("sim3d").hidden) {
+  if (live.active) liveTick(now);
+  else if (simResult && play.playing && !$("sim3d").hidden) {
     play.t = Math.min(playbackEnd(), play.t + dt * play.speed);
     if (play.t >= playbackEnd()) play.playing = false;
   }
   if (!$("sim-play").disabled) $("sim-play").textContent = play.playing ? "Pause" : play.t >= playbackEnd() - 0.05 && simResult ? "Replay" : "Play";
-  if (simResult) {
+  if (simResult && simResult.rows.length) {
     const slider = $("sim-slider"), tt = play.t - simResult.ignition_s;
     slider.min = simResult.rows[0][0]; slider.max = playbackEnd();
     if (document.activeElement !== slider) slider.value = play.t;
@@ -337,6 +344,7 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 action("sim-play", async () => {
+  if (live.active) return;
   if (play.playing) { play.playing = false; return; }
   if (!simResult) {
     $("sim-play").disabled = true; $("sim-play").textContent = "Simulating…";
@@ -382,4 +390,139 @@ window.onTabShown = id => {
   } catch (error) { notice(error.message); return; }
   renderSimInputs();
   requestAnimationFrame(tick);
+})();
+
+
+/* ------------------------------------------------------------------ live flight
+ * The C engine is stepped forward as wall-clock time passes (the same 1 kHz physics and 200 Hz
+ * flight software as a batch run: tests show both give bit-identical results). Disturbances go
+ * straight into the running physics, so whatever the rocket does next is the controller's doing. */
+const live = {active: false, busy: false, lastWall: 0};
+async function startLive() {
+  live.active = false;
+  play.playing = false;
+  const meta = await api("sim3d/live/start", simRequest());
+  simResult = {columns: meta.columns, rows: [], summary: null, verdict: [], ignition_s: meta.ignition_s, model: meta.model, live: true};
+  simCol = Object.fromEntries(meta.columns.map((c, i) => [c, i]));
+  /* the pad phase (arming hold) is not interesting to watch: run it at full speed */
+  for (let t = 0; t < meta.ignition_s - 1.5; t += 1) {
+    const more = await api("sim3d/live/step", {config: cfg, seconds: Math.min(1, meta.ignition_s - 1.5 - t)});
+    simResult.rows.push(...more.rows);
+  }
+  play.t = playbackEnd();
+  $("sim-empty").hidden = true; $("sim-results").hidden = true; $("live-bar").hidden = false; $("stick-panel").hidden = false;
+  setStickMode(stick.manual);
+  $("sim-play").disabled = true; $("sim-play").textContent = "LIVE";
+  if ($("gim-source").value !== "sim") { $("gim-source").value = "sim"; $("gim-source").dispatchEvent(new Event("change")); }
+  if (cam.follow) cam.dist = 2.5;
+  live.active = true; live.busy = false; live.lastWall = performance.now();
+}
+function liveTick(now) {
+  if (live.busy) return;
+  const dt = Math.min(0.25, (now - live.lastWall) / 1000) * play.speed;
+  if (dt < 0.03) return;
+  live.busy = true; live.lastWall = now;
+  const body = {config: cfg, seconds: Math.round(dt * 1000) / 1000};
+  if (stick.manual) body.manual = [stick.a, stick.b];
+  else if (stick.handBack) { body.manual = "auto"; stick.handBack = false; }
+  api("sim3d/live/step", body).then(out => {
+    if (!live.active || !simResult || !simResult.live) return;
+    simResult.rows.push(...out.rows);
+    play.t = playbackEnd();
+    if (out.done) finishLive(out);
+  }).catch(error => { notice(error.message); stopLive(); }).finally(() => { live.busy = false; });
+}
+function finishLive(out) {
+  live.active = false;
+  simResult.summary = out.summary; simResult.verdict = out.verdict || [];
+  $("live-bar").hidden = true; $("stick-panel").hidden = true; $("sim-play").disabled = false; $("sim-results").hidden = false;
+  renderSimSummary(); drawSimCharts();
+  notice("Live flight finished. Replay it with Play, or fly live again.");
+}
+function stopLive() {
+  live.active = false;
+  $("live-bar").hidden = true; $("stick-panel").hidden = true; $("sim-play").disabled = false;
+}
+action("sim-live", startLive);
+action("live-stop", async () => { stopLive(); notice("Live flight stopped. Run flight or Fly live to start again."); });
+async function inject(kind, a, b, message) {
+  await api("sim3d/live/inject", {kind, a, b});
+  notice(message);
+}
+action("inj-kick", () => { const ang = Math.random() * 2 * Math.PI;
+  return inject("kick", 45 * Math.cos(ang), 45 * Math.sin(ang), "Kicked: 45°/s of spin added. Watch the gimbal swing to catch it."); });
+action("inj-gust", () => inject("gust", 8, 2, "Gust: +8 m/s of side wind for 2 s."));
+action("inj-jam-a", () => inject("jam", 0, 0, "Servo A jammed where it is: axis X has no control now."));
+action("inj-jam-b", () => inject("jam", 1, 0, "Servo B jammed where it is: axis Y has no control now."));
+action("inj-free", async () => { await api("sim3d/live/inject", {kind: "free", a: 0, b: 0}); await api("sim3d/live/inject", {kind: "free", a: 1, b: 0}); notice("Servos released."); });
+
+
+/* ------------------------------------------------------------------ manual TVC joystick
+ * Stick X -> servo B command (tilts the motor about body Y), stick Y (up) -> servo A command
+ * (about body X), scaled by the sensitivity. Commands go through the same servo settings
+ * (endpoints, direction) the flight software uses, then through the servo model. */
+const stick = {manual: false, handBack: false, x: 0, y: 0, a: 0, b: 0, drag: false, keys: new Set()};
+function setStickMode(manual) {
+  if (stick.manual && !manual) stick.handBack = true;
+  stick.manual = manual;
+  $("mode-auto").classList.toggle("selected", !manual);
+  $("mode-manual").classList.toggle("selected", manual);
+  $("stick-panel").classList.toggle("manual", manual);
+}
+$("mode-auto").onclick = () => {
+  const row = simResult && simResult.rows.length ? simResult.rows[simResult.rows.length - 1] : null;
+  const tilt = row ? Math.hypot(row[simCol.tilt_x], row[simCol.tilt_y]) : 0, limit = Number(cfg.MAX_TILT_DEG) || 25;
+  setStickMode(false);
+  notice(tilt > limit
+    ? `Auto TVC back on, but tilt is already ${tilt.toFixed(0)}° (past the ${limit}° give-up limit): the flight software will centre the motor, as it would on the real rocket.`
+    : "Auto TVC: the flight software steers again.");
+};
+$("mode-manual").onclick = () => { setStickMode(true); notice("Manual TVC: you're steering. The rocket is unstable, so small inputs!"); };
+function updateStick() {
+  const gain = Number($("stick-gain").value);
+  if (stick.keys.size) {
+    const kx = (stick.keys.has("ArrowRight") || stick.keys.has("d") ? 1 : 0) - (stick.keys.has("ArrowLeft") || stick.keys.has("a") ? 1 : 0);
+    const ky = (stick.keys.has("ArrowUp") || stick.keys.has("w") ? 1 : 0) - (stick.keys.has("ArrowDown") || stick.keys.has("s") ? 1 : 0);
+    stick.x += (kx - stick.x) * 0.25; stick.y += (ky - stick.y) * 0.25;
+  } else if (!stick.drag && $("stick-spring").checked) {
+    stick.x *= 0.8; stick.y *= 0.8;
+    if (Math.hypot(stick.x, stick.y) < 0.01) stick.x = stick.y = 0;
+  }
+  stick.b = Math.max(-1, Math.min(1, stick.x * gain));
+  stick.a = Math.max(-1, Math.min(1, -stick.y * gain));
+  $("stick-readout").textContent = `${stick.manual ? "MANUAL" : "auto"} · A ${stick.a >= 0 ? "+" : ""}${stick.a.toFixed(2)} · B ${stick.b >= 0 ? "+" : ""}${stick.b.toFixed(2)}`;
+  drawStick();
+}
+function drawStick() {
+  const canvas = $("stick"); if ($("stick-panel").hidden) return;
+  const k = window.devicePixelRatio || 1, size = 190;
+  if (canvas.width !== size * k) { canvas.width = canvas.height = size * k; }
+  const ctx = canvas.getContext("2d"); ctx.setTransform(k, 0, 0, k, 0, 0); ctx.clearRect(0, 0, size, size);
+  const c = size / 2, r = size / 2 - 14;
+  ctx.strokeStyle = pal().line; ctx.lineWidth = 1;
+  [0.33, 0.66, 1].forEach(f => { ctx.beginPath(); ctx.arc(c, c, r * f, 0, 2 * Math.PI); ctx.stroke(); });
+  ctx.beginPath(); ctx.moveTo(c - r, c); ctx.lineTo(c + r, c); ctx.moveTo(c, c - r); ctx.lineTo(c, c + r); ctx.stroke();
+  ctx.fillStyle = pal().muted; ctx.font = pal().font(9);
+  ctx.fillText("B+", c + r - 12, c - 4); ctx.fillText("A−", c + 4, c - r + 10);
+  const kx = c + stick.x * r, ky = c - stick.y * r;
+  ctx.strokeStyle = stick.manual ? "#ff3b30" : pal().muted; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(kx, ky); ctx.stroke();
+  ctx.fillStyle = stick.manual ? "#ff3b30" : pal().text2;
+  ctx.beginPath(); ctx.arc(kx, ky, 13, 0, 2 * Math.PI); ctx.fill();
+  if (!stick.manual) { ctx.fillStyle = pal().muted; ctx.fillText("press MANUAL to steer", c - 52, size - 4); }
+}
+(() => {
+  const canvas = $("stick");
+  const set = e => { const rect = canvas.getBoundingClientRect(), r = rect.width / 2 - 14;
+    let x = (e.clientX - rect.left - rect.width / 2) / r, y = -(e.clientY - rect.top - rect.height / 2) / r;
+    const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; }
+    stick.x = x; stick.y = y; };
+  canvas.addEventListener("pointerdown", e => { stick.drag = true; canvas.setPointerCapture(e.pointerId); set(e); if (!stick.manual) setStickMode(true); });
+  canvas.addEventListener("pointermove", e => { if (stick.drag) set(e); });
+  canvas.addEventListener("pointerup", () => { stick.drag = false; });
+  const keyOk = e => live.active && stick.manual && !/input|select|textarea/i.test(document.activeElement.tagName);
+  window.addEventListener("keydown", e => { const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (keyOk(e) && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d"].includes(key)) { stick.keys.add(key); e.preventDefault(); } });
+  window.addEventListener("keyup", e => { stick.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
+  setInterval(updateStick, 33);
 })();

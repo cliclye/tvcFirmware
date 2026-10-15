@@ -563,20 +563,54 @@ SIM3D_PARAMS = (
     "length_m", "gimbal_arm_m", "cp_ahead_m", "inertia", "cn_alpha", "linkage_ratio", "servo_speed_dps",
     "wind_m_s", "gust_m_s", "wind_dir_deg", "pad_tilt_deg", "misalign_deg", "gyro_bias_dps", "noise",
     "seed", "reverse_servo_a", "tower_m", "servo_deg_per_us", "gimbal_stop_deg", "cg_shift_m",
-    "inertia_burnout", "planform_area_m2", "planform_ahead_m", "ignition_s",
+    "inertia_burnout", "planform_area_m2", "planform_ahead_m",
+    "servo_deadband_us", "servo_backlash_deg", "servo_tau_s",
+    "thrust_scale", "site_alt_m", "temp_c", "nozzle_arm_m", "motor_gimbal_inertia", "servo_stall_nm",
+    "imu_ahead_m", "turbulence_m_s", "gyro_lpf_hz", "accel_lpf_hz", "ignition_s",
 )
+# Estes E12, NAR certification data (thrustcurve.org, C. J. Kobel 2012): 27.2 N*s, 33 N peak
+E12_CURVE = [[0.052, 5.045], [0.096, 9.910], [0.196, 24.144], [0.251, 31.351], [0.287, 32.973], [0.300, 29.910],
+             [0.344, 17.117], [0.370, 14.414], [0.400, 12.973], [0.500, 11.712], [0.600, 11.171], [0.700, 10.631],
+             [0.800, 10.09], [0.900, 9.73], [1.000, 9.55], [1.101, 9.91], [1.200, 9.55], [1.300, 9.73], [1.400, 9.73],
+             [1.500, 9.73], [1.600, 9.73], [1.700, 9.55], [1.800, 9.73], [1.900, 9.73], [2.000, 9.55], [2.100, 9.55],
+             [2.200, 9.73], [2.300, 9.19], [2.375, 9.37], [2.400, 5.95], [2.440, 0.0]]
+
+
+def parse_eng(text: str) -> dict:
+    """RASP .eng: comment lines ';', header 'name dia_mm len_mm delays prop_kg total_kg maker', then 't F' pairs."""
+    lines = [l.split(";")[0].strip() for l in text.splitlines()]
+    lines = [l for l in lines if l]
+    if len(lines) < 3:
+        raise ValueError("Not a RASP .eng thrust curve.")
+    head = lines[0].split()
+    if len(head) < 7:
+        raise ValueError("The .eng header line is incomplete.")
+    try:
+        curve = [[float(a), float(b)] for a, b in (l.split()[:2] for l in lines[1:])]
+        info = {"name": f"{head[6]} {head[0]}", "diameter_mm": float(head[1]), "length_mm": float(head[2]),
+                "prop_mass_g": float(head[4]) * 1000, "total_mass_g": float(head[5]) * 1000}
+    except (ValueError, IndexError):
+        raise ValueError("The .eng file has numbers I can't read.")
+    if len(curve) > 120 or any(curve[i][0] <= (curve[i - 1][0] if i else 0) for i in range(len(curve))) or any(f < 0 for _, f in curve):
+        raise ValueError("The thrust curve must have up to 120 points with increasing times and positive thrust.")
+    impulse = sum(0.5 * (curve[i][1] + (curve[i - 1][1] if i else 0)) * (curve[i][0] - (curve[i - 1][0] if i else 0)) for i in range(len(curve)))
+    burn = curve[-1][0]
+    info.update(curve=curve, burn_s=round(burn, 3), avg_thrust_n=round(impulse / burn, 3), impulse_ns=round(impulse, 2))
+    return info
 SIM3D_COLUMNS = ("t", "x", "y", "z", "qw", "qx", "qy", "qz", "speed", "vz", "tilt_x", "tilt_y",
                  "gimbal_a", "gimbal_b", "state", "tvc", "chute", "thrust", "est_tilt_x", "est_tilt_y", "armed",
-                 "pulse_a", "pulse_b", "horn_a", "horn_b", "alpha")
+                 "pulse_a", "pulse_b", "horn_a", "horn_b", "alpha",
+                 "tq_tvc_x", "tq_tvc_y", "tq_aero_x", "tq_aero_y", "servo_fault", "wind")
 SIM3D_SUMMARY = ("apogee_m", "apogee_t", "max_speed", "max_boost_tilt", "drift_m", "landing_speed",
                  "chute_t", "chute_speed", "armed_t", "launch_t", "tvc_fault", "saturation_pct",
-                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff")
+                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff", "done", "time")
 # (low, high, default) for the simulation-only inputs
 SIM_INPUTS = {
     "cn_alpha": (0, 10, 2.0), "wind_m_s": (0, 25, 2), "gust_m_s": (0, 35, 4),
     "wind_dir_deg": (0, 360, 30), "pad_tilt_deg": (0, 30, 1), "misalign_deg": (0, 5, 0.5),
     "gyro_bias_dps": (0, 10, 0.5), "noise": (0, 3, 1), "seed": (0, 100000, 1),
-    "reverse_servo_a": (0, 1, 0), "tower_m": (0, 3, 0.3), "thrust_profile": (0, 1, 1),
+    "reverse_servo_a": (0, 1, 0), "tower_m": (0, 3, 0.3), "thrust_profile": (0, 2, 2),
+    "site_alt_m": (-400, 4000, 0), "temp_c": (-30, 50, 15), "turbulence_m_s": (0, 5, 0.5),
 }
 
 
@@ -611,6 +645,11 @@ def sim_params(config: dict, vehicle: dict, sim: dict) -> list:
         "planform_area_m2": model["planform_m2"], "planform_ahead_m": (model["cg_wet_mm"] - model["planform_center_mm"]) / 1000,
         "linkage_ratio": model["linkage_ratio"], "servo_speed_dps": model["servo_speed_dps"],
         "servo_deg_per_us": model["servo_deg_per_us"], "gimbal_stop_deg": model["stop_deg"],
+        "servo_deadband_us": model["servo_deadband_us"], "servo_backlash_deg": model["servo_backlash_deg"],
+        "servo_tau_s": model["servo_tau_s"],
+        "thrust_scale": 1.0, "nozzle_arm_m": (model["nozzle_mm"] - model["cg_wet_mm"]) / 1000,
+        "motor_gimbal_inertia": model["motor_gimbal_inertia"], "servo_stall_nm": model["servo_stall_nm"],
+        "imu_ahead_m": (model["cg_wet_mm"] - model["imu_mm"]) / 1000, "gyro_lpf_hz": 47.0, "accel_lpf_hz": 145.0,
     }
     if model["gimbal_arm_mm"] <= 5:
         raise ValueError("The gimbal pivot must be behind the CG: check part positions.")
@@ -654,9 +693,14 @@ def sim_verdict(s: dict, config: dict) -> list:
     return out
 
 
+def motor_curve(vehicle):
+    curve = upgrade_vehicle(vehicle)["motor"].get("curve")
+    return curve if isinstance(curve, list) and len(curve) >= 2 else E12_CURVE
+
+
 def run_sim3d(native, config, vehicle, sim):
     params = sim_params(config, vehicle, sim)
-    rows, summary = native.sim3d(params)
+    rows, summary = native.sim3d(params, curve=motor_curve(vehicle))
     s = dict(zip(SIM3D_SUMMARY, summary))
     model = rocket_model(vehicle)
     model.pop("vehicle")
@@ -665,7 +709,8 @@ def run_sim3d(native, config, vehicle, sim):
 
 
 def run_sim3d_batch(native, config, vehicle, sim, count=40):
-    """Monte Carlo: random wind direction/strength, misalignment, pad tilt, sensor noise seed."""
+    """Monte Carlo: random wind direction/strength, turbulence, misalignment, pad tilt, sensor noise seed,
+    plus build and motor spread: thrust +-5 %, CG +-5 mm, inertia +-10 %."""
     import random
     count = max(5, min(200, int(count)))
     rng = random.Random(int(sim.get("seed", 1)))
@@ -681,7 +726,19 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
         for key in ("wind_m_s", "gust_m_s", "misalign_deg", "pad_tilt_deg"):
             low, high, _ = SIM_INPUTS[key]
             trial[key] = min(high, max(low, trial[key]))
-        _, summary = native.sim3d(sim_params(config, vehicle, trial), rows=False)
+        params = sim_params(config, vehicle, trial)
+        at = SIM3D_PARAMS.index
+        params[at("thrust_scale")] = rng.uniform(0.95, 1.05)
+        dcg = rng.uniform(-0.005, 0.005)        # CG measured 5 mm off, + = further aft
+        params[at("gimbal_arm_m")] -= dcg
+        params[at("nozzle_arm_m")] -= dcg
+        params[at("cp_ahead_m")] += dcg
+        params[at("planform_ahead_m")] += dcg
+        params[at("imu_ahead_m")] += dcg
+        k = rng.uniform(0.9, 1.1)
+        params[at("inertia")] *= k
+        params[at("inertia_burnout")] *= k
+        _, summary = native.sim3d(params, rows=False, curve=motor_curve(vehicle))
         s = dict(zip(SIM3D_SUMMARY, summary))
         success = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"] and
                        (s["under_chute"] or not config.get("CHUTE_CHANNEL")) and 0 < s["landing_speed"] < 9)
@@ -706,7 +763,10 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
 NOSE_SHAPES = {"ogive": (0.466, 2 / 3), "conical": (2 / 3, 1 / 2), "parabolic": (0.5, 2 / 3), "elliptical": (1 / 3, 0.785)}
 # shape -> (CP fraction of nose length, planform area / (D * L) for the nose)
 
-GIMBAL_DEFAULTS = {"horn_mm": 10.5, "lever_mm": 30.0, "servo_deg_per_us": 0.09, "servo_s_per_60": 0.10, "stop_deg": 8.0}
+GIMBAL_DEFAULTS = {"horn_mm": 10.5, "lever_mm": 30.0, "servo_deg_per_us": 0.09, "servo_s_per_60": 0.10, "stop_deg": 8.0,
+                   # how a real hobby servo behaves (MG90D-class): ignored pulse change, gear + linkage slop, loop speed
+                   "deadband_us": 4.0, "backlash_deg": 0.8, "tau_s": 0.010,
+                   "stall_nm": 0.2}   # MG90D: ~2.0-2.2 kg*cm at the horn
 BODY_DEFAULTS = {"length_mm": 450.0, "nose_length_mm": 150.0, "nose_shape": "ogive",
                  "motor_overhang_mm": 10.0, "pivot_from_nozzle_mm": 45.0}
 DEFAULT_PARTS = [  # name, grams, centre from nose tip (mm), length (mm)
@@ -723,6 +783,9 @@ def upgrade_vehicle(vehicle: dict | None) -> dict:
                            "total_mass_g": 58, "prop_mass_g": 36})
     v["motor"].setdefault("diameter_mm", 24.0)
     v["motor"].setdefault("length_mm", 95.0)
+    if "curve" not in v["motor"] and "E12" in str(v["motor"].get("name", "")):
+        v["motor"]["curve"] = E12_CURVE
+        v["motor"].update(name="Estes E12 (NAR data)", avg_thrust_n=11.15, burn_s=2.44, total_mass_g=59.9, prop_mass_g=35.9)
     v.setdefault("diameter_mm", 66.0)
     v.setdefault("cd", 0.6)
     v.setdefault("chute_diameter_cm", 55)
@@ -798,6 +861,10 @@ def rocket_model(vehicle: dict) -> dict:
     dpu = _num(gim["servo_deg_per_us"], 0.02, 0.4, "Servo degrees per µs")
     s60 = _num(gim["servo_s_per_60"], 0.02, 1.0, "Servo speed (s per 60°)")
     stop = _num(gim["stop_deg"], 0.5, 30, "Gimbal mechanical stop")
+    stall = _num(gim["stall_nm"], 0.01, 5, "Servo stall torque")
+    deadband = _num(gim["deadband_us"], 0, 50, "Servo deadband")
+    backlash = _num(gim["backlash_deg"], 0, 10, "Servo backlash")
+    tau = _num(gim["tau_s"], 0.001, 0.2, "Servo response time")
     return {
         "length_mm": length, "nose_tip_mm": 0.0, "nozzle_mm": nozzle, "motor_top_mm": nozzle - ml,
         "motor_center_mm": motor_center, "pivot_mm": pivot,
@@ -807,6 +874,10 @@ def rocket_model(vehicle: dict) -> dict:
         "gimbal_arm_mm": pivot - cg_wet, "cp_ahead_mm": cg_wet - cp,
         "stability_cal": (cp - cg_wet) / D, "stability_cal_dry": (cp - cg_dry) / D,
         "linkage_ratio": horn / lever, "servo_deg_per_us": dpu, "servo_speed_dps": 60.0 / s60, "stop_deg": stop,
+        "servo_deadband_us": deadband, "servo_backlash_deg": backlash, "servo_tau_s": tau, "servo_stall_nm": stall,
+        # gimballed motor about its pivot (thin rod + offset), wet; the airframe feels its reaction
+        "motor_gimbal_inertia": m_motor * 1e-3 * ((ml / 1000) ** 2 / 12 + ((motor_center - pivot) / 1000) ** 2),
+        "imu_mm": next((x for (g, x, l), part in zip(items, v["parts"]) if "board" in part[0].lower()), cg_wet),
         "vehicle": v,
     }
 
@@ -817,3 +888,48 @@ def gimbal_angle_deg(pulse_offset_us, model):
     horn = math.radians(pulse_offset_us * model["servo_deg_per_us"])
     g = math.degrees(math.asin(max(-1.0, min(1.0, model["linkage_ratio"] * math.sin(horn)))))
     return max(-model["stop_deg"], min(model["stop_deg"], g))
+
+
+# ---- live flight: the same engine, advanced in small slices as wall time passes ----
+INJECTIONS = {"kick": 1, "gust": 2, "jam": 3, "free": 4, "manual": 5, "auto": 6}
+
+
+def live_start(native, config, vehicle, sim):
+    params = sim_params(config, vehicle, sim)
+    native.sim3d_begin(params, curve=motor_curve(vehicle))
+    model = rocket_model(vehicle)
+    model.pop("vehicle")
+    return {"columns": SIM3D_COLUMNS, "ignition_s": params[SIM3D_PARAMS.index("ignition_s")], "model": model}
+
+
+def live_step(native, config, seconds, manual=None):
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 <= seconds <= 1:
+        raise ValueError("Step must be 0..1 s.")
+    if manual is not None:
+        # joystick: [a, b] in -1..1 drives the servos directly; None leaves the mode unchanged; "auto" hands back
+        if manual == "auto":
+            native.sim3d_inject(INJECTIONS["auto"], 0.0, 0.0)
+        elif isinstance(manual, list) and len(manual) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in manual):
+            native.sim3d_inject(INJECTIONS["manual"], float(max(-1, min(1, manual[0]))), float(max(-1, min(1, manual[1]))))
+        else:
+            raise ValueError("Joystick input must be [a, b] in -1..1.")
+    rows, summary = native.sim3d_advance(float(seconds))
+    s = dict(zip(SIM3D_SUMMARY, summary))
+    out = {"rows": rows, "summary": s, "done": bool(s["done"])}
+    if out["done"]:
+        out["verdict"] = sim_verdict(s, validate_config(config))
+    return out
+
+
+def live_inject(native, kind, a=0.0, b=0.0):
+    if kind not in INJECTIONS:
+        raise ValueError("Unknown disturbance.")
+    for v in (a, b):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("Disturbance values must be numbers.")
+    code = native.sim3d_inject(INJECTIONS[kind], float(a), float(b))
+    if code == -2:
+        raise ValueError("The rocket is still on the stand: launch first.")
+    if code < 0:
+        raise ValueError("No live flight is running.")
+    return {"ok": True}

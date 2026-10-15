@@ -65,6 +65,7 @@
           <article class="card"><div class="card-heading"><div><span class="eyebrow">05 / VEHICLE</span><h2>Mass, thrust &amp; apogee</h2></div><span class="chip">Planning only</span></div>
             <p class="help">Weigh the real parts and replace these numbers. The motor preset is approximate, so check the motor's published data (e.g. thrustcurve.org).</p>
             <div id="vehicle-motor" class="field-grid"></div>
+            <div id="vehicle-curve" class="vehicle-curve"></div>
             <h3 class="sub">Airframe (mm)</h3><div id="vehicle-body" class="field-grid"></div>
             <h3 class="sub">Parts: mass and where they sit (mm from the nose tip to the part's centre)</h3>
             <div class="part-row part-head"><span>Part</span><span>g</span><span>at · mm</span><span>long · mm</span><span></span></div>
@@ -99,7 +100,7 @@
 
     <section id="sim3d" class="tab" hidden>
       <div class="page-title"><div><h1>Fly it first.</h1><p>A full 3D flight of your rocket as currently set up in Rocket setup, unsaved changes included, with the TVC gimbal alongside. The <strong>real flight software</strong> runs in the loop: pad arming, attitude estimate, launch detection, TVC and parachute.</p></div>
-        <div class="title-actions"><button id="sim-batch">40 random flights</button><button id="sim-run" class="primary">Run flight ↗</button></div></div>
+        <div class="title-actions"><button id="sim-batch">40 random flights</button><button id="sim-run">Run flight</button><button id="sim-live" class="primary">Fly live ↗</button></div></div>
       <div class="sim-grid">
         <div class="controls">
           <article class="card sim-inputs-card"><div class="card-heading"><div><span class="eyebrow">CONDITIONS</span><h2>Flight conditions</h2></div><button id="sim-reset" class="quiet small">Defaults</button></div>
@@ -118,11 +119,27 @@
               <label class="inline"><input id="sim-follow" type="checkbox" checked> follow rocket</label>
               <label class="inline"><input id="sim-true-scale" type="checkbox"> true scale</label>
             </div>
+            <div class="view-wrap">
             <div id="view-panes" class="view-panes split">
               <div class="pane pane-rocket"><canvas id="sim-canvas" aria-label="3D flight view" role="img"></canvas>
                 <div id="sim-empty" class="sim-empty"><span>Press <strong>Play</strong> or <strong>Run flight</strong> to fly your configured rocket.</span></div></div>
               <div class="pane pane-gimbal"><canvas id="gim-canvas" class="gim-canvas" aria-label="3D view of the TVC gimbal and servos" role="img"></canvas></div>
             </div>
+            <aside id="stick-panel" class="stick-panel" hidden aria-label="Manual TVC joystick">
+              <div class="stick-head"><span class="eyebrow">TVC</span>
+                <div class="segmented" role="group" aria-label="TVC mode"><button id="mode-auto" class="selected">Auto</button><button id="mode-manual">Manual</button></div></div>
+              <canvas id="stick" class="stick" width="190" height="190" aria-label="Joystick: drag to point the motor"></canvas>
+              <div id="stick-readout" class="stick-readout mono">A +0.00 · B +0.00</div>
+              <label class="field stick-field"><span>Sensitivity</span><input id="stick-gain" type="range" min="0.05" max="1" step="0.05" value="0.2"></label>
+              <label class="check"><input id="stick-spring" type="checkbox" checked> spring back to centre</label>
+              <p class="help">Manual: the flight software still flies the pad, launch and parachute, but <strong>you</strong> steer the motor. Drag, or hold W A S D / arrows. Hand back to Auto before the tilt passes the give-up limit, or the firmware will centre the motor.</p>
+            </aside>
+            </div>
+            <div id="live-bar" class="live-bar" hidden><span class="live-dot">● LIVE</span>
+              <span class="help-inline">The flight software is flying it now. Push it:</span>
+              <button id="inj-kick" class="small">Kick ⟲</button><button id="inj-gust" class="small">Gust 8 m/s</button>
+              <button id="inj-jam-a" class="small">Jam servo A</button><button id="inj-jam-b" class="small">Jam servo B</button>
+              <button id="inj-free" class="small quiet">Free servos</button><button id="live-stop" class="small quiet">Stop</button></div>
             <div class="sim-controls"><button id="sim-play" class="primary small">Play</button><input id="sim-slider" type="range" min="0" max="1" step="0.02" value="0" aria-label="Playback time"><span id="sim-time" class="mono">—</span>
               <select id="sim-speed" aria-label="Playback speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></article>
           <article id="gim-manual" class="card" hidden><div class="card-heading"><div><span class="eyebrow">MANUAL</span><h2>Pulse sliders</h2></div><div><button id="gim-sweep" class="small">Power-up self test</button> <button id="gim-center" class="quiet small">Centre</button></div></div>

@@ -162,7 +162,33 @@ pulse sliders, the firmware's power-up self-test sweep, the flight playback (sam
 linkage numbers (horn radius, lever radius, servo °/µs and speed, mechanical stop) feed the sim:
 gimbal angle = asin(horn/lever × sin(horn angle)). Measure the real holes with calipers.
 
-**3D flight sim** then flies exactly that rocket with the real flight software in the loop.
+**3D flight sim** then flies exactly that rocket with the real flight software in the loop. It is a
+closed loop, not an animation: every millisecond the rocket's state becomes simulated IMU/baro
+readings, the real flight code turns them into servo pulses, the servo model (PWM frame rate,
+deadband, position loop with speed and acceleration limits, gear backlash, mechanical stop) turns
+the pulses into a gimbal angle, the gimbal tilts the thrust, and only that torque (plus the air's)
+turns the rocket. The "What turns the rocket" charts show TVC torque against aerodynamic torque.
+**Fly live** steps the same engine in real time and lets you kick the rocket, add a gust, or jam
+a servo mid-flight; tests confirm a live flight is bit-identical to a batch run.
+
+What the physics includes:
+- **Motor**: the measured NAR thrust curve for the Estes E12 (27.2 N·s, 33 N spike at 0.29 s,
+  ~9.7 N sustain, 2.44 s burn), with mass burning off in proportion to impulse delivered. Import
+  any other motor with **Import .eng** (files from thrustcurve.org).
+- **Air**: ISA density from launch-site altitude and temperature, Dryden-style turbulence on top
+  of the wind, Barrowman nose lift at the CP, body lift, aero pitch damping and jet damping.
+- **Gimbal**: motor-mount inertia (its reaction torque kicks the rocket when the gimbal swings),
+  servo stall torque (servos slow down under load), backlash, deadband and response time.
+- **Sensors**: the IMU's real offset from the CG (so spin shows up as false acceleration), the
+  BMI088's own low-pass filters and quantization, gyro bias and noise.
+- **40 random flights** also vary thrust ±5 %, CG ±5 mm and inertia ±10 %.
+
+**Manual TVC**: while flying live, the joystick beside the view switches the TVC from Auto to
+Manual. The flight software still runs the pad arming, launch detection and parachute, but the
+servo pulses come from the stick (drag it, or hold W A S D / arrow keys; Sensitivity scales the
+throw). Switch back to Auto and the controller takes over from wherever the rocket is, but if the
+tilt is already past MAX_TILT_DEG (25°) the firmware's give-up latch centres the motor, just as it
+would in a real flight. The rocket is unstable, so hand-flying it is hard: that's the point.
 
 What the model found for the default E12 rocket (610 mm, 66 mm tube, 150 mm ogive):
 - **Without nose weight it can't be flown**: CG 401 mm, CP 70 mm (−5 cal), pivot only 164 mm
@@ -174,7 +200,9 @@ What the model found for the default E12 rocket (610 mm, 66 mm tube, 150 mm ogiv
 - KD amplifies motor vibration into roughly ±1° of gimbal jitter. If the servos buzz or get hot,
   lower KD or the D filter cutoff.
 
-The model leaves out servo backlash, airframe flex and wind-tunnel data. A good sim result is
+With the measured E12 curve the default rocket reaches about 103 m and held 40/40 random flights.
+The model still leaves out airframe flex, nozzle erosion, roll from asymmetric parts and
+wind-tunnel data. A good sim result is
 necessary, not sufficient: do the bench checks and fly the first flight on a calm day.
 
 ## 7. What changed in this pass (review findings)
