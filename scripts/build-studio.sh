@@ -17,7 +17,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
     iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
     cp "$PROJECT_ROOT/studio/Info.plist" "$APP_DIR/Contents/Info.plist"
     cp "$PROJECT_ROOT/studio/studio.py" "$PROJECT_ROOT/studio/launch.py" \
-        "$PROJECT_ROOT/scripts/telemetry_viewer.py" "$APP_DIR/Contents/Resources/"
+        "$PROJECT_ROOT/scripts/telemetry_viewer.py" "$PROJECT_ROOT/scripts/sd_dump.py" "$APP_DIR/Contents/Resources/"
     cp "$PROJECT_ROOT/build-host/libeasytvc_studio.dylib" "$APP_DIR/Contents/Resources/"
     cp "$PROJECT_ROOT/studio/web/index.html" "$PROJECT_ROOT/studio/web/app.js" "$PROJECT_ROOT/studio/web/launch.js" "$PROJECT_ROOT/studio/web/sim3d.js" "$PROJECT_ROOT/studio/web/gimbal.js" \
         "$PROJECT_ROOT/studio/web/style.css" "$PROJECT_ROOT/studio/web/terminal.css" "$APP_DIR/Contents/Resources/web/"

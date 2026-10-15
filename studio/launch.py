@@ -11,13 +11,16 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
 import re
 import select
 import shlex
+import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import threading
@@ -495,7 +498,25 @@ def summarize_sensor_session(viewer, data: bytes, source: str) -> dict:
             "series": sensor_window(data_id, points=4000)}
 
 
+_raw_sessions: "OrderedDict[str, bytes]" = OrderedDict()   # recently opened sessions, for 3D replay
+
+
+def _remember(data: bytes) -> str:
+    data_id = hashlib.sha256(data).hexdigest()[:16]
+    _raw_sessions[data_id] = data
+    _raw_sessions.move_to_end(data_id)
+    while len(_raw_sessions) > 4:
+        _raw_sessions.popitem(last=False)
+    return data_id
+
+
 def summarize_session(project, data: bytes, source: str) -> dict:
+    result = _summarize_session(project, data, source)
+    result["data_id"] = _remember(data)
+    return result
+
+
+def _summarize_session(project, data: bytes, source: str) -> dict:
     viewer = _viewer(project)
     if viewer.is_sensor_session(data):
         return summarize_sensor_session(viewer, data, source)
@@ -548,26 +569,69 @@ def external_disks():
     return disks
 
 
-def sd_script(device: str, out: Path, session: int | None) -> str:
-    """One script so that macOS asks for the password at most once. Read-only: dd from the card."""
-    return f"""#!/bin/sh
-set -e
-DEV={shlex.quote(device)}
-OUT={shlex.quote(str(out))}
-dd if="$DEV" of="$OUT/dir.bin" bs=512 skip={DIR_SECTOR} count=1 2>/dev/null
-MAGIC=$(head -c 8 "$OUT/dir.bin")
-if [ "$MAGIC" != "ETVCDIR1" ]; then echo nodir > "$OUT/result"; chmod 644 "$OUT"/*; exit 0; fi
-NEXT=$(od -An -t u4 -j 8 -N 4 "$OUT/dir.bin" | tr -d ' ')
-SESSION={'' if session is None else int(session)}
-if [ -z "$SESSION" ]; then SESSION=$((NEXT - 1)); fi
-START=$(({FIRST_SESSION} + (SESSION % {MAX_SESSIONS}) * {SESSION_SECTORS}))
-dd if="$DEV" of="$OUT/session.bin" bs=512 skip=$START count={SESSION_SECTORS} 2>/dev/null
-echo "$NEXT $SESSION" > "$OUT/result"
-chmod 644 "$OUT"/*
-"""
+def _sd_dump_script(project) -> Path:
+    for candidate in ([Path(project) / "scripts" / "sd_dump.py"] if project else []) + \
+            [HERE / "sd_dump.py", HERE.parent / "scripts" / "sd_dump.py"]:
+        if candidate.is_file():
+            return candidate
+    raise ValueError("sd_dump.py is missing.")
 
 
-def read_sd(project, disk: str, session: int | None) -> dict:
+def _run_dump(project, device: str, out: Path, args: list, timeout_s: int = 600):
+    """Copy sessions off the card into `out`. Raw card access needs admin rights, and macOS only
+    lets Terminal (not other apps, even as admin) read a raw card, so the password is asked there."""
+    command = [sys.executable, "-I", str(_sd_dump_script(project)), device, str(out), *args]
+    if os.access(device, os.R_OK):
+        subprocess.run(command, capture_output=True, timeout=timeout_s)
+    else:
+        log = out / "terminal.log"
+        script = out / "read-card.command"
+        script.write_text(
+            "#!/bin/sh\n"
+            'echo "EasyTVC Studio: copying the SD card to your Mac (read-only)."\n'
+            f"diskutil unmountDisk {shlex.quote(device.replace('/dev/r', '/dev/'))} >/dev/null 2>&1\n"
+            'sudo -p "Mac login password (nothing shows as you type), then Return: " '
+            + " ".join(shlex.quote(c) for c in command) + f" > {shlex.quote(str(log))} 2>&1\n"
+            f'echo "rc=$?" >> {shlex.quote(str(log))}\n'
+            'echo "Done: back to EasyTVC Studio. You can close this window."\n')
+        script.chmod(0o755)
+        subprocess.run(["open", "-a", "Terminal", str(script)], check=True, timeout=30)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if log.exists() and "rc=" in log.read_text(errors="replace"):
+                break
+            time.sleep(1)
+        else:
+            raise ValueError("Timed out waiting for your password in the Terminal window.")
+    result_file = out / "result.json"
+    if not result_file.exists():
+        raise ValueError("The card was not read (wrong password, or the Terminal window was closed). Try again.")
+    result = json.loads(result_file.read_text())
+    if result.get("error") == "nodir":
+        raise ValueError("No EasyTVC logs on this card (it has never been used in the board).")
+    if not result.get("ok"):
+        raise ValueError(f"Could not read the card: {result.get('error')}")
+    return result
+
+
+def _save_session(data: bytes, number: int) -> tuple[Path, bool]:
+    """Save into the flights folder. Same data already saved: keep that file. Same name but
+    different data (another card, or the session number came round again): add a suffix."""
+    folder = flights_dir()
+    digest = hashlib.sha256(data).hexdigest()
+    for existing in folder.glob(f"session_{number}*.bin"):
+        if hashlib.sha256(existing.read_bytes()).hexdigest() == digest:
+            return existing, False
+    path, n = folder / f"session_{number}.bin", 2
+    while path.exists():
+        path, n = folder / f"session_{number} ({n}).bin", n + 1
+    path.write_bytes(data)
+    return path, True
+
+
+def read_sd(project, disk: str, session: int | None, everything: bool = False) -> dict:
+    """Copy the latest session (or `session`, or every session with `everything`) to this Mac and
+    open the newest one copied."""
     if not isinstance(disk, str) or not re.fullmatch(r"disk[0-9]+", disk):
         raise ValueError("Choose a disk from the list.")
     if disk not in {d["id"] for d in external_disks()}:
@@ -575,34 +639,92 @@ def read_sd(project, disk: str, session: int | None) -> dict:
     if session is not None and (isinstance(session, bool) or not isinstance(session, int) or session < 0):
         raise ValueError("Session must be a whole number.")
     subprocess.run(["diskutil", "unmountDisk", f"/dev/{disk}"], capture_output=True, timeout=30)
-    device = f"/dev/r{disk}"
     out = Path(tempfile.mkdtemp(prefix="easytvc-sd-"))
-    script = out / "read.sh"
-    script.write_text(sd_script(device, out, session))
-    readable = os.access(device, os.R_OK)
-    if readable:
-        result = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, timeout=300)
-    else:
-        command = f"do shell script {json.dumps('/bin/sh ' + shlex.quote(str(script)))} with administrator privileges"
-        result = subprocess.run(["osascript", "-e", command], capture_output=True, text=True, timeout=300)
-    if result.returncode:
-        message = (result.stderr or result.stdout).strip()
-        raise ValueError("Reading the card was cancelled." if "-128" in message else f"Could not read the card: {message}")
-    status = (out / "result").read_text().split()
-    if status == ["nodir"]:
-        raise ValueError("No EasyTVC logs on this card (it has never been used in the board).")
-    next_session, chosen = int(status[0]), int(status[1])
-    if next_session == 0:
-        raise ValueError("The card has no sessions yet.")
-    data = (out / "session.bin").read_bytes()
-    saved = flights_dir() / f"session_{chosen}.bin"
-    saved.write_bytes(data)
-    result = summarize_session(project, data, f"SD card {disk}, saved to {saved}")
-    result["available_sessions"] = list(range(max(0, next_session - MAX_SESSIONS), next_session))
-    for file in out.iterdir():
-        file.unlink()
-    out.rmdir()
+    try:
+        args = ["--all"] if everything else (["--session", str(session)] if session is not None else [])
+        result = _run_dump(project, f"/dev/r{disk}", out, args)
+        if not result["sessions"]:
+            raise ValueError("That session is no longer on the card." if session is not None else "The card has no sessions yet.")
+        saved = []
+        for item in sorted(result["sessions"], key=lambda x: x["session"]):
+            data = Path(item["file"]).read_bytes()
+            path, new = _save_session(data, item["session"])
+            saved.append({"session": item["session"], "name": path.name, "new": new})
+        newest = saved[-1]
+        opened = summarize_session(project, (flights_dir() / newest["name"]).read_bytes(),
+                                   f"SD card {disk}, saved as {newest['name']}")
+        opened["saved"] = saved
+        opened["saved_name"] = newest["name"]
+        opened["available_sessions"] = list(range(max(0, result["next"] - MAX_SESSIONS), result["next"]))
+        return opened
+    finally:
+        for file in out.iterdir():
+            try:
+                file.unlink()
+            except OSError:
+                pass
+        try:
+            out.rmdir()
+        except OSError:
+            pass
+
+
+# ---- sessions saved on this Mac ----
+
+_saved_index: dict = {}
+
+
+def _describe(project, path: Path) -> dict:
+    stat = path.stat()
+    key = (path.name, stat.st_size, stat.st_mtime)
+    if key in _saved_index:
+        return _saved_index[key]
+    info = {"name": path.name, "bytes": stat.st_size, "saved": stat.st_mtime, "kind": "unknown"}
+    try:
+        data = path.read_bytes()
+        viewer = _viewer(project)
+        if viewer.is_sensor_session(data):
+            parsed = viewer.parse_sensor_session(data)
+            report = viewer.sensor_report(parsed)
+            info.update(kind="sensortest", session=parsed["session"], passed=report["passed"],
+                        duration_s=report["duration_s"])
+        else:
+            session, _, rows = viewer.parse_session(data)
+            info.update(kind="flight", session=session, duration_s=rows[-1]["t_s"] - rows[0]["t_s"] if rows else 0,
+                        flew=any(r["state"] == "BOOST" for r in rows),
+                        max_alt_m=max((r["baro_alt_m"] for r in rows), default=0))
+    except (ValueError, OSError, struct.error, IndexError) as error:
+        info["error"] = str(error)
+    _saved_index[key] = info
+    return info
+
+
+def saved_sessions(project) -> dict:
+    folder = flights_dir()
+    items = [_describe(project, p) for p in folder.glob("*.bin") if p.is_file()]
+    items.sort(key=lambda x: x["saved"], reverse=True)
+    return {"folder": str(folder), "sessions": items}
+
+
+def _saved_path(name) -> Path:
+    if not isinstance(name, str) or "/" in name or "\\" in name or name.startswith(".") or not name.endswith(".bin"):
+        raise ValueError("Choose a saved session from the list.")
+    path = flights_dir() / name
+    if not path.is_file():
+        raise ValueError("That saved session no longer exists.")
+    return path
+
+
+def open_saved(project, name) -> dict:
+    path = _saved_path(name)
+    result = summarize_session(project, path.read_bytes(), f"saved on this Mac: {path.name}")
+    result["saved_name"] = path.name
     return result
+
+
+def delete_saved(name) -> dict:
+    _saved_path(name).unlink()
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------------------------
@@ -983,6 +1105,222 @@ def gimbal_angle_deg(pulse_offset_us, model):
     horn = math.radians(pulse_offset_us * model["servo_deg_per_us"])
     g = math.degrees(math.asin(max(-1.0, min(1.0, model["linkage_ratio"] * math.sin(horn)))))
     return max(-model["stop_deg"], min(model["stop_deg"], g))
+
+
+# ---- 3D replay of a real session ----
+# Turns a flight log (or a sensor test) into the same rows the simulator produces, so the 3D view,
+# gimbal view, HUD and playback controls show what really happened.
+
+def _qmul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw)
+
+
+def _qnorm(q):
+    n = math.sqrt(sum(c * c for c in q)) or 1.0
+    return tuple(c / n for c in q)
+
+
+def _qaxis(axis, angle):
+    n = math.sqrt(sum(c * c for c in axis))
+    if n < 1e-12 or abs(angle) < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    s_ = math.sin(angle / 2) / n
+    return (math.cos(angle / 2), axis[0] * s_, axis[1] * s_, axis[2] * s_)
+
+
+def _qrot(q, v):
+    """body -> world"""
+    w, x, y, z = q
+    tx, ty, tz = 2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])
+    return (v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx))
+
+
+def _up_in_body(q):
+    """World up seen from the body (third row of the body->world matrix)."""
+    w, x, y, z = q
+    return (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y))
+
+
+def _tilt_deg(q):
+    """Same as EasyTVC_ControllerTilt: rotations about body X and Y away from vertical."""
+    w, x, y, z = q
+    vertical = 1 - 2 * (x * x + y * y)
+    return (math.degrees(math.atan2(2 * (w * x + y * z), vertical)), math.degrees(math.atan2(2 * (w * y - x * z), vertical)))
+
+
+def _toward(q, up_target, gain=1.0):
+    """Rotate the body (about a body axis) so world-up-in-body moves `gain` of the way to up_target."""
+    cur = _up_in_body(q)
+    axis = (up_target[1] * cur[2] - up_target[2] * cur[1], up_target[2] * cur[0] - up_target[0] * cur[2],
+            up_target[0] * cur[1] - up_target[1] * cur[0])
+    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(up_target, cur))))
+    return _qnorm(_qmul(q, _qaxis(axis, gain * math.acos(dot))))
+
+
+def _up_from_tilt(tx_deg, ty_deg):
+    tx, ty = (math.radians(max(-89.0, min(89.0, v))) for v in (tx_deg, ty_deg))
+    v = (-math.tan(ty), math.tan(tx), 1.0)
+    n = math.sqrt(sum(c * c for c in v))
+    return tuple(c / n for c in v)
+
+
+def _imu_to_body(axis: str, v):
+    """Sensor frame -> body frame (+Z = nose), the same table as main.c imu_to_body."""
+    x, y, z = v
+    return {"POS_X": (y, z, x), "NEG_X": (y, -z, -x), "POS_Y": (z, x, y), "NEG_Y": (z, -x, -y),
+            "POS_Z": (x, y, z), "NEG_Z": (x, -y, -z)}[axis]
+
+
+def _replay_rows(samples, model, config):
+    """samples: dicts with t, q, z, vz, vx, vy, x, y, state, tvc, chute, armed, pulse_a, pulse_b, roll_rate, thrust."""
+    rows = []
+    for s_ in samples:
+        tilt = _tilt_deg(s_["q"])
+        horn, gim = [], []
+        for key, letter in (("pulse_a", "A"), ("pulse_b", "B")):
+            offset = (s_[key] - config[f"SERVO_{letter}_CENTER_US"]) * config[f"SERVO_{letter}_DIRECTION"]
+            horn.append(offset * model["servo_deg_per_us"])
+            gim.append(gimbal_angle_deg(offset, model))
+        values = {"t": s_["t"], "x": s_["x"], "y": s_["y"], "z": s_["z"], "qw": s_["q"][0], "qx": s_["q"][1],
+                  "qy": s_["q"][2], "qz": s_["q"][3], "speed": math.sqrt(s_["vx"] ** 2 + s_["vy"] ** 2 + s_["vz"] ** 2),
+                  "vz": s_["vz"], "tilt_x": tilt[0], "tilt_y": tilt[1], "gimbal_a": gim[0], "gimbal_b": gim[1],
+                  "state": STATES.index(s_["state"]) if s_["state"] in STATES else 0, "tvc": s_["tvc"],
+                  "chute": s_["chute"], "thrust": s_["thrust"], "est_tilt_x": tilt[0], "est_tilt_y": tilt[1],
+                  "armed": s_["armed"], "pulse_a": s_["pulse_a"], "pulse_b": s_["pulse_b"], "horn_a": horn[0],
+                  "horn_b": horn[1], "roll_rate": s_["roll_rate"]}
+        rows.append([float(values.get(c, 0.0)) for c in SIM3D_COLUMNS])
+    return rows
+
+
+def _replay_flight(rows, model, config):
+    g = 9.80665
+    mass = model["mass_wet_g"] / 1000
+    q = None
+    x = y = vx = vy = 0.0
+    out, prev_t = [], None
+    flying = ("BOOST", "COAST")
+    for r in rows:
+        target = _up_from_tilt(r["tilt_x_deg"], r["tilt_y_deg"])
+        if q is None:
+            q = _toward((1.0, 0.0, 0.0, 0.0), target)
+        else:
+            dt = max(0.0, r["t_s"] - prev_t)
+            w = tuple(math.radians(r[k]) for k in ("gyro_x_dps", "gyro_y_dps", "gyro_z_dps"))
+            rate = math.sqrt(sum(c * c for c in w))
+            q = _qnorm(_qmul(q, _qaxis(w, rate * dt)))   # roll and heading from the gyro
+            q = _toward(q, target)                        # tilt exactly as the board estimated it
+            a_world = _qrot(q, tuple(r[k] * g for k in ("accel_x_g", "accel_y_g", "accel_z_g")))
+            if r["state"] in flying:
+                vx += a_world[0] * dt
+                vy += a_world[1] * dt
+            elif r["state"] in ("APOGEE", "DESCENT"):
+                decay = math.exp(-dt / 3.0)                # under the parachute: drift with the air
+                vx *= decay
+                vy *= decay
+            else:
+                vx = vy = 0.0
+            x += vx * dt
+            y += vy * dt
+        prev_t = r["t_s"]
+        on_ground = r["state"] in ("IDLE", "ARMED", "LANDED", "FAULT")
+        out.append({"t": r["t_s"], "q": q, "x": x, "y": y, "z": max(0.0, r["baro_alt_m"]) if not on_ground or r["state"] == "LANDED" else 0.0,
+                    "vz": r["vspeed_m_s"], "vx": vx, "vy": vy, "state": r["state"], "tvc": r["tvc_active"],
+                    "chute": r["chute_open"], "armed": 1 if r["state"] not in ("IDLE", "FAULT") else 0,
+                    "pulse_a": r["servo_a_us"], "pulse_b": r["servo_b_us"], "roll_rate": r["gyro_z_dps"],
+                    "thrust": max(0.0, r["accel_z_g"]) * g * mass if r["state"] == "BOOST" else 0.0})
+    return out
+
+
+def _replay_sensor_test(parsed, model, config):
+    """Orientation from the raw IMU (gyro integrated, pulled toward the accelerometer's gravity),
+    mapped through the configured nose axis: stand the rocket nose-up and the 3D rocket must point up."""
+    imu = parsed["imu"]
+    if not imu:
+        raise ValueError("This sensor test has no IMU data to replay.")
+    axis = config["NOSE_AXIS"]
+    still = imu[:min(len(imu), 200)]
+    bias = [sorted(r[k] for r in still)[len(still) // 2] for k in ("gyro_x_dps", "gyro_y_dps", "gyro_z_dps")]
+    q, prev_t, out = None, None, []
+    step = 8 if len(imu) <= 8 * 12000 else 16
+    centre_a, centre_b = config["SERVO_A_CENTER_US"], config["SERVO_B_CENTER_US"]
+    for i, r in enumerate(imu):
+        acc = _imu_to_body(axis, (r["accel_x_g"], r["accel_y_g"], r["accel_z_g"]))
+        gyr = _imu_to_body(axis, tuple(r[k] - b for k, b in zip(("gyro_x_dps", "gyro_y_dps", "gyro_z_dps"), bias)))
+        n = math.sqrt(sum(c * c for c in acc))
+        up = tuple(c / n for c in acc) if n > 0.1 else None
+        if q is None:
+            if up is None:
+                continue
+            q = _toward((1.0, 0.0, 0.0, 0.0), up)
+        else:
+            dt = max(0.0, r["t_s"] - prev_t)
+            w = tuple(math.radians(c) for c in gyr)
+            q = _qnorm(_qmul(q, _qaxis(w, math.sqrt(sum(c * c for c in w)) * dt)))
+            if up is not None and 0.8 < n < 1.2:          # only trust gravity when not being shaken
+                q = _toward(q, up, 0.02)
+        prev_t = r["t_s"]
+        if i % step == 0:                                 # 400 Hz in, 50 Hz rows out (25 Hz for long runs)
+            out.append({"t": r["t_s"], "q": q, "x": 0.0, "y": 0.0, "z": 0.0, "vz": 0.0, "vx": 0.0, "vy": 0.0,
+                        "state": "IDLE", "tvc": 0, "chute": 0, "armed": 0, "pulse_a": centre_a, "pulse_b": centre_b,
+                        "roll_rate": gyr[2], "thrust": 0.0})
+    return out
+
+
+def replay_session(project, data_id, config, vehicle) -> dict:
+    if not isinstance(data_id, str) or data_id not in _raw_sessions:
+        raise ValueError("That session is no longer loaded. Open it again in Flight logs.")
+    data = _raw_sessions[data_id]
+    clean = validate_config(config)
+    model = rocket_model(vehicle)
+    model.pop("vehicle", None)
+    viewer = _viewer(project)
+    if viewer.is_sensor_session(data):
+        parsed = viewer.parse_sensor_session(data)
+        samples = _replay_sensor_test(parsed, model, clean)
+        kind, session = "sensortest", parsed["session"]
+    else:
+        session, _, log_rows = viewer.parse_session(data)
+        if len(log_rows) < 2:
+            raise ValueError("This log is too short to replay.")
+        samples = _replay_flight(log_rows, model, clean)
+        kind = "flight"
+    rows = _replay_rows(samples, model, clean)
+    col = {c: i for i, c in enumerate(SIM3D_COLUMNS)}
+    boost = next((r for r in rows if STATES[int(r[col["state"]])] == "BOOST"), None)
+    ignition = boost[0] if boost else rows[0][0] + 1.5
+    flown = [r for r in rows if r[0] >= ignition]
+    apogee = max(rows, key=lambda r: r[col["z"]])
+    chute = next((r for r in rows if r[col["chute"]]), None)
+    armed = next((r for r in rows if r[col["armed"]]), None)
+    descent = [r for r in rows if STATES[int(r[col["state"]])] == "DESCENT"]
+    boost_rows = [r for r in rows if STATES[int(r[col["state"]])] == "BOOST"]
+    summary = {k: 0.0 for k in SIM3D_SUMMARY}
+    summary.update({
+        "apogee_m": apogee[col["z"]], "apogee_t": max(0.0, apogee[0] - ignition) if boost else 0.0,
+        "max_speed": max((r[col["speed"]] for r in flown), default=0.0),
+        "max_boost_tilt": max((math.hypot(r[col["tilt_x"]], r[col["tilt_y"]]) for r in boost_rows), default=0.0),
+        "chute_t": chute[0] - ignition if chute and boost else -1.0, "chute_speed": chute[col["speed"]] if chute else 0.0,
+        "landing_speed": abs(descent[-1][col["vz"]]) if descent else 0.0,
+        "drift_m": math.hypot(rows[-1][col["x"]], rows[-1][col["y"]]),
+        "armed_t": armed[0] - rows[0][0] if armed else -1.0, "liftoff": 1.0 if boost else 0.0,
+        "max_roll_dps": max((abs(r[col["roll_rate"]]) for r in (boost_rows or rows)), default=0.0),
+        "done": 1.0, "time": rows[-1][0] - rows[0][0], "launch_t": 0.0 if boost else -1.0,
+    })
+    if kind == "sensortest":
+        verdict = [{"level": "info", "text": f"Replay of sensor test session {session}: orientation worked out from the raw IMU, "
+                    f"with the nose axis set to {clean['NOSE_AXIS']}. Stand the rocket nose-up while it records: if this 3D rocket "
+                    "doesn't point straight up then, the nose axis setting is wrong."}]
+    else:
+        verdict = [{"level": "info", "text": f"Replay of real flight data, session {session}: tilt is the board's own estimate, roll from the gyro, "
+                    "height from the barometer, gimbal from the logged servo pulses. Sideways drift is integrated from the "
+                    "accelerometer and only approximate."}]
+        if not boost:
+            verdict.append({"level": "warn", "text": "This log never left the pad (no BOOST), so there is no flight to show: it replays the pad time."})
+    return {"columns": SIM3D_COLUMNS, "rows": rows, "summary": summary, "verdict": verdict, "ignition_s": ignition,
+            "model": model, "replay": {"kind": kind, "session": session}}
 
 
 # ---- live flight: the same engine, advanced in small slices as wall time passes ----

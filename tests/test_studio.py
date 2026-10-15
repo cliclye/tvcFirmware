@@ -113,6 +113,79 @@ class SensorTestImageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             studio.launch.sensor_window("missing", 0, 1)
 
+    def _fixture_session(self, tmp):
+        exe, out = Path(tmp) / "fixture", Path(tmp) / "session.bin"
+        subprocess.run(["cc", "-std=c11", "-Wall", "-Werror", "-I", str(ROOT / "Core" / "Inc"),
+                        str(ROOT / "tests" / "sensor_test_fixture.c"), "-o", str(exe)], check=True)
+        subprocess.run([str(exe), str(out)], check=True)
+        return out.read_bytes()
+
+    def test_card_dump_and_saved_library(self):
+        launch = studio.launch
+        with tempfile.TemporaryDirectory() as tmp:
+            session = self._fixture_session(tmp)          # session 7, 4610 records
+            used = session.rstrip(b"\0")
+            card = Path(tmp) / "card.img"
+            with open(card, "wb") as f:                   # sparse 8 GB-style layout, only what we need
+                f.write(b"\0" * 512)
+                f.seek(1024 * 512); f.write(b"ETVCDIR1" + struct.pack("<I", 8))
+                f.seek((2048 + 7 * 16384) * 512); f.write(session)
+                f.seek((2048 + 6 * 16384) * 512); f.write(b"ETVCLOG2" + struct.pack("<II", 38, 32))   # overwritten slot
+                f.truncate((2048 + 32 * 16384) * 512)
+            out = Path(tmp) / "out"; out.mkdir()
+            result = launch._run_dump(ROOT, str(card), out, ["--all"])
+            self.assertEqual([s["session"] for s in result["sessions"]], [7])
+            dumped = (out / "session_7.bin").read_bytes()
+            self.assertEqual(len(dumped), 512 + 4610 * 32)  # only the used records, not 8 MB
+            self.assertEqual(dumped, session[:len(dumped)])
+            folder = Path(tmp) / "flights"; folder.mkdir()
+            with patch.object(launch, "flights_dir", lambda create=True: folder):
+                first, new = launch._save_session(dumped, 7)
+                again, new_again = launch._save_session(dumped, 7)
+                self.assertTrue(new); self.assertFalse(new_again); self.assertEqual(first, again)
+                other, _ = launch._save_session(dumped[:-32], 7)   # same number, different data
+                self.assertEqual(other.name, "session_7 (2).bin")
+                listing = launch.saved_sessions(ROOT)["sessions"]
+                self.assertEqual({s["kind"] for s in listing}, {"sensortest"})
+                self.assertTrue(all(s["passed"] for s in listing))
+                opened = launch.open_saved(ROOT, "session_7.bin")
+                self.assertEqual((opened["kind"], opened["saved_name"]), ("sensortest", "session_7.bin"))
+                for bad in ("../x.bin", "x.txt", ".hidden.bin", "missing.bin"):
+                    with self.assertRaises(ValueError):
+                        launch.open_saved(ROOT, bad)
+                launch.delete_saved("session_7 (2).bin")
+                self.assertEqual([s["name"] for s in launch.saved_sessions(ROOT)["sessions"]], ["session_7.bin"])
+
+    def test_replay_in_3d(self):
+        """A flight log replays with the board's own tilt, the barometer's height and the logged pulses."""
+        launch = studio.launch
+        header = bytearray(512); header[:8] = b"ETVCLOG2"; struct.pack_into("<II", header, 8, 3, 32)
+        records = b""
+        for i in range(600):
+            state = 0 if i < 100 else 2 if i < 300 else 5 if i < 590 else 6
+            tx, ty = (3 * math.sin(i / 40), -2 * math.cos(i / 30)) if state == 2 else (0.5, -0.3)
+            alt = 0 if state == 0 else min(80, (i - 100) * 0.4) if state == 2 else max(0, 80 - (i - 300) * 0.3)
+            records += struct.pack("<I3h3h2h2HhhBBBB", 1000 + 10 * i, 0, 0, 1000, 0, 0, 900 if state == 2 else 0,
+                                   int(tx * 100), int(ty * 100), 1500 + int(tx * 20), 1500, int(alt * 10), 0, 3, state,
+                                   0x07 | (0x80 if state >= 5 else 0), 0xA5)
+        data = bytes(header) + records
+        opened = launch.summarize_session(ROOT, data, "test")
+        config = launch.read_config(ROOT)
+        replay = launch.replay_session(ROOT, opened["data_id"], config, launch.upgrade_vehicle({}))
+        col = {c: i for i, c in enumerate(replay["columns"])}
+        self.assertEqual(tuple(replay["columns"]), launch.SIM3D_COLUMNS)
+        _, _, log = launch._viewer(ROOT).parse_session(data)
+        self.assertEqual(len(replay["rows"]), len(log))
+        for row, rec in zip(replay["rows"], log):
+            self.assertAlmostEqual(row[col["tilt_x"]], rec["tilt_x_deg"], places=2)
+            self.assertAlmostEqual(row[col["tilt_y"]], rec["tilt_y_deg"], places=2)
+            self.assertEqual(row[col["pulse_a"]], rec["servo_a_us"])
+        self.assertAlmostEqual(replay["summary"]["apogee_m"], 80, delta=0.5)
+        self.assertEqual(replay["ignition_s"], 2.0)   # first BOOST record, t = 1000 + 10*100 ms
+        self.assertGreater(replay["summary"]["chute_t"], 0)
+        with self.assertRaises(ValueError):
+            launch.replay_session(ROOT, "gone", config, launch.upgrade_vehicle({}))
+
     def test_serial_lines(self):
         kind, t = studio.launch.parse_line("T,1234,10,-20,998,150,-5,0,2650,101325,2412,452,3301,1234,3100")
         self.assertEqual(kind, "sensors")

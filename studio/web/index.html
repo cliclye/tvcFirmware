@@ -115,6 +115,7 @@
         <div class="sim-main">
           <article class="card sim-view">
             <div class="view-toolbar">
+              <span id="replay-chip" class="chip replay-chip" hidden>REPLAY</span>
               <div class="segmented" role="group" aria-label="View"><button data-view="rocket">Rocket</button><button data-view="split" class="selected">Split</button><button data-view="gimbal">TVC gimbal</button></div>
               <label class="inline">Gimbal <select id="gim-source" aria-label="What drives the gimbal view"><option value="sim">flight playback</option><option value="manual">manual &amp; self test</option><option value="live">live board</option></select></label>
               <label class="inline"><input id="sim-follow" type="checkbox" checked> follow rocket</label>
@@ -204,12 +205,15 @@
 
     <section id="logs" class="tab" hidden>
       <div class="page-title"><div><h1>What happened.</h1><p>Read a session straight from the microSD card, or open a saved <code>session_N.bin</code>.</p></div></div>
-      <article class="card"><div class="connection-controls"><select id="disk" aria-label="Card reader"></select><button id="disk-refresh">Refresh</button><label class="inline">Session <input id="session-number" type="number" min="0" placeholder="latest"></label><button id="sd-read" class="primary">Read from SD card</button><button id="log-import">Open file…</button><input id="log-file" type="file" accept=".bin" hidden></div>
-        <p class="help" id="logs-help">macOS may ask for your password: raw card access needs it. The card is only read, never written. Each session read is saved to <code>~/Documents/EasyTVC Flights</code>.</p></article>
+      <article class="card"><div class="connection-controls"><select id="disk" aria-label="Card reader"></select><button id="disk-refresh">Refresh</button><label class="inline">Session <input id="session-number" type="number" min="0" placeholder="latest"></label><button id="sd-read" class="primary">Read from SD card</button><button id="sd-save-all" title="Copy every session on the card to this Mac, with one password">Save everything from card</button><button id="log-import">Open file…</button><input id="log-file" type="file" accept=".bin" hidden></div>
+        <p class="help" id="logs-help">macOS may ask for your password: raw card access needs it (if macOS blocks the app, a Terminal window opens and asks instead). The card is only read, never written. Each session read is saved to <code>~/Documents/EasyTVC Flights</code>.</p></article>
+      <article class="card saved-card"><div class="card-heading"><div><span class="eyebrow">SAVED ON THIS MAC</span><h2>Your sessions</h2></div><button id="saved-refresh" class="quiet small">Refresh</button></div>
+        <p class="help">Every session read from the card is kept here, so you can open it again without the card.</p>
+        <ul id="saved-list" class="saved-list"></ul></article>
       <div id="log-result" hidden>
         <div class="metrics wide" id="log-summary"></div>
         <div class="log-grid">
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">TIMELINE</span><h2 id="log-title">Session</h2></div><div><select id="log-range" aria-label="Time range"><option value="flight">Flight (arm → +30 s)</option><option value="all">Whole session</option></select> <button id="log-csv" class="quiet">CSV ↓</button></div></div><ol id="log-events" class="events"></ol><p id="log-header" class="help mono"></p><div id="log-sessions"></div></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">TIMELINE</span><h2 id="log-title">Session</h2></div><div><select id="log-range" aria-label="Time range"><option value="flight">Flight (arm → +30 s)</option><option value="all">Whole session</option></select> <button id="log-replay" class="primary small" title="Watch this session in the 3D view">▶ Replay in 3D</button> <button id="log-csv" class="quiet">CSV ↓</button></div></div><ol id="log-events" class="events"></ol><p id="log-header" class="help mono"></p><div id="log-sessions"></div></article>
           <div id="log-charts"></div>
         </div>
       </div>

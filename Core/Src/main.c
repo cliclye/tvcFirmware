@@ -55,6 +55,7 @@
 
 #define IMU_FAIL_RETRY_COUNT 5U
 #define SENSOR_RETRY_MS      500U
+#define IMU_RETRY_MS         3000U   /* one IMU setup takes up to ~0.5 s: retry rarely, pad only */
 #define BARO_STALE_MS        250U
 
 #define GYRO_CAL_SAMPLES     200U
@@ -395,6 +396,13 @@ static bool apply_vehicle_config(uint32_t now_ms)
     return EasyTVC_AppApplySettings(&app, &s, false);
 }
 
+static void line_hex8(TextLine *line, uint8_t value)
+{
+    const char *hex = "0123456789ABCDEF";
+    char text[5] = {'0', 'x', hex[value >> 4], hex[value & 15U], '\0'};
+    line_str(line, text);
+}
+
 static void build_header(char *buffer, size_t capacity, bool recovery_boot)
 {
     TextLine line = {buffer, 0, capacity};
@@ -413,6 +421,15 @@ static void build_header(char *buffer, size_t capacity, bool recovery_boot)
     line_str(&line, " servo_hz="); line_int(&line, EASYTVC_SERVO_RATE_HZ);
     line_str(&line, " chute=ch"); line_int(&line, EASYTVC_CHUTE_CHANNEL);
     line_str(&line, " max_tilt="); line_int(&line, (int32_t)EASYTVC_MAX_TILT_DEG);
+    /* IMU setup result, as in the sensor test: accel awake, gyro ok, registers the chip reported */
+    line_str(&line, " accel_ok="); line_int(&line, bmi088.accel_ok);
+    line_str(&line, " gyro_ok="); line_int(&line, bmi088.gyro_ok);
+    line_str(&line, " accel_passes="); line_int(&line, bmi088.accel_passes);
+    line_str(&line, " rb=");
+    for (unsigned i = 0; i < sizeof(bmi088.readback); ++i) {
+        if (i) line_str(&line, ",");
+        line_hex8(&line, bmi088.readback[i]);
+    }
 }
 
 /* ---- status indication ---- */
@@ -482,7 +499,7 @@ int main(void)
         servo_self_test();
     }
     bool baro_ok = baro_start();
-    char header[400];
+    char header[480];   /* the logger keeps up to 495 characters */
     build_header(header, sizeof(header), recovery_boot);
     (void)DataLogger_Init(&logger, header);   /* SD init: can take ~1 s */
 
@@ -548,10 +565,11 @@ int main(void)
             } else if (++imu_failures >= IMU_FAIL_RETRY_COUNT) {
                 imu_ok = false;
             }
-        } else if (on_ground_idle && (uint32_t)(now_ms - last_imu_retry_ms) >= SENSOR_RETRY_MS) {
+        } else if (on_ground_idle && (uint32_t)(now_ms - last_imu_retry_ms) >= IMU_RETRY_MS) {
             last_imu_retry_ms = now_ms;
-            imu_ok = imu_start();
+            imu_ok = EasyTVC_Bmi088Probe(&bmi088) && EasyTVC_Bmi088Configure(&bmi088);
             imu_failures = 0;
+            last_us = STM32_Micros();   /* setup took a while: do not run a burst of late ticks */
         }
 
         if (tick % BARO_DIVIDER == 0U) {

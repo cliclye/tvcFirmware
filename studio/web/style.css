@@ -112,6 +112,11 @@ input[type=number],input[type=text],select{color:var(--text)}
 .sensor-plot{position:relative;height:230px;margin-top:10px}.sensor-chart{position:absolute;inset:0;width:100%;height:100%}.sensor-chart.overlay{cursor:crosshair}
 .sensor-legend{flex-wrap:wrap;justify-content:flex-end;font-variant-numeric:tabular-nums}
 @media(max-width:1150px){.sensor-chart-grid{grid-template-columns:1fr}.sensor-mode .sensor-checks-log{columns:1}}
+.saved-card{margin-top:16px}.saved-list{list-style:none;padding:0;margin:12px 0 0;display:grid;gap:6px}
+.saved-list li{display:flex;align-items:center;gap:14px;padding:10px 12px;border:1px solid var(--line-soft);border-radius:9px;font-size:12px}
+.saved-list li.current{border-color:var(--purple)}.saved-list .saved-title{font-weight:600;min-width:170px}.saved-list .saved-meta{color:var(--muted);flex:1}
+.saved-list .chip.good{color:var(--green)}.saved-list .chip.bad{color:var(--red)}
+.replay-chip{background:var(--purple);color:#fff;border-color:var(--purple);font-weight:600;letter-spacing:.6px}
 .toolbar-spacer{flex:1}.fs-only{display:none!important}
 .sim-view.fullscreen{position:fixed;inset:0;z-index:1000;margin:0;border-radius:0;border:0;padding:0;background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .sim-view.fullscreen .fs-only{display:inline-flex!important;gap:8px}

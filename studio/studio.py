@@ -509,7 +509,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logs/disks":
             return {"disks": launch.external_disks(), "folder": str(launch.flights_dir(create=False))}
         if path == "/api/logs/read-sd":
-            return launch.read_sd(server.project, data.get("disk"), data.get("session"))
+            return launch.read_sd(server.project, data.get("disk"), data.get("session"), bool(data.get("all")))
+        if path == "/api/logs/replay":
+            return launch.replay_session(server.project, data.get("id"), data.get("config"), data.get("vehicle"))
+        if path == "/api/logs/saved":
+            return launch.saved_sessions(server.project)
+        if path == "/api/logs/open-saved":
+            return launch.open_saved(server.project, data.get("name"))
+        if path == "/api/logs/delete-saved":
+            return launch.delete_saved(data.get("name"))
         if path == "/api/logs/sensor-window":
             t0, t1 = data.get("t0"), data.get("t1")
             for v in (t0, t1):

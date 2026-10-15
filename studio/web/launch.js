@@ -321,7 +321,7 @@ const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
   el("ol", {class: "steps"}, el("li", {text: "Put a microSD card in the board (it records every reading)."}),
     el("li", {text: "Lay the board flat and still. Unplug USB-C, wait 2 s, plug it back in."}),
     el("li", {text: "LEDs red → green → blue, one beep, then 3 s of fast green blinking while it tests. Don't touch it."}),
-    el("li", {text: "Two short beeps + steady green = every sensor passed. Three long beeps + red blinking = a failure: 1 blink IMU, 2 barometer, 3 SD card, 4 power."}),
+    el("li", {text: "Two short beeps + steady green = every sensor passed. Long beeps + red blinking = a failure; count them: 1 = IMU, 2 = barometer, 3 = SD card, 4 = power."}),
     el("li", {text: "Leave it running as long as you like (blue blinks while recording, ~9 min of space), then read the card in Flight logs for every value."})),
   el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2 the Live board page shows the values live."})];
 function renderImages() {
@@ -610,12 +610,55 @@ async function refreshDisks() {
   result.disks.forEach(d => select.append(el("option", {value: d.id, text: `${d.name} · ${d.size_gb} GB (${d.id})`})));
 }
 action("disk-refresh", refreshDisks);
-action("sd-read", async () => {
+async function readCard(all) {
   const disk = $("disk").value; if (!disk) throw new Error("Insert the SD card and press Refresh.");
-  const n = $("session-number").value;
-  $("sd-read").disabled = true; $("sd-read").textContent = "Reading… (macOS may ask for your password)";
-  try { showLog(await api("logs/read-sd", {disk, session: n === "" ? null : Number(n)})); }
-  finally { $("sd-read").disabled = false; $("sd-read").textContent = "Read from SD card"; }
+  const n = $("session-number").value, button = all ? $("sd-save-all") : $("sd-read"), label = button.textContent;
+  $("sd-read").disabled = $("sd-save-all").disabled = true;
+  button.textContent = "Copying… type your password in the Terminal window";
+  try {
+    const result = await api("logs/read-sd", {disk, all, session: all || n === "" ? null : Number(n)});
+    showLog(result); renderSaved();
+    const added = (result.saved || []).filter(s => s.new).length, total = (result.saved || []).length;
+    notice(all ? `Copied ${total} session${total === 1 ? "" : "s"} from the card (${added} new). They're in "Saved on this Mac" below.`
+               : `Saved as ${result.saved_name}. You can open it again any time without the card.`);
+  } finally { $("sd-read").disabled = $("sd-save-all").disabled = false; button.textContent = label; }
+}
+action("sd-read", () => readCard(false));
+action("sd-save-all", () => readCard(true));
+
+/* sessions saved on this Mac */
+async function renderSaved() {
+  const list = $("saved-list"); if (!list) return;
+  const result = await api("logs/saved", {});
+  list.replaceChildren();
+  if (!result.sessions.length) { list.append(el("li", {class: "help", text: "Nothing saved yet. Read a session from the card and it appears here."})); return; }
+  const when = t => new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+  result.sessions.forEach(s => {
+    const title = s.kind === "sensortest" ? `Sensor test · session ${s.session}` : s.kind === "flight" ? `Flight log · session ${s.session}` : s.name;
+    const badge = s.kind === "sensortest" ? el("span", {class: `chip ${s.passed ? "good" : "bad"}`, text: s.passed ? "PASSED" : "FAILED"})
+      : s.kind === "flight" ? el("span", {class: "chip", text: s.flew ? `flew · ${s.max_alt_m.toFixed(0)} m` : "on the ground"})
+      : el("span", {class: "chip bad", text: "unreadable"});
+    const meta = [s.duration_s != null ? `${s.duration_s.toFixed(1)} s` : null, `${(s.bytes / 1024).toFixed(0)} KB`, `saved ${when(s.saved)}`, s.name].filter(Boolean).join(" · ");
+    const open = el("button", {class: "small", text: "Open", onclick: async () => {
+      try { showLog(await api("logs/open-saved", {name: s.name})); markCurrent(s.name); } catch (error) { notice(error.message); } }});
+    const remove = el("button", {class: "small quiet", text: "Delete", onclick: async () => {
+      if (!await confirmModal(`Delete ${s.name}?`, [el("p", {text: "It is removed from this Mac. The copy on the SD card (if still there) is not touched."})], "Delete")) return;
+      try { await api("logs/delete-saved", {name: s.name}); renderSaved(); } catch (error) { notice(error.message); } }});
+    list.append(el("li", {"data-name": s.name, class: logData && logData.saved_name === s.name ? "current" : ""},
+      el("span", {class: "saved-title", text: title}), badge, el("span", {class: "saved-meta", text: meta}), open, remove));
+  });
+}
+function markCurrent(name) { document.querySelectorAll("#saved-list li").forEach(li => li.classList.toggle("current", li.dataset.name === name)); }
+action("saved-refresh", renderSaved);
+action("log-replay", async () => {
+  if (!logData || !logData.data_id) throw new Error("Open a session first.");
+  if (!cfg || !vehicle) throw new Error("Rocket setup is not loaded yet.");
+  $("log-replay").disabled = true; $("log-replay").textContent = "Building replay…";
+  try {
+    const replay = await api("logs/replay", {id: logData.data_id, config: cfg, vehicle});
+    showTab("sim3d");
+    showReplay(replay);
+  } finally { $("log-replay").disabled = false; $("log-replay").textContent = "▶ Replay in 3D"; }
 });
 action("log-import", () => $("log-file").click());
 $("log-file").onchange = async () => {
@@ -641,7 +684,7 @@ function showSensorLog(result) {
   const stat = (k, d, unit) => ch[k] ? `${ch[k].mean.toFixed(d)} ± ${ch[k].sd.toFixed(d + 1)} ${unit} (min ${ch[k].min.toFixed(d)}, max ${ch[k].max.toFixed(d)})` : "no data";
   const ids = r.ids ? `accel 0x${r.ids.accel_id.toString(16).toUpperCase()}, gyro 0x${r.ids.gyro_id.toString(16).toUpperCase()}, baro 0x${r.ids.baro_id.toString(16).toUpperCase()}` : "—";
   $("log-events").replaceChildren(...checkList(r.checks.map(c => [c.text, c.boot, c.now === c.boot ? "" : c.now ? "(passes now)" : "(failing at the end)"])),
-    ...[["Chip IDs", ids], ["Accel X", stat("accel_x_g", 3, "g")], ["Accel Y", stat("accel_y_g", 3, "g")], ["Accel Z", stat("accel_z_g", 3, "g")],
+    ...[["Chip IDs", ids], ["IMU setup", !r.imu_setup || r.imu_setup.startsWith("ok") ? (r.imu_setup || "ok") : `FAILED: ${r.imu_setup}`], ["Accel X", stat("accel_x_g", 3, "g")], ["Accel Y", stat("accel_y_g", 3, "g")], ["Accel Z", stat("accel_z_g", 3, "g")],
       ["Gyro X", stat("gyro_x_dps", 2, "°/s")], ["Gyro Y", stat("gyro_y_dps", 2, "°/s")], ["Gyro Z", stat("gyro_z_dps", 2, "°/s")],
       ["IMU temperature", stat("imu_temp_c", 1, "°C")], ["IMU read time", stat("read_us", 0, "µs")], ["Pressure", stat("pressure_pa", 0, "Pa")],
       ["Baro temperature", stat("baro_temp_c", 2, "°C")], ["Humidity", stat("humidity_pct", 1, "%")], ["3.3 V rail", stat("vdda_v", 3, "V")],
@@ -879,7 +922,7 @@ action("log-csv", async () => {
 /* ------------------------------------------------------------------ start-up */
 window.onTabShown = id => {
   if (id === "live") { api("monitor/status", {}).then(s => { liveStatus = s; renderLive(); if (s.connected) pollLive(); }).catch(e => notice(e.message)); }
-  if (id === "logs") refreshDisks().catch(e => notice(e.message));
+  if (id === "logs") { refreshDisks().catch(e => notice(e.message)); renderSaved().catch(e => notice(e.message)); }
   if (id === "flash") api("build/status", {}).then(b => { buildInfo = b; renderImages(); }).catch(e => notice(e.message));
   if (id === "logs" && logData) drawLogCharts();
 };

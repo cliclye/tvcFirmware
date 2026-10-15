@@ -31,7 +31,7 @@ SENSOR_TAIL = '<BBBB'                      # session, type, seq, marker at offse
 SENSOR_IMU = '<I3h3hhHH6x'
 SENSOR_BARO = '<IIiIIIHH'
 SENSOR_ADC = '<IHHHHHhHH8x'
-SENSOR_STATUS = '<IIIBBBxIIHH'
+SENSOR_STATUS = '<IIIBBBBIIHH'
 ACCEL_G_PER_LSB = 24 / 32768
 GYRO_DPS_PER_LSB = 2000 / 32768
 SENSOR_CHECKS = [
@@ -50,6 +50,10 @@ SENSOR_CHECKS = [
     ('sd', 'SD card recording, nothing lost'),
     ('supply', '3.3 V rail 3.0-3.6 V'),
 ]
+IMU_SETUP_STEPS = {0: 'ok', 10: 'gyroscope did not configure', 1: 'accel soft reset', 2: 'accel power config (ACC_PWR_CONF)',
+                   3: 'accel wake-up (ACC_PWR_CTRL)', 4: 'accel rate (ACC_CONF)', 5: 'accel range (ACC_RANGE)',
+                   6: 'gyro power mode (LPM1)', 7: 'gyro range', 8: 'gyro bandwidth',
+                   9: 'accelerometer still asleep (reads all zeros)'}
 for _fmt in (SENSOR_IMU, SENSOR_BARO, SENSOR_ADC, SENSOR_STATUS):
     assert struct.calcsize(_fmt) == 28, _fmt
 
@@ -66,6 +70,10 @@ def parse_sensor_session(data):
     if record_size != RECORD_SIZE:
         raise ValueError(f"record size {record_size}, this reader expects {RECORD_SIZE}")
     header_text = data[16:SECTOR].split(b'\0', 1)[0].decode('ascii', 'replace')
+    fields = dict(f.split('=', 1) for f in header_text.split() if '=' in f)
+    # ranges the chip actually reported (older firmware: always +-24 g / +-2000 dps)
+    accel_g_per_lsb = (3 << int(fields.get('accel_range_code', 3))) / 32768
+    gyro_dps_per_lsb = (2000 / (1 << min(4, int(fields.get('gyro_range_code', 0))))) / 32768
     out = {'session': session, 'header': header_text, 'imu': [], 'baro': [], 'adc': [], 'status': [],
            'gaps': 0, 'records': 0}
     last_t, last_seq = -1, None
@@ -81,9 +89,9 @@ def parse_sensor_session(data):
         t = t_us / 1e6
         if kind == 1:
             _, ax, ay, az, gx, gy, gz, temp, read_us, errors = struct.unpack_from(SENSOR_IMU, data, offset)
-            out['imu'].append({'t_s': t, 'accel_x_g': ax * ACCEL_G_PER_LSB, 'accel_y_g': ay * ACCEL_G_PER_LSB,
-                               'accel_z_g': az * ACCEL_G_PER_LSB, 'gyro_x_dps': gx * GYRO_DPS_PER_LSB,
-                               'gyro_y_dps': gy * GYRO_DPS_PER_LSB, 'gyro_z_dps': gz * GYRO_DPS_PER_LSB,
+            out['imu'].append({'t_s': t, 'accel_x_g': ax * accel_g_per_lsb, 'accel_y_g': ay * accel_g_per_lsb,
+                               'accel_z_g': az * accel_g_per_lsb, 'gyro_x_dps': gx * gyro_dps_per_lsb,
+                               'gyro_y_dps': gy * gyro_dps_per_lsb, 'gyro_z_dps': gz * gyro_dps_per_lsb,
                                'raw_ax': ax, 'raw_ay': ay, 'raw_az': az, 'raw_gx': gx, 'raw_gy': gy, 'raw_gz': gz,
                                'imu_temp_c': temp / 100, 'read_us': read_us, 'imu_errors': errors})
         elif kind == 2:
@@ -96,9 +104,9 @@ def parse_sensor_session(data):
                                'vdda_v': vdda / 1000, 'batt_pin_v': batt_mv / 1000, 'mcu_temp_c': mcu_t / 100,
                                'loop_overruns': overruns, 'max_loop_us': max_loop})
         else:
-            _, checks, boot, aid, gid, bid, imu_n, baro_n, dropped, werr = struct.unpack_from(SENSOR_STATUS, data, offset)
+            _, checks, boot, aid, gid, bid, fail, imu_n, baro_n, dropped, werr = struct.unpack_from(SENSOR_STATUS, data, offset)
             out['status'].append({'t_s': t, 'checks': checks, 'boot_checks': boot, 'accel_id': aid, 'gyro_id': gid,
-                                  'baro_id': bid, 'imu_samples': imu_n, 'baro_samples': baro_n,
+                                  'baro_id': bid, 'imu_fail_step': fail, 'imu_samples': imu_n, 'baro_samples': baro_n,
                                   'sd_dropped': dropped, 'sd_write_errors': werr})
     return out
 
@@ -110,6 +118,19 @@ def _stats(values):
     mean = sum(values) / n
     sd = (sum((v - mean) ** 2 for v in values) / n) ** 0.5
     return {'mean': mean, 'sd': sd, 'min': min(values), 'max': max(values)}
+
+
+def _imu_setup(header, last):
+    """'ok', the step that failed, or a note when the recording firmware didn't record it."""
+    fields = dict(f.split('=', 1) for f in header.split() if '=' in f)
+    if 'imu_fail_step' not in fields:   # firmware before 2026-10-14: only imu_config=0/1 at boot
+        return 'ok' if fields.get('imu_config') == '1' else 'failed (this firmware version did not record the step)'
+    step = last['imu_fail_step'] if last else int(fields['imu_fail_step'])
+    text = IMU_SETUP_STEPS.get(step, f'step {step}')
+    if 'rb' in fields:   # register read-backs: PWR_CONF, PWR_CTRL, CONF, RANGE, G_RANGE, G_BW, G_LPM1
+        text += (f" (accel {'awake' if fields.get('accel_ok') == '1' else 'ASLEEP'}, gyro "
+                 f"{'ok' if fields.get('gyro_ok') == '1' else 'FAILED'}, registers {fields['rb']})")
+    return text
 
 
 def sensor_report(parsed):
@@ -130,12 +151,15 @@ def sensor_report(parsed):
             channels[key] = _stats([r[key] for r in rows])
     duration = max((rows[-1]['t_s'] for rows in (imu, baro, adc, status) if rows), default=0) - \
         min((rows[0]['t_s'] for rows in (imu, baro, adc, status) if rows), default=0)
-    passed = bool(last) and all(c['boot'] for c in checks)
+    # same rule as the board's LED: the two "hold still" checks may pass later, once it is left alone
+    still_only = ('accel_1g', 'gyro_still')
+    passed = bool(last) and all(c['boot'] or (c['key'] in still_only and c['now']) for c in checks)
     return {'passed': passed, 'checks': checks, 'duration_s': duration,
             'rates_hz': {'imu': rate(imu), 'baro': rate(baro), 'adc': rate(adc)},
             'counts': {'imu': len(imu), 'baro': len(baro), 'adc': len(adc), 'status': len(status),
                        'records': parsed['records'], 'gaps': parsed['gaps']},
             'ids': {k: last[k] for k in ('accel_id', 'gyro_id', 'baro_id')} if last else None,
+            'imu_setup': _imu_setup(parsed['header'], last),
             'channels': channels,
             'sd': {'dropped': last['sd_dropped'], 'write_errors': last['sd_write_errors']} if last else None}
 

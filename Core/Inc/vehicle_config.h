@@ -27,7 +27,7 @@
  * kind of board is active-low (common anode: pin LOW = on). At power-up the firmware shows red,
  * green, blue one at a time. If instead you see the LED mostly lit with one colour missing each
  * step, change this to 0. */
-#define EASYTVC_LED_ACTIVE_LOW 1
+#define EASYTVC_LED_ACTIVE_LOW 0   /* measured on the real board 2026-10-14: HIGH = on */
 /* Status LED brightness, 10..100 % in steps of 10 (software PWM at 100 Hz). */
 #define EASYTVC_LED_BRIGHTNESS_PCT 10
 

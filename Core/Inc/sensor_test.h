@@ -75,7 +75,8 @@ typedef struct __attribute__((packed)) {
         struct __attribute__((packed)) {
             uint32_t checks;         /* SENSOR_CHECK_* passing now */
             uint32_t boot_checks;    /* SENSOR_CHECK_* that passed the power-up test */
-            uint8_t accel_id, gyro_id, baro_id, reserved;
+            uint8_t accel_id, gyro_id, baro_id;
+            uint8_t imu_fail_step;   /* EasyTVCBmi088.config_fail_step: IMU setup step that failed, 0 = ok */
             uint32_t imu_samples;
             uint32_t baro_samples;
             uint16_t sd_dropped;

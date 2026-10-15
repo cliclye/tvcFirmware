@@ -102,6 +102,7 @@ function simRequest() {
 /* Shared by the 3D sim and TVC gimbal pages. Starts playback at T-1.5 s. */
 async function runSimFlight() {
   if (typeof stopLive === "function" && live.active) stopLive();
+  $("replay-chip").hidden = true;
   $("sim-run").disabled = true; $("sim-run").textContent = "Simulating…";
   try {
     simResult = await api("sim3d/run", simRequest());
@@ -115,6 +116,24 @@ async function runSimFlight() {
   } finally { $("sim-run").disabled = false; $("sim-run").textContent = "Run flight ↗"; }
 }
 action("sim-run", runSimFlight);
+
+/* A real session from Flight logs, played in the same 3D / gimbal / HUD view as a simulation. */
+function showReplay(replay) {
+  if (typeof stopLive === "function" && live.active) stopLive();
+  simResult = replay;
+  simCol = Object.fromEntries(replay.columns.map((c, i) => [c, i]));
+  $("sim-empty").hidden = true; $("sim-results").hidden = false;
+  renderSimSummary(); drawSimCharts();
+  const r = replay.rows;
+  play.t = playbackStart(); play.playing = true; play.last = performance.now();
+  cam.dist = replay.replay.kind === "sensortest" ? 1.6 : cam.follow ? 2.5 : Math.max(30, Math.min(400, replay.summary.apogee_m * 0.9));
+  $("sim-slider").min = r[0][0]; $("sim-slider").max = r[r.length - 1][0]; $("sim-slider").step = 0.01;
+  $("replay-chip").hidden = false;
+  $("replay-chip").textContent = `REPLAY · ${replay.replay.kind === "sensortest" ? "sensor test" : "flight"} session ${replay.replay.session}`;
+  notice(replay.replay.kind === "sensortest"
+    ? "Replaying your sensor test in 3D: the rocket moves the way you moved the board."
+    : "Replaying your real flight in 3D. Play, scrub or change speed below.");
+}
 action("sim-batch", async () => {
   $("sim-batch").disabled = true; $("sim-batch").textContent = "Flying 40…";
   try { renderBatch(await api("sim3d/batch", {...simRequest(), count: 40})); }
@@ -137,7 +156,7 @@ function renderSimSummary() {
     tile("CG / CP", `${m.cg_wet_mm.toFixed(1)} / ${m.cp_mm.toFixed(1)} mm`), tile("STABILITY", `${m.stability_cal.toFixed(2)} cal`),
     tile("PIVOT → CG", `${m.gimbal_arm_mm.toFixed(1)} mm`), tile("GIMBAL @ ±250 µs", `${(Math.asin(Math.min(1, m.linkage_ratio * Math.sin(250 * m.servo_deg_per_us * Math.PI / 180))) * 180 / Math.PI).toFixed(2)}°`));
   $("sim-verdict").replaceChildren(...simResult.verdict.map(v => el("div", {class: `check-line ${v.level}`, text: v.text})),
-    el("div", {class: "check-line info", text: `Ignition at ${ig.toFixed(1)} s (after the ${(cfg.ARM_HOLD_MS / 1000).toFixed(1)} s arming hold). Times above are from ignition. This is a model: it does not include servo backlash, flex, or real aerodynamics, so prove the hardware on the bench.`}));
+    simResult.replay ? "" : el("div", {class: "check-line info", text: `Ignition at ${ig.toFixed(1)} s (after the ${(cfg.ARM_HOLD_MS / 1000).toFixed(1)} s arming hold). Times above are from ignition. This is a model: it does not include servo backlash, flex, or real aerodynamics, so prove the hardware on the bench.`}));
 }
 function simEvents() {
   const r = simResult.rows, out = []; let prev = -1;
@@ -156,6 +175,7 @@ function drawSimCharts() {
     ["Roll rate (°/s): nothing stops a finless rocket rolling; the TVC compensates", [c("roll_rate")], ["roll"]],
     ["What turns the rocket, about X (N·m): TVC vs air", [c("tq_tvc_x"), c("tq_aero_x")], ["TVC (thrust × gimbal arm)", "air (CP ahead of CG)"]],
     ["What turns the rocket, about Y (N·m)", [c("tq_tvc_y"), c("tq_aero_y")], ["TVC", "air"]]];
+  if (simResult.replay) charts.splice(4, 2);   /* a log has no torques: those exist only in the model */
   const wrap = $("sim-charts"); wrap.replaceChildren();
   const events = simEvents();
   charts.forEach(([title, series, names]) => {
@@ -404,6 +424,7 @@ window.onTabShown = id => {
 const live = {active: false, busy: false, lastWall: 0};
 async function startLive() {
   live.active = false;
+  $("replay-chip").hidden = true;
   play.playing = false;
   const meta = await api("sim3d/live/start", simRequest());
   simResult = {columns: meta.columns, rows: [], summary: null, verdict: [], ignition_s: meta.ignition_s, model: meta.model, live: true};

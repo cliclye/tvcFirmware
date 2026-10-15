@@ -92,7 +92,7 @@ then records every reading to the SD card.
 
 1. Put a microSD card in the board, lay the board flat and still, and power it up.
 2. LEDs go red, green, blue, then one beep. Green blinks fast for 3 s while it tests: don't touch it.
-3. **Two short beeps + steady green**: everything passed. **Three long beeps + red blinking N
+3. **Two short beeps + steady green**: everything passed. **N long beeps + red blinking N
    times**: group N failed (1 IMU, 2 barometer, 3 SD card, 4 power).
 4. Leave it running as long as you want (blue blinks while recording; one power-up holds about
    9 minutes). Move it, warm it with your hand, blow on the barometer: it's all recorded.
@@ -113,8 +113,9 @@ What it records:
 The checks: chip IDs answer (0x1E, 0x0F, 0x60); 1 g at rest; gyro bias under 5 °/s and noise
 under 3 °/s; values not stuck; 99 % of IMU and 95 % of barometer reads succeed; pressure 60–110
 kPa; temperatures and humidity sane; SD recording with nothing lost; 3.3 V rail 3.0–3.6 V. "1 g"
-and "gyro quiet" are judged only during the first 3 s, so picking the board up later doesn't fail
-them. With a USB-UART on TX2/RX2, **Live board** shows the values and checks live (USB-C on the
+and "gyro quiet" need the board still: once they pass (in the first 3 s or any later still
+second) they stay passed, so a bump during the test turns green once you leave the board alone,
+and picking it up later doesn't fail them. With a USB-UART on TX2/RX2, **Live board** shows the values and checks live (USB-C on the
 board has no serial port yet).
 
 ## 4. Bench checks (`easytvc_bench` image). Do all of them.
