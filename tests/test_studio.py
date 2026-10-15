@@ -16,7 +16,6 @@ import tempfile
 import tty
 import unittest
 from unittest.mock import patch
-import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "studio"))
@@ -124,7 +123,6 @@ class SensorTestImageTests(unittest.TestCase):
         launch = studio.launch
         with tempfile.TemporaryDirectory() as tmp:
             session = self._fixture_session(tmp)          # session 7, 4610 records
-            used = session.rstrip(b"\0")
             card = Path(tmp) / "card.img"
             with open(card, "wb") as f:                   # sparse 8 GB-style layout, only what we need
                 f.write(b"\0" * 512)

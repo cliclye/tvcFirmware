@@ -2,6 +2,8 @@
 #include "stm32f4xx.h"
 #include "board_pins.h"
 
+#include <string.h>
+
 #define USART_SR_TC     (1U << 6)
 #define USART_CR1_TXEIE (1U << 7)
 #define NVIC_ISER1      (*(volatile uint32_t *)0xE000E104UL)
@@ -116,4 +118,9 @@ int EasyTVC_USART2_Receive(uint8_t *data, size_t max_length)
 bool EasyTVC_USART2_TransmitComplete(void)
 {
     return (STM32_USART2->SR & USART_SR_TC) != 0U;
+}
+
+void EasyTVC_USART2_QueueText(const char *text)
+{
+    (void)EasyTVC_USART2_Queue((const uint8_t *)text, strlen(text));
 }

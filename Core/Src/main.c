@@ -5,6 +5,7 @@
 #include "i2c_driver.h"
 #include "pwm_driver.h"
 #include "uart_driver.h"
+#include "text_line.h"
 #include "hardware_bus.h"
 #include "bmi088.h"
 #include "bme280.h"
@@ -52,6 +53,10 @@
 #define TELEMETRY_DIVIDER    20U     /* 10 Hz serial */
 #define STATUS_DIVIDER       200U    /* 1 Hz serial status line */
 #define FLUSH_DIVIDER        200U    /* queue the partial sector every second */
+/* Phases keep the serial lines and the flush off the barometer's tick (phase 0, a ~1 ms I2C read). */
+#define TELEMETRY_PHASE      10U
+#define STATUS_PHASE         50U
+#define FLUSH_PHASE          150U
 
 #define IMU_FAIL_RETRY_COUNT 5U
 #define SENSOR_RETRY_MS      500U
@@ -222,78 +227,9 @@ static bool calibrate_baro(uint32_t *last_us)
     return true;
 }
 
-static void halt_clock_fault(void)
-{
-    /* The PLL did not lock: the whole timing/baud/bus budget is wrong. Do not run the vehicle. */
-    EasyTVC_GPIO_Init();
-    for (;;) {
-        EasyTVC_GPIO_LedSet(2, true);
-        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
-        }
-        EasyTVC_GPIO_LedSet(2, false);
-        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
-        }
-    }
-}
-
-/* ---- text output (no printf: nano libc has no float formatting) ---- */
-
-static size_t put_uint(char *out, uint32_t value)
-{
-    char digits[10];
-    size_t count = 0;
-    do {
-        digits[count++] = (char)('0' + (value % 10U));
-        value /= 10U;
-    } while (value != 0U);
-    for (size_t i = 0; i < count; ++i) {
-        out[i] = digits[count - 1U - i];
-    }
-    return count;
-}
-
-typedef struct {
-    char *buffer;
-    size_t used;
-    size_t capacity;
-} TextLine;
-
-static void line_str(TextLine *line, const char *text)
-{
-    while (*text != '\0' && line->used + 1U < line->capacity) {
-        line->buffer[line->used++] = *text++;
-    }
-    line->buffer[line->used] = '\0';
-}
-
-static void line_int(TextLine *line, int32_t value)
-{
-    char digits[12];
-    size_t n = 0;
-    if (value < 0) {
-        digits[n++] = '-';
-        n += put_uint(&digits[n], 0U - (uint32_t)value);
-    } else {
-        n += put_uint(&digits[n], (uint32_t)value);
-    }
-    digits[n] = '\0';
-    line_str(line, digits);
-}
-
-static void line_field(TextLine *line, int32_t value)
-{
-    line_str(line, ",");
-    line_int(line, value);
-}
-
 static int32_t milli(float value)
 {
     return (int32_t)lroundf(value * 1000.0f);
-}
-
-static void queue_text(const char *text)
-{
-    (void)EasyTVC_USART2_Queue((const uint8_t *)text, strlen(text));
 }
 
 /* ---- outputs ---- */
@@ -396,39 +332,32 @@ static bool apply_vehicle_config(uint32_t now_ms)
     return EasyTVC_AppApplySettings(&app, &s, false);
 }
 
-static void line_hex8(TextLine *line, uint8_t value)
-{
-    const char *hex = "0123456789ABCDEF";
-    char text[5] = {'0', 'x', hex[value >> 4], hex[value & 15U], '\0'};
-    line_str(line, text);
-}
-
 static void build_header(char *buffer, size_t capacity, bool recovery_boot)
 {
-    TextLine line = {buffer, 0, capacity};
-    line_str(&line, EASYTVC_BENCH_MODE ? "EasyTVC mode=bench" : "EasyTVC mode=flight");
-    line_str(&line, recovery_boot ? " reset=abnormal" : " reset=normal");
-    line_str(&line, " nose_axis="); line_int(&line, EASYTVC_NOSE_AXIS);
-    line_str(&line, " kp_milli="); line_int(&line, milli(EASYTVC_KP));
-    line_str(&line, " ki_milli="); line_int(&line, milli(EASYTVC_KI));
-    line_str(&line, " kd_milli="); line_int(&line, milli(EASYTVC_KD));
-    line_str(&line, " A=ch"); line_int(&line, EASYTVC_SERVO_A_CHANNEL);
-    line_field(&line, EASYTVC_SERVO_A_MIN_US); line_field(&line, EASYTVC_SERVO_A_CENTER_US);
-    line_field(&line, EASYTVC_SERVO_A_MAX_US); line_field(&line, EASYTVC_SERVO_A_DIRECTION);
-    line_str(&line, " B=ch"); line_int(&line, EASYTVC_SERVO_B_CHANNEL);
-    line_field(&line, EASYTVC_SERVO_B_MIN_US); line_field(&line, EASYTVC_SERVO_B_CENTER_US);
-    line_field(&line, EASYTVC_SERVO_B_MAX_US); line_field(&line, EASYTVC_SERVO_B_DIRECTION);
-    line_str(&line, " servo_hz="); line_int(&line, EASYTVC_SERVO_RATE_HZ);
-    line_str(&line, " chute=ch"); line_int(&line, EASYTVC_CHUTE_CHANNEL);
-    line_str(&line, " max_tilt="); line_int(&line, (int32_t)EASYTVC_MAX_TILT_DEG);
+    EasyTVCTextLine line = {buffer, 0, capacity};
+    EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? "EasyTVC mode=bench" : "EasyTVC mode=flight");
+    EasyTVC_LineStr(&line, recovery_boot ? " reset=abnormal" : " reset=normal");
+    EasyTVC_LineStr(&line, " nose_axis="); EasyTVC_LineInt(&line, EASYTVC_NOSE_AXIS);
+    EasyTVC_LineStr(&line, " kp_milli="); EasyTVC_LineInt(&line, milli(EASYTVC_KP));
+    EasyTVC_LineStr(&line, " ki_milli="); EasyTVC_LineInt(&line, milli(EASYTVC_KI));
+    EasyTVC_LineStr(&line, " kd_milli="); EasyTVC_LineInt(&line, milli(EASYTVC_KD));
+    EasyTVC_LineStr(&line, " A=ch"); EasyTVC_LineInt(&line, EASYTVC_SERVO_A_CHANNEL);
+    EasyTVC_LineField(&line, EASYTVC_SERVO_A_MIN_US); EasyTVC_LineField(&line, EASYTVC_SERVO_A_CENTER_US);
+    EasyTVC_LineField(&line, EASYTVC_SERVO_A_MAX_US); EasyTVC_LineField(&line, EASYTVC_SERVO_A_DIRECTION);
+    EasyTVC_LineStr(&line, " B=ch"); EasyTVC_LineInt(&line, EASYTVC_SERVO_B_CHANNEL);
+    EasyTVC_LineField(&line, EASYTVC_SERVO_B_MIN_US); EasyTVC_LineField(&line, EASYTVC_SERVO_B_CENTER_US);
+    EasyTVC_LineField(&line, EASYTVC_SERVO_B_MAX_US); EasyTVC_LineField(&line, EASYTVC_SERVO_B_DIRECTION);
+    EasyTVC_LineStr(&line, " servo_hz="); EasyTVC_LineInt(&line, EASYTVC_SERVO_RATE_HZ);
+    EasyTVC_LineStr(&line, " chute=ch"); EasyTVC_LineInt(&line, EASYTVC_CHUTE_CHANNEL);
+    EasyTVC_LineStr(&line, " max_tilt="); EasyTVC_LineInt(&line, (int32_t)EASYTVC_MAX_TILT_DEG);
     /* IMU setup result, as in the sensor test: accel awake, gyro ok, registers the chip reported */
-    line_str(&line, " accel_ok="); line_int(&line, bmi088.accel_ok);
-    line_str(&line, " gyro_ok="); line_int(&line, bmi088.gyro_ok);
-    line_str(&line, " accel_passes="); line_int(&line, bmi088.accel_passes);
-    line_str(&line, " rb=");
+    EasyTVC_LineStr(&line, " accel_ok="); EasyTVC_LineInt(&line, bmi088.accel_ok);
+    EasyTVC_LineStr(&line, " gyro_ok="); EasyTVC_LineInt(&line, bmi088.gyro_ok);
+    EasyTVC_LineStr(&line, " accel_passes="); EasyTVC_LineInt(&line, bmi088.accel_passes);
+    EasyTVC_LineStr(&line, " rb=");
     for (unsigned i = 0; i < sizeof(bmi088.readback); ++i) {
-        if (i) line_str(&line, ",");
-        line_hex8(&line, bmi088.readback[i]);
+        if (i) EasyTVC_LineStr(&line, ",");
+        EasyTVC_LineHex8(&line, bmi088.readback[i]);
     }
 }
 
@@ -457,7 +386,7 @@ static bool buzzer_on(BuzzPattern pattern, uint32_t now_ms)
 int main(void)
 {
     if (!STM32_SystemInit()) {
-        halt_clock_fault();
+        EasyTVC_GPIO_HaltClockFault();
     }
     /* A watchdog/fault reset may have happened in the air. Do not move the gimbal, do not arm,
      * release the parachute. Power-cycle to clear. */
@@ -704,54 +633,54 @@ int main(void)
             record.marker = TELEMETRY_MARKER;
             (void)DataLogger_Log(&logger, &record);
         }
-        if (tick % FLUSH_DIVIDER == 0U) {
+        if (tick % FLUSH_DIVIDER == FLUSH_PHASE) {
             (void)DataLogger_Flush(&logger);
         }
 
         /* ---- serial telemetry (queued, dropped if the line is slow) ---- */
-        if (tick % TELEMETRY_DIVIDER == 0U) {
+        if (tick % TELEMETRY_DIVIDER == TELEMETRY_PHASE) {
 #if EASYTVC_BENCH_MODE
             /* B,ms,tiltX_cdeg,tiltY_cdeg,pulseA,pulseB,raw_ax_mg,raw_ay_mg,raw_az_mg,body_az_mg */
             char text[120];
-            TextLine line = {text, 0, sizeof(text)};
-            line_str(&line, "B");
-            line_field(&line, (int32_t)now_ms);
-            line_field(&line, (int32_t)(tilt[0] * 5729.578f));
-            line_field(&line, (int32_t)(tilt[1] * 5729.578f));
-            line_field(&line, pulse_a);
-            line_field(&line, pulse_b);
+            EasyTVCTextLine line = {text, 0, sizeof(text)};
+            EasyTVC_LineStr(&line, "B");
+            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineField(&line, (int32_t)(tilt[0] * 5729.578f));
+            EasyTVC_LineField(&line, (int32_t)(tilt[1] * 5729.578f));
+            EasyTVC_LineField(&line, pulse_a);
+            EasyTVC_LineField(&line, pulse_b);
             for (unsigned axis = 0; axis < 3U; ++axis) {
-                line_field(&line, (int32_t)(bmi088.accel_m_s2[axis] / GRAVITY * 1000.0f));
+                EasyTVC_LineField(&line, (int32_t)(bmi088.accel_m_s2[axis] / GRAVITY * 1000.0f));
             }
-            line_field(&line, (int32_t)(accel_body[2] / GRAVITY * 1000.0f));
-            line_str(&line, "\n");
-            queue_text(text);
+            EasyTVC_LineField(&line, (int32_t)(accel_body[2] / GRAVITY * 1000.0f));
+            EasyTVC_LineStr(&line, "\n");
+            EasyTVC_USART2_QueueText(text);
 #else
-            queue_text(output.telemetry);
+            EasyTVC_USART2_QueueText(output.telemetry);
 #endif
         }
 
         const bool error = !imu_ok || !config_ok || recovery_boot || state == EASYTVC_FLIGHT_FAULT ||
                            (EASYTVC_REQUIRE_SD && !EASYTVC_BENCH_MODE && !logger.initialized);
-        if (tick % STATUS_DIVIDER == 0U) {
+        if (tick % STATUS_DIVIDER == STATUS_PHASE) {
             /* S,imu,baro,sd,gyro_cal,records,dropped,write_errors,session,state,armed,recovery,chute */
             char text[120];
-            TextLine line = {text, 0, sizeof(text)};
-            line_str(&line, "S");
-            line_field(&line, imu_ok);
-            line_field(&line, baro_fresh);
-            line_field(&line, logger.initialized);
-            line_field(&line, gyro_cal_ok);
-            line_field(&line, (int32_t)logger.record_count);
-            line_field(&line, (int32_t)logger.dropped_records);
-            line_field(&line, (int32_t)logger.write_errors);
-            line_field(&line, (int32_t)logger.session);
-            line_field(&line, (int32_t)state);
-            line_field(&line, pad.armed);
-            line_field(&line, recovery_boot);
-            line_field(&line, chute_open);
-            line_str(&line, "\n");
-            queue_text(text);
+            EasyTVCTextLine line = {text, 0, sizeof(text)};
+            EasyTVC_LineStr(&line, "S");
+            EasyTVC_LineField(&line, imu_ok);
+            EasyTVC_LineField(&line, baro_fresh);
+            EasyTVC_LineField(&line, logger.initialized);
+            EasyTVC_LineField(&line, gyro_cal_ok);
+            EasyTVC_LineField(&line, (int32_t)logger.record_count);
+            EasyTVC_LineField(&line, (int32_t)logger.dropped_records);
+            EasyTVC_LineField(&line, (int32_t)logger.write_errors);
+            EasyTVC_LineField(&line, (int32_t)logger.session);
+            EasyTVC_LineField(&line, (int32_t)state);
+            EasyTVC_LineField(&line, pad.armed);
+            EasyTVC_LineField(&line, recovery_boot);
+            EasyTVC_LineField(&line, chute_open);
+            EasyTVC_LineStr(&line, "\n");
+            EasyTVC_USART2_QueueText(text);
         }
 
         /* LEDs: blue = alive, red = do not launch, green = arming progress / armed. */

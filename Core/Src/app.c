@@ -97,13 +97,6 @@ EasyTVCAppOutput EasyTVC_AppStep(EasyTVCApp *app, const EasyTVCAppInput *input)
     output.flight.tvc_enabled = output.control.enabled;
     output.tvc.pitch_command = output.control.command[0];
     output.tvc.yaw_command = output.control.command[1];
-    for (unsigned i = 0; i < 4; ++i) {
-        output.tvc.servo_normalized[i] = 0.5f;
-    }
-    for (unsigned i = 0; i < 2 && EasyTVC_SettingsValid(&app->settings); ++i) {
-        output.tvc.servo_normalized[app->settings.servo[i].channel - 1] =
-            fminf(1.0f, fmaxf(0.0f, ((float)output.control.pulse_us[i] - 1000.0f) / 1000.0f));
-    }
     output.pyro = EasyTVC_PyroSequencerStep(&app->pyro,
                                             &app->pyro_config,
                                             output.flight.state,

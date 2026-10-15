@@ -5,6 +5,7 @@
 #include "i2c_driver.h"
 #include "pwm_driver.h"
 #include "uart_driver.h"
+#include "text_line.h"
 #include "hardware_bus.h"
 #include "bmi088.h"
 #include "bme280.h"
@@ -38,7 +39,13 @@
 #define ADC_DIVIDER      (LOOP_HZ / SENSOR_TEST_ADC_HZ)
 #define SERIAL_DIVIDER   (LOOP_HZ / 10U)
 #define STATUS_DIVIDER   LOOP_HZ
-#define BOOT_TEST_TICKS  (3U * LOOP_HZ)
+/* Phases (tick offsets) keep the slower jobs off the barometer's tick (phase 0, a ~1 ms I2C read)
+ * and off each other, so no single 2.5 ms tick carries them all and the IMU timing stays even. */
+#define ADC_PHASE        3U
+#define SERIAL_PHASE     5U
+#define STATUS_PHASE     7U
+#define FLUSH_PHASE      1U
+#define BOOT_TEST_TICKS  (3U * LOOP_HZ + STATUS_PHASE)
 
 /* counts per g and per deg/s, from the ranges the chip actually reports (EasyTVC_Bmi088Configure) */
 #define GRAVITY_LSB      (9.80665f / bmi088.accel_m_s2_per_lsb)
@@ -57,60 +64,6 @@ static EasyTVCBmi088 bmi088;
 static EasyTVCBme280 bme280;
 static DataLogger logger;
 static uint8_t record_seq;
-
-/* ---- text output (no printf: nano libc has no float formatting) ---- */
-
-typedef struct {
-    char *buffer;
-    size_t used;
-    size_t capacity;
-} TextLine;
-
-static void line_str(TextLine *line, const char *text)
-{
-    while (*text != '\0' && line->used + 1U < line->capacity) {
-        line->buffer[line->used++] = *text++;
-    }
-    line->buffer[line->used] = '\0';
-}
-
-static void line_int(TextLine *line, int32_t value)
-{
-    char digits[12];
-    size_t n = 0;
-    uint32_t magnitude = value < 0 ? 0U - (uint32_t)value : (uint32_t)value;
-    do {
-        digits[n++] = (char)('0' + magnitude % 10U);
-        magnitude /= 10U;
-    } while (magnitude != 0U);
-    if (value < 0) {
-        digits[n++] = '-';
-    }
-    char text[12];
-    for (size_t i = 0; i < n; ++i) {
-        text[i] = digits[n - 1U - i];
-    }
-    text[n] = '\0';
-    line_str(line, text);
-}
-
-static void line_field(TextLine *line, int32_t value)
-{
-    line_str(line, ",");
-    line_int(line, value);
-}
-
-static void line_hex8(TextLine *line, uint8_t value)
-{
-    const char *hex = "0123456789ABCDEF";
-    char text[5] = {'0', 'x', hex[value >> 4], hex[value & 15U], '\0'};
-    line_str(line, text);
-}
-
-static void queue_text(const char *text)
-{
-    (void)EasyTVC_USART2_Queue((const uint8_t *)text, strlen(text));
-}
 
 /* ---- ADC: battery pin, internal reference, MCU temperature ---- */
 
@@ -264,23 +217,10 @@ static bool red_pattern(unsigned group, uint32_t now_ms)
     return t < 400U * group && (t % 400U) < 200U;
 }
 
-static void halt_clock_fault(void)
-{
-    EasyTVC_GPIO_Init();
-    for (;;) {
-        EasyTVC_GPIO_LedSet(2, true);
-        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
-        }
-        EasyTVC_GPIO_LedSet(2, false);
-        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
-        }
-    }
-}
-
 int main(void)
 {
     if (!STM32_SystemInit()) {
-        halt_clock_fault();
+        EasyTVC_GPIO_HaltClockFault();
     }
     EasyTVC_GPIO_Init();
     EasyTVC_SPI1_Init();
@@ -329,28 +269,28 @@ int main(void)
         (void)read_accel_temp(&accel_temp_boot);   /* so the first samples don't log 0 C */
     }
     char header[480];   /* the logger keeps up to 495 characters */
-    TextLine h = {header, 0, sizeof(header)};
-    line_str(&h, "EasyTVC mode=sensortest imu_hz="); line_int(&h, SENSOR_TEST_IMU_HZ);
-    line_str(&h, " baro_hz="); line_int(&h, SENSOR_TEST_BARO_HZ);
-    line_str(&h, " adc_hz="); line_int(&h, SENSOR_TEST_ADC_HZ);
-    line_str(&h, " accel_id="); line_hex8(&h, accel_id);
-    line_str(&h, " gyro_id="); line_hex8(&h, gyro_id);
-    line_str(&h, " baro_id="); line_hex8(&h, baro_id);
-    line_str(&h, " imu_config="); line_int(&h, imu_ok);
-    line_str(&h, " imu_fail_step="); line_int(&h, bmi088.config_fail_step);
-    line_str(&h, " accel_ok="); line_int(&h, bmi088.accel_ok);
-    line_str(&h, " gyro_ok="); line_int(&h, bmi088.gyro_ok);
-    line_str(&h, " accel_passes="); line_int(&h, bmi088.accel_passes);
-    line_str(&h, " rb=");
+    EasyTVCTextLine h = {header, 0, sizeof(header)};
+    EasyTVC_LineStr(&h, "EasyTVC mode=sensortest imu_hz="); EasyTVC_LineInt(&h, SENSOR_TEST_IMU_HZ);
+    EasyTVC_LineStr(&h, " baro_hz="); EasyTVC_LineInt(&h, SENSOR_TEST_BARO_HZ);
+    EasyTVC_LineStr(&h, " adc_hz="); EasyTVC_LineInt(&h, SENSOR_TEST_ADC_HZ);
+    EasyTVC_LineStr(&h, " accel_id="); EasyTVC_LineHex8(&h, accel_id);
+    EasyTVC_LineStr(&h, " gyro_id="); EasyTVC_LineHex8(&h, gyro_id);
+    EasyTVC_LineStr(&h, " baro_id="); EasyTVC_LineHex8(&h, baro_id);
+    EasyTVC_LineStr(&h, " imu_config="); EasyTVC_LineInt(&h, imu_ok);
+    EasyTVC_LineStr(&h, " imu_fail_step="); EasyTVC_LineInt(&h, bmi088.config_fail_step);
+    EasyTVC_LineStr(&h, " accel_ok="); EasyTVC_LineInt(&h, bmi088.accel_ok);
+    EasyTVC_LineStr(&h, " gyro_ok="); EasyTVC_LineInt(&h, bmi088.gyro_ok);
+    EasyTVC_LineStr(&h, " accel_passes="); EasyTVC_LineInt(&h, bmi088.accel_passes);
+    EasyTVC_LineStr(&h, " rb=");
     for (unsigned i = 0; i < sizeof(bmi088.readback); ++i) {
-        if (i) line_str(&h, ",");
-        line_hex8(&h, bmi088.readback[i]);
+        if (i) EasyTVC_LineStr(&h, ",");
+        EasyTVC_LineHex8(&h, bmi088.readback[i]);
     }
-    line_str(&h, " accel_range_code="); line_int(&h, bmi088.readback[3] & 3U);
-    line_str(&h, " gyro_range_code="); line_int(&h, bmi088.readback[4] & 7U);
-    line_str(&h, " baro_config="); line_int(&h, baro_ok);
-    line_str(&h, " nose_axis="); line_int(&h, EASYTVC_NOSE_AXIS);
-    line_str(&h, " vrefint_cal="); line_int(&h, VREFINT_CAL);
+    EasyTVC_LineStr(&h, " accel_range_code="); EasyTVC_LineInt(&h, bmi088.readback[3] & 3U);
+    EasyTVC_LineStr(&h, " gyro_range_code="); EasyTVC_LineInt(&h, bmi088.readback[4] & 7U);
+    EasyTVC_LineStr(&h, " baro_config="); EasyTVC_LineInt(&h, baro_ok);
+    EasyTVC_LineStr(&h, " nose_axis="); EasyTVC_LineInt(&h, EASYTVC_NOSE_AXIS);
+    EasyTVC_LineStr(&h, " vrefint_cal="); EasyTVC_LineInt(&h, VREFINT_CAL);
     (void)DataLogger_Init(&logger, header);
 
     STM32_WatchdogStart();
@@ -447,7 +387,7 @@ int main(void)
         }
 
         /* ---- ADC and accel temperature: 10 Hz ---- */
-        if (tick % ADC_DIVIDER == 0U) {
+        if (tick % ADC_DIVIDER == ADC_PHASE) {
             if (imu_ok) {
                 accel_temp_ok = read_accel_temp(&accel_temp) && accel_temp > -2000 && accel_temp < 7000;
             }
@@ -470,7 +410,7 @@ int main(void)
         }
 
         /* ---- checks, status record, serial status: 1 Hz (and the power-up verdict at 3 s) ---- */
-        const bool second = tick % STATUS_DIVIDER == 0U;
+        const bool second = tick % STATUS_DIVIDER == STATUS_PHASE;
         const bool verdict_now = !boot_done && tick == BOOT_TEST_TICKS;
         if (second || verdict_now) {
             checks = id_checks | imu_checks(&stats);
@@ -514,26 +454,26 @@ int main(void)
             /* Q,ms,checks,boot_checks,accel_id,gyro_id,baro_id,imu_samples,imu_errors,baro_samples,
              *   baro_errors,sd,records,dropped,write_errors,session,overruns */
             char text[160];
-            TextLine line = {text, 0, sizeof(text)};
-            line_str(&line, "Q");
-            line_field(&line, (int32_t)now_ms);
-            line_field(&line, (int32_t)checks);
-            line_field(&line, (int32_t)boot_checks);
-            line_field(&line, accel_id);
-            line_field(&line, gyro_id);
-            line_field(&line, baro_id);
-            line_field(&line, (int32_t)imu_samples);
-            line_field(&line, (int32_t)imu_errors);
-            line_field(&line, (int32_t)baro_samples);
-            line_field(&line, (int32_t)baro_errors);
-            line_field(&line, logger.initialized);
-            line_field(&line, (int32_t)logger.record_count);
-            line_field(&line, (int32_t)logger.dropped_records);
-            line_field(&line, (int32_t)logger.write_errors);
-            line_field(&line, (int32_t)logger.session);
-            line_field(&line, loop_overruns);
-            line_str(&line, "\n");
-            queue_text(text);
+            EasyTVCTextLine line = {text, 0, sizeof(text)};
+            EasyTVC_LineStr(&line, "Q");
+            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineField(&line, (int32_t)checks);
+            EasyTVC_LineField(&line, (int32_t)boot_checks);
+            EasyTVC_LineField(&line, accel_id);
+            EasyTVC_LineField(&line, gyro_id);
+            EasyTVC_LineField(&line, baro_id);
+            EasyTVC_LineField(&line, (int32_t)imu_samples);
+            EasyTVC_LineField(&line, (int32_t)imu_errors);
+            EasyTVC_LineField(&line, (int32_t)baro_samples);
+            EasyTVC_LineField(&line, (int32_t)baro_errors);
+            EasyTVC_LineField(&line, logger.initialized);
+            EasyTVC_LineField(&line, (int32_t)logger.record_count);
+            EasyTVC_LineField(&line, (int32_t)logger.dropped_records);
+            EasyTVC_LineField(&line, (int32_t)logger.write_errors);
+            EasyTVC_LineField(&line, (int32_t)logger.session);
+            EasyTVC_LineField(&line, loop_overruns);
+            EasyTVC_LineStr(&line, "\n");
+            EasyTVC_USART2_QueueText(text);
             max_loop_us = 0;
             /* after the power-up test, judge the IMU over the most recent second only */
             if (boot_done) {
@@ -544,30 +484,30 @@ int main(void)
         /* ---- serial values: 10 Hz ----
          * T,ms,ax_mg,ay_mg,az_mg,gx_cdps,gy_cdps,gz_cdps,accel_temp_cc,pressure_pa,baro_temp_cc,
          *   humidity_permille,vdda_mv,batt_pin_mv,mcu_temp_cc */
-        if (tick % SERIAL_DIVIDER == 0U) {
+        if (tick % SERIAL_DIVIDER == SERIAL_PHASE) {
             char text[160];
-            TextLine line = {text, 0, sizeof(text)};
-            line_str(&line, "T");
-            line_field(&line, (int32_t)now_ms);
-            line_field(&line, (int32_t)lroundf(bmi088.accel_x * 1000.0f / GRAVITY_LSB));
-            line_field(&line, (int32_t)lroundf(bmi088.accel_y * 1000.0f / GRAVITY_LSB));
-            line_field(&line, (int32_t)lroundf(bmi088.accel_z * 1000.0f / GRAVITY_LSB));
-            line_field(&line, (int32_t)lroundf(bmi088.gyro_x * 100.0f / GYRO_LSB_DPS));
-            line_field(&line, (int32_t)lroundf(bmi088.gyro_y * 100.0f / GYRO_LSB_DPS));
-            line_field(&line, (int32_t)lroundf(bmi088.gyro_z * 100.0f / GYRO_LSB_DPS));
-            line_field(&line, accel_temp);
-            line_field(&line, (int32_t)bme280.pressure);
-            line_field(&line, bme280.temperature);
-            line_field(&line, (int32_t)(bme280.humidity * 10U / 1024U));
-            line_field(&line, vdda_mv);
-            line_field(&line, batt_pin_mv);
-            line_field(&line, mcu_temp_cc);
-            line_str(&line, "\n");
-            queue_text(text);
+            EasyTVCTextLine line = {text, 0, sizeof(text)};
+            EasyTVC_LineStr(&line, "T");
+            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_x * 1000.0f / GRAVITY_LSB));
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_y * 1000.0f / GRAVITY_LSB));
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_z * 1000.0f / GRAVITY_LSB));
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.gyro_x * 100.0f / GYRO_LSB_DPS));
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.gyro_y * 100.0f / GYRO_LSB_DPS));
+            EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.gyro_z * 100.0f / GYRO_LSB_DPS));
+            EasyTVC_LineField(&line, accel_temp);
+            EasyTVC_LineField(&line, (int32_t)bme280.pressure);
+            EasyTVC_LineField(&line, bme280.temperature);
+            EasyTVC_LineField(&line, (int32_t)(bme280.humidity * 10U / 1024U));
+            EasyTVC_LineField(&line, vdda_mv);
+            EasyTVC_LineField(&line, batt_pin_mv);
+            EasyTVC_LineField(&line, mcu_temp_cc);
+            EasyTVC_LineStr(&line, "\n");
+            EasyTVC_USART2_QueueText(text);
         }
 
         DataLogger_Poll(&logger);
-        if (tick % LOOP_HZ == 0U) {
+        if (tick % LOOP_HZ == FLUSH_PHASE) {
             (void)DataLogger_Flush(&logger);
         }
 

@@ -4,7 +4,6 @@
 
 let cfg = null, savedCfg = null, buildInfo = null, appState = {}, vehicle = null;
 let liveTimer = null, liveStatus = null, logData = null, validateTimer = null, rocketModel = null, modelTimer = null;
-const COLORS = ["#7655e8", "#288471", "#c07a1a"];
 const AXES = ["POS_X", "NEG_X", "POS_Y", "NEG_Y", "POS_Z", "NEG_Z"];
 
 /* ------------------------------------------------------------------ helpers */
@@ -673,7 +672,7 @@ $("log-file").onchange = async () => {
 function showSensorLog(result) {
   logData = result; $("log-result").hidden = false; $("log-range").hidden = true; $("log-result").classList.add("sensor-mode");
   const r = result.report, tile = (label, value, cls = "") => el("div", {class: cls}, el("span", {text: label}), el("strong", {text: value}));
-  const ch = r.channels, mean = (k, d, unit) => ch[k] ? `${ch[k].mean.toFixed(d)}${unit}` : "—";
+  const ch = r.channels;
   $("log-summary").replaceChildren(tile("SENSOR TEST", r.passed ? "PASSED" : "FAILED", r.passed ? "" : "bad"), tile("SESSION", String(result.session)),
     tile("DURATION", `${r.duration_s.toFixed(1)} s`), tile("IMU RATE", `${r.rates_hz.imu.toFixed(0)} Hz`), tile("BARO RATE", `${r.rates_hz.baro.toFixed(0)} Hz`),
     tile("RECORDS", String(r.counts.records)), tile("GAPS", String(r.counts.gaps), r.counts.gaps ? "bad" : ""),

@@ -15,12 +15,12 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/pid.c
     Core/Src/pyro_seq.c
     Core/Src/telemetry.c
-    Core/Src/tvc.c
     Core/Src/settings.c
     Core/Src/controller.c
     Core/Src/protocol.c
     Core/Src/runtime.c
     Core/Src/pad_arm.c
+    Core/Src/text_line.c
 )
 
 # STM32F405 register-level drivers. These touch memory-mapped peripherals and inline

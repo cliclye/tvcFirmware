@@ -7,8 +7,13 @@
 #include "nav.h"
 #include "pyro_seq.h"
 #include "telemetry.h"
-#include "tvc.h"
 #include "controller.h"
+
+/* The two TVC commands (-1..1, body X / Y) as sent to telemetry. */
+typedef struct {
+    float pitch_command;
+    float yaw_command;
+} EasyTVCTvcOutput;
 
 typedef struct {
     float gyro_rad_s[3];

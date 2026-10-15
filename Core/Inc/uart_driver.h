@@ -14,6 +14,8 @@ int EasyTVC_USART2_Send(const uint8_t *data, size_t length);
  * bytes accepted; the rest are dropped so telemetry can never stall the control loop. */
 size_t EasyTVC_USART2_Queue(const uint8_t *data, size_t length);
 size_t EasyTVC_USART2_QueueFree(void);
+/* Queue a NUL-terminated line; dropped if the line is slow (never blocks the control loop). */
+void EasyTVC_USART2_QueueText(const char *text);
 
 int EasyTVC_USART2_Receive(uint8_t *data, size_t max_length);
 bool EasyTVC_USART2_TransmitComplete(void);

@@ -526,3 +526,16 @@ void EasyTVC_GPIO_BuzzerSet(bool state)
 {
     BUZZER_TIM->CCR[0] = state ? BUZZER_PERIOD_US / 2U : 0U;
 }
+
+void EasyTVC_GPIO_HaltClockFault(void)
+{
+    EasyTVC_GPIO_Init();
+    for (;;) {
+        EasyTVC_GPIO_LedSet(2, true);
+        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
+        }
+        EasyTVC_GPIO_LedSet(2, false);
+        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
+        }
+    }
+}

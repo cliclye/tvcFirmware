@@ -34,7 +34,7 @@ AXES = ("POS_X", "NEG_X", "POS_Y", "NEG_Y", "POS_Z", "NEG_Z")
 SERVO_RATES = (50, 100, 125, 200, 250)
 
 # Log layout, mirrors Core/Inc/data_logger.h
-DIR_SECTOR, FIRST_SESSION, SESSION_SECTORS, MAX_SESSIONS = 1024, 2048, 16384, 32
+MAX_SESSIONS = 32   # sessions kept on the card (Core/Inc/data_logger.h; scripts/sd_dump.py reads them)
 
 
 def find_project(explicit: str | None = None) -> Path | None:
@@ -273,11 +273,6 @@ def serial_ports():
                       glob.glob("/dev/cu.SLAB*") + glob.glob("/dev/cu.wchusbserial*")))
 
 
-SENSOR_CHECKS = [("accel_id", 0), ("gyro_id", 0), ("baro_id", 0), ("accel_1g", 0), ("gyro_still", 0),
-                 ("imu_alive", 0), ("imu_rate", 0), ("pressure", 0), ("baro_temp", 0), ("humidity", 0),
-                 ("baro_rate", 0), ("accel_temp", 0), ("sd", 0), ("supply", 0)]   # bit order of sensor_test.h
-
-
 def parse_line(text: str):
     """Classify one firmware telemetry line. Returns (kind, dict) or None."""
     parts = text.strip().split(",")
@@ -296,7 +291,7 @@ def parse_line(text: str):
                                "vdda_v": v[11] / 1000, "batt_pin_v": v[12] / 1000, "mcu_temp_c": v[13] / 100}
         if parts[0] == "Q" and len(parts) == 17:
             v = [int(x) for x in parts[1:]]
-            names = [key for key, _ in SENSOR_CHECKS]
+            names = [key for key, _ in _viewer(None).SENSOR_CHECKS]   # bit order of sensor_test.h
             return "sensor_checks", {"ms": v[0], "checks": {n: bool(v[1] >> i & 1) for i, n in enumerate(names)},
                                      "boot": {n: bool(v[2] >> i & 1) for i, n in enumerate(names)},
                                      "ids": [v[3], v[4], v[5]], "imu_samples": v[6], "imu_errors": v[7],
@@ -425,15 +420,21 @@ class Monitor:
 # flight logs
 # --------------------------------------------------------------------------------------------
 
+_viewers: dict = {}
+
+
 def _viewer(project: Path | None):
+    """scripts/telemetry_viewer.py, loaded once per file (it used to be re-run on every call)."""
     candidates = ([project / "scripts" / "telemetry_viewer.py"] if project else []) + \
         [HERE / "telemetry_viewer.py", HERE.parent / "scripts" / "telemetry_viewer.py"]
     for candidate in candidates:
         if candidate.is_file():
-            spec = importlib.util.spec_from_file_location("easytvc_viewer", candidate)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
+            if candidate not in _viewers:
+                spec = importlib.util.spec_from_file_location("easytvc_viewer", candidate)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                _viewers[candidate] = module
+            return _viewers[candidate]
     raise ValueError("telemetry_viewer.py is missing.")
 
 
@@ -930,7 +931,7 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
     count = max(5, min(200, int(count)))
     rng = random.Random(int(sim.get("seed", 1)))
     runs, ok = [], 0
-    for i in range(count):
+    for _ in range(count):
         trial = dict(sim)
         trial["seed"] = rng.randint(1, 99999)
         trial["wind_m_s"] = round(rng.uniform(0, max(sim["wind_m_s"], 0.1) * 1.5), 2)
@@ -1035,7 +1036,7 @@ def rocket_model(vehicle: dict) -> dict:
     if body["nose_shape"] not in NOSE_SHAPES:
         raise ValueError("Unknown nose cone shape.")
     overhang = _num(body["motor_overhang_mm"], -200, 200, "Motor overhang")
-    md = _num(motor["diameter_mm"], 6, D, "Motor diameter")
+    _num(motor["diameter_mm"], 6, D, "Motor diameter")   # validation only: the motor must fit the body
     ml = _num(motor["length_mm"], 10, 2000, "Motor length")
     pivot_from_nozzle = _num(body["pivot_from_nozzle_mm"], 0, ml, "Gimbal pivot (from nozzle)")
     m_motor = _num(motor["total_mass_g"], 1, 50000, "Motor mass")

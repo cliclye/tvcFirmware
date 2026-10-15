@@ -44,7 +44,6 @@ const token = location.hash.slice(1) || sessionStorage.getItem("easytvc-session"
 if (token) sessionStorage.setItem("easytvc-session", token);
 history.replaceState(null, "", "/");
 let profile, rows = [], busy = false, revision = 0, runRevision = -1;
-const axisFields = ["kp", "ki", "kd", "integrator_limit", "output_limit", "output_rate_limit", "derivative_cutoff_hz"];
 
 function notice(message) { $("notice").textContent = message; $("notice").hidden = false; }
 async function api(path, data) {
