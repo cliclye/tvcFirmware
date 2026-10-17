@@ -153,3 +153,6 @@
 @media(max-width:1150px){:root[data-theme="terminal"] .workspace-grid,:root[data-theme="terminal"] .sim-grid{grid-template-columns:minmax(0,1fr)}}
 :root[data-theme="terminal"] .led-brightness>span:first-child,:root[data-theme="terminal"] .gim-sliders label.field>span:first-child{flex:none;white-space:normal}
 :root[data-theme="terminal"] .sim-view.fullscreen{background:var(--bg);padding:0;border:0}
+:root[data-theme="terminal"] .nav-group{color:#6c6c6c;padding:10px 8px 2px;letter-spacing:2px}
+:root[data-theme="terminal"] .nav-group::before{content:"// "}
+:root[data-theme="terminal"] .section-index button{border-radius:0;border:1px solid var(--line);background:transparent}

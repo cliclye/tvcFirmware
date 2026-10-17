@@ -172,12 +172,15 @@ function draw(hover = null) {
 
 function showTab(id) {
   document.querySelectorAll(".tab").forEach(tab => tab.hidden = tab.id !== id);
-  document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("selected", item.dataset.tab === id));
+  document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("selected",
+    item.dataset.tab === id || (item.dataset.also || "").split(" ").includes(id)));
   draw();
   if (window.onTabShown) window.onTabShown(id);
 }
 document.querySelectorAll("[data-tab]").forEach(button => button.onclick = () => showTab(button.dataset.tab));
 document.querySelectorAll("[data-goto]").forEach(button => button.onclick = () => showTab(button.dataset.goto));
+document.querySelectorAll("[data-jump]").forEach(button => button.onclick = () =>
+  document.getElementById(button.dataset.jump).scrollIntoView({block: "start"}));
 $("chart").addEventListener("mousemove",event => draw(event.offsetX));
 $("chart").addEventListener("mouseleave",() => { $("chart-caption").textContent = "Tilt · degrees / time · seconds"; draw(); });
 new ResizeObserver(() => draw()).observe($("chart"));

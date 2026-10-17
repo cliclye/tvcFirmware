@@ -14,6 +14,8 @@ it, rebuild with `./scripts/build-firmware.sh` and repeat the bench checks.
 
 ## 1. Parts list (Estes E12 build)
 
+Exact specs, quantities and substitutes for every item to buy: [shopping-list.md](shopping-list.md).
+
 | Part | Recommendation | Notes |
 |---|---|---|
 | Flight computer | EasyTVC v0.1 (you have it) | XT30 battery input; servos run from its onboard 5 V linear regulator |
@@ -25,7 +27,7 @@ it, rebuild with `./scripts/build-firmware.sh` and repeat the bench checks.
 | USB-UART adapter | 3.3 V CP2102 or FT232 module | Wire it to the `TX2/RX2/GND` header to see live telemetry. USB-C on the board is only for flashing (no USB serial yet) |
 | Motors | **Estes E12-0** (no ejection charge) | The firmware releases the parachute with a servo. With E12-4/-6 the ejection charge also fires through the gimbal, so that needs a gas path and a retained motor |
 | Igniters + launch controller | Estes starters and a standard controller | |
-| Recovery | 18" (45 cm) parachute, Kevlar shock cord, swivel, Nomex blanket | An 18" chute gives roughly 5 m/s descent at 350 g |
+| Recovery | 24" (61 cm) nylon parachute, Kevlar shock cord, swivel, Nomex blanket | The rocket model assumes ≥ 55 cm; enter the chute you buy in Rocket setup |
 | Launch stand | A vertical stand or tower that holds the rocket upright and lets go freely | A finless TVC rocket can't stabilise itself off a long rod. It has to be vertical before ignition |
 | Hardware | M2/M2.5 nylon standoffs, servo pushrods (1 mm wire with Z-bends or ball links), heat-set inserts | Use PETG/ASA, not PLA, for anything near the motor |
 
@@ -238,10 +240,16 @@ would in a real flight. The rocket is unstable, so hand-flying it is hard: that'
 What the model found for the default E12 rocket (610 mm, 66 mm tube, 150 mm ogive):
 - **Without nose weight it can't be flown**: CG 401 mm, CP 70 mm (−5 cal), pivot only 164 mm
   behind the CG. No gains held it; above ~35 m/s the air overpowers the gimbal.
-- **With 80 g of nose weight**, a 10.5 mm horn / 30 mm lever (≈7.7° gimbal) and **KP 8, KI 0.5,
-  KD 0.8, slew 20/s**: CG 325 mm, −3.9 cal, pivot 240 mm behind the CG, 380 g liftoff. It held
-  16/16 random flights (3 m/s wind gusting ~6, 1° misalignment, 2° pad lean) under ~3°, about
-  120 m apogee, 5–6 m/s landing on a 55 cm parachute. These are the new defaults.
+- **With 80 g of nose weight** and a 10.5 mm horn / 30 mm lever (≈7.7° gimbal): CG 325 mm,
+  −3.9 cal, pivot 240 mm behind the CG, 380 g liftoff, about 105 m apogee on the measured E12 curve.
+- **Default gains: KP 10.4, KI 1.2, KD 0.92, D filter 30 Hz, slew 30/s**, from a gain search on
+  random flights (wind to 6 m/s, misalignment, pad lean, mid-boost kicks), checked on 60 flights
+  it never saw: mean boost tilt 0.89° (the earlier KP 8 / KI 0.5 / KD 0.8 / 20 Hz / 20/s gave
+  1.14°), never lost control, and stayed better with the model deliberately wrong (±30 %
+  inertia, ±40 % thrust, 2° servo slop, slower servo, 3× sensor noise, CP 3 cm forward). A more
+  aggressive set scored better on paper but oscillated when the rocket was lighter than modelled.
+  Thrust-based gain scheduling and gyro-rate damping were also tried and did not help this
+  rocket, so they are not used.
 - KD amplifies motor vibration into roughly ±1° of gimbal jitter. If the servos buzz or get hot,
   lower KD or the D filter cutoff.
 

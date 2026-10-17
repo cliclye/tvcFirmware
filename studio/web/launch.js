@@ -322,7 +322,7 @@ const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
     el("li", {text: "LEDs red → green → blue, one beep, then 3 s of fast green blinking while it tests. Don't touch it."}),
     el("li", {text: "Two short beeps + steady green = every sensor passed. Long beeps + red blinking = a failure; count them: 1 = IMU, 2 = barometer, 3 = SD card, 4 = power."}),
     el("li", {text: "Leave it running as long as you like (blue blinks while recording, ~9 min of space), then read the card in Flight logs for every value."})),
-  el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2 the Live board page shows the values live."})];
+  el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2, Board → Live data shows the values live."})];
 function renderImages() {
   const info = buildInfo; if (!info) return;
   const list = $("images"); list.replaceChildren();
@@ -505,7 +505,7 @@ const CHECKLIST = [
     ["b-flash", "Bench image flashed; board power-cycled"],
     ["b-led", "Power-up LED test shows red, then green, then blue (otherwise flip the LED setting)"],
     ["b-sweep", "Power-up sweep: servo A moves, then B, then the parachute servo. Nothing binds at the ends"],
-    ["b-nose", "Nose axis correct: green LED solid (and Live board agrees) with the rocket nose-up"],
+    ["b-nose", "Nose axis correct: green LED solid (and Board → Live data agrees) with the rocket nose-up"],
     ["b-tilt-a", "Tilt test, servo A: when the nose leans, the nozzle swings to the opposite side"],
     ["b-tilt-b", "Tilt test, servo B: same for the other two directions"],
     ["b-limit", "Past the give-up tilt (≈25°) the gimbal centres"],

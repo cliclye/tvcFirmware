@@ -57,17 +57,21 @@
  * Output is a fraction of full gimbal travel (+-1 = MIN/MAX above) per radian of tilt.
  * These are starting points only. Tune them in EasyTVC Studio with your rocket's measured
  * inertia, CG-to-gimbal arm and thrust before flying. */
-/* Chosen in Studio's 3D flight sim for the default rocket model (610 mm, 66 mm BT-80, ogive nose,
- * 80 g nose ballast, 380 g liftoff, -3.9 cal, 10.5 mm horn / 30 mm lever = ~7.7 deg gimbal): held
- * 16/16 random flights (3 m/s wind gusting ~6, 1 deg misalignment, 2 deg pad lean) under ~3 deg.
+/* Chosen by a gain search in Studio's 3D flight sim for the default rocket model (610 mm, 66 mm
+ * BT-80, ogive nose, 80 g nose ballast, 380 g liftoff, -3.9 cal, 10.5 mm horn / 30 mm lever), on
+ * the measured E12 curve with wind to 6 m/s, 1 deg misalignment, pad lean and mid-boost kicks.
+ * On 60 unseen flights: mean boost tilt 0.89 deg (was 1.14 with 8/0.5/0.8/20/20), and it stayed
+ * better than those gains with the model wrong by +-30 % inertia, +-40 % thrust authority, 2 deg
+ * servo slop, a 350 deg/s servo, 3x sensor noise and the CP 3 cm forward. More aggressive gains
+ * did better on paper but oscillated when the rocket was lighter than modelled.
  * Without the nose ballast this finless rocket is too unstable for any gains. Re-run the sim
  * with YOUR measured part positions before flying. */
-#define EASYTVC_KP                 8.0f
-#define EASYTVC_KI                 0.5f
-#define EASYTVC_KD                 0.8f
+#define EASYTVC_KP                 10.4f
+#define EASYTVC_KI                 1.2f
+#define EASYTVC_KD                 0.92f
 #define EASYTVC_INTEGRATOR_LIMIT   0.15f
-#define EASYTVC_OUTPUT_RATE_LIMIT  20.0f   /* full travel per second */
-#define EASYTVC_DERIVATIVE_CUTOFF  20.0f   /* Hz */
+#define EASYTVC_OUTPUT_RATE_LIMIT  30.0f   /* full travel per second */
+#define EASYTVC_DERIVATIVE_CUTOFF  30.0f   /* Hz */
 /* Tilt (from vertical) at which TVC gives up and centres the gimbal for the rest of the burn. */
 #define EASYTVC_MAX_TILT_DEG       25.0f
 

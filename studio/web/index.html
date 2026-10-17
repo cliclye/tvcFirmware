@@ -15,13 +15,16 @@
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark">↗</span><div>EasyTVC<span>STUDIO / 02</span></div></div>
     <nav aria-label="Workspace">
+      <div class="nav-group">Design</div>
       <button class="nav-item selected" data-tab="rocket">⚙ <span>Rocket setup</span></button>
       <button class="nav-item" data-tab="tune">⌁ <span>Tuning lab</span></button>
+      <div class="nav-group">Test</div>
       <button class="nav-item" data-tab="sim3d">◭ <span>3D flight sim</span></button>
-      <button class="nav-item" data-tab="flash">⇩ <span>Build &amp; flash</span></button>
-      <button class="nav-item" data-tab="live">◉ <span>Live board</span></button>
+      <button class="nav-item" data-tab="flash" data-also="live">⇩ <span>Board</span></button>
+      <div class="nav-group">Fly</div>
       <button class="nav-item" data-tab="checklist">✓ <span>Launch checklist</span></button>
       <button class="nav-item" data-tab="logs">≋ <span>Flight logs</span></button>
+      <div class="nav-group">Help</div>
       <button class="nav-item" data-tab="guide">⊞ <span>Guide</span></button>
     </nav>
     <button id="install-board" class="primary install-button">⇩ Install on board</button>
@@ -47,23 +50,26 @@
       <div class="page-title"><div><h1>Your rocket.</h1><p>Everything the firmware needs to know, written straight into <code>Core/Inc/vehicle_config.h</code>.</p></div>
         <div class="title-actions"><span id="rocket-dirty" class="chip" hidden>Unsaved changes</span><button id="rocket-revert" class="quiet">Revert</button><button id="rocket-save">Save</button><button id="rocket-install" class="primary">Save &amp; install on board <span>↗</span></button></div></div>
       <div id="rocket-banner" class="banner"><strong>Loading</strong><span>Reading vehicle_config.h…</span></div>
+      <div class="section-index" role="navigation" aria-label="Rocket setup sections"><span class="eyebrow">JUMP TO</span>
+        <button data-jump="rs-mounting">Mounting</button><button data-jump="rs-control">Gains</button><button data-jump="rs-launch">Launch</button>
+        <button data-jump="rs-recovery">Recovery</button><button data-jump="rs-vehicle">Vehicle &amp; parts</button><button data-jump="rs-linkage">TVC linkage</button><button data-jump="rs-firmware">Firmware</button></div>
       <div class="workspace-grid">
         <div class="controls">
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">01 / MOUNTING</span><h2>IMU &amp; TVC servos</h2></div><span class="chip">Bench-checked</span></div>
-            <p class="help">Nose axis: the sensor axis that points at the nose. Get it from <em>Live board</em> with the rocket standing nose-up. Servo A tilts the motor about body X, servo B about body Y. Set MIN/MAX at the gimbal's mechanical stops.</p>
+          <article id="rs-mounting" class="card"><div class="card-heading"><div><span class="eyebrow">01 / MOUNTING</span><h2>IMU &amp; TVC servos</h2></div><span class="chip">Bench-checked</span></div>
+            <p class="help">Nose axis: the sensor axis that points at the nose. Check it with the rocket standing nose-up: <em>Board → Live data</em>, or a sensor test replayed from <em>Flight logs</em>. Servo A tilts the motor about body X, servo B about body Y. Set MIN/MAX at the gimbal's mechanical stops.</p>
             <div id="cfg-mount"></div></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">02 / CONTROL</span><h2>Controller gains</h2></div><span class="chip">Both axes</span></div>
+          <article id="rs-control" class="card"><div class="card-heading"><div><span class="eyebrow">02 / CONTROL</span><h2>Controller gains</h2></div><span class="chip">Both axes</span></div>
             <p class="help">Output is a fraction of full gimbal travel per radian of tilt. Try changes in the Tuning lab first.</p>
             <div id="cfg-control" class="field-grid"></div></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">03 / LAUNCH</span><h2>Arming &amp; launch detection</h2></div></div>
+          <article id="rs-launch" class="card"><div class="card-heading"><div><span class="eyebrow">03 / LAUNCH</span><h2>Arming &amp; launch detection</h2></div></div>
             <p class="help">The flight image arms after standing vertical and still for the hold time, and disarms if it's tipped past the disarm angle.</p>
             <div id="cfg-launch" class="field-grid"></div></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">04 / RECOVERY</span><h2>Parachute release servo</h2></div></div>
+          <article id="rs-recovery" class="card"><div class="card-heading"><div><span class="eyebrow">04 / RECOVERY</span><h2>Parachute release servo</h2></div></div>
             <p class="help">It opens at detected apogee, or at the backup time after launch at the latest. Set the backup from the apogee estimate on the right. Channel 0 means no servo (motor ejection).</p>
             <div id="cfg-recovery" class="field-grid"></div></article>
         </div>
         <div class="results">
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">05 / VEHICLE</span><h2>Mass, thrust &amp; apogee</h2></div><span class="chip">Planning only</span></div>
+          <article id="rs-vehicle" class="card"><div class="card-heading"><div><span class="eyebrow">05 / VEHICLE</span><h2>Mass, thrust &amp; apogee</h2></div><span class="chip">Planning only</span></div>
             <p class="help">Weigh the real parts and replace these numbers. The motor preset is approximate, so check the motor's published data (e.g. thrustcurve.org).</p>
             <div id="vehicle-motor" class="field-grid"></div>
             <div id="vehicle-curve" class="vehicle-curve"></div>
@@ -77,8 +83,13 @@
             <div id="vehicle-results" class="metrics wide"></div>
             <div id="vehicle-checks"></div>
             <button id="use-backup" class="quiet">Use estimated apogee time + 0.5 s as parachute backup</button></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">06 / FIRMWARE</span><h2>Build status</h2></div></div>
-            <div id="rocket-build" class="assessment">—</div><button data-goto="flash" class="quiet">Go to Build &amp; flash ↗</button></article>
+          <article id="rs-linkage" class="card"><div class="card-heading"><div><span class="eyebrow">06 / TVC LINKAGE</span><h2>Servo &amp; gimbal geometry</h2></div><span class="chip">mm</span></div>
+            <p class="help">Measure the real horn and lever holes with calipers. The 3D flight sim and the gimbal view use these numbers.</p>
+            <div id="gim-geometry" class="field-grid"></div>
+            <p id="gim-note" class="help"></p>
+            <h3 class="sub">Travel at your endpoints</h3><table id="gim-table" class="gim-table"></table></article>
+          <article id="rs-firmware" class="card"><div class="card-heading"><div><span class="eyebrow">07 / FIRMWARE</span><h2>Build status</h2></div></div>
+            <div id="rocket-build" class="assessment">—</div><button data-goto="flash" class="quiet">Go to Board ↗</button></article>
         </div>
       </div>
     </section>
@@ -105,12 +116,8 @@
       <div class="sim-grid">
         <div class="controls">
           <article class="card sim-inputs-card"><div class="card-heading"><div><span class="eyebrow">CONDITIONS</span><h2>Flight conditions</h2></div><button id="sim-reset" class="quiet small">Defaults</button></div>
-            <p class="help">The rocket's shape, mass, CG, CP and inertia come from <strong>Rocket setup</strong> (parts in mm). Here you set the flight conditions and the TVC linkage.</p>
+            <p class="help">The rocket's shape, mass, CG, CP and inertia come from <strong>Rocket setup</strong> (parts in mm). Here you set the flight conditions; the TVC linkage is in <strong>Rocket setup</strong>.</p>
             <div id="sim-inputs"></div></article>
-          <article class="card"><div class="card-heading"><div><span class="eyebrow">TVC LINKAGE</span><h2>Servo &amp; gimbal geometry</h2></div><span class="chip">mm</span></div>
-            <div id="gim-geometry" class="field-grid"></div>
-            <p id="gim-note" class="help"></p>
-            <h3 class="sub">Travel at your endpoints</h3><table id="gim-table" class="gim-table"></table></article>
         </div>
         <div class="sim-main">
           <article class="card sim-view">
@@ -162,7 +169,8 @@
     </section>
 
     <section id="flash" class="tab" hidden>
-      <div class="page-title"><div><h1>Code to board.</h1><p>Build both images from your saved setup, then flash over USB-C. Every byte is read back to verify.</p></div></div>
+      <div class="page-title"><div><h1>Code to board.</h1><p>Build the images from your saved setup, then flash over USB-C. Every byte is read back to verify.</p></div>
+        <div class="segmented board-switch" role="group" aria-label="Board"><button data-goto="flash" class="selected">Install firmware</button><button data-goto="live">Live data</button></div></div>
       <div class="flash-grid">
         <article class="card"><span class="eyebrow">STEP 1</span><h2>Build firmware</h2>
           <div id="build-status" class="assessment">—</div>
@@ -183,7 +191,8 @@
     </section>
 
     <section id="live" class="tab" hidden>
-      <div class="page-title"><div><h1>Live board.</h1><p>Read the board's telemetry through a 3.3 V USB-UART adapter: adapter RX → <strong>TX2</strong>, TX → <strong>RX2</strong>, GND → GND.</p></div></div>
+      <div class="page-title"><div><h1>Live board.</h1><p>Read the board's telemetry through a 3.3 V USB-UART adapter: adapter RX → <strong>TX2</strong>, TX → <strong>RX2</strong>, GND → GND.</p></div>
+        <div class="segmented board-switch" role="group" aria-label="Board"><button data-goto="flash">Install firmware</button><button data-goto="live" class="selected">Live data</button></div></div>
       <article class="card"><div class="connection-controls"><select id="live-port" aria-label="Serial port"></select><button id="live-refresh">Refresh</button><button id="live-connect" class="primary">Connect</button><button id="live-disconnect" disabled>Disconnect</button></div><p id="live-state" class="help">Not connected. Read-only: Studio never sends anything to the board.</p></article>
       <div class="live-grid">
         <article class="card"><div class="card-heading"><div><span class="eyebrow">STATUS · 1 Hz</span><h2 id="live-headline">—</h2></div><span id="live-age" class="chip">no data</span></div><div id="live-tiles" class="telemetry-grid"></div></article>
@@ -223,12 +232,14 @@
       <div class="page-title"><div><h1>From setup to landing.</h1><p>The short version of <code>docs/flight-guide.md</code>.</p></div></div>
       <article class="card guide">
         <h2>The workflow</h2>
-        <ol><li><strong>Rocket setup.</strong> Enter your servos, endpoints and parts, and estimate apogee. Save.</li>
-          <li><strong>Build &amp; flash</strong> the <em>bench</em> image. Power-cycle.</li>
-          <li><strong>Live board</strong> with a USB-UART: detect the nose axis, then do the tilt test. When the nose leans one way, the nozzle must swing the opposite way. Fix channels and directions in Rocket setup, save, rebuild, reflash.</li>
-          <li><strong>Launch checklist:</strong> finish the bench section, then flash the <em>flight</em> image.</li>
+        <p>The sidebar follows this order: <strong>Design</strong> the rocket, <strong>Test</strong> it in the simulator and on the board, then <strong>Fly</strong> and read the logs.</p>
+        <ol><li><strong>Design → Rocket setup.</strong> Enter your servos, endpoints, parts and the TVC linkage (measure with calipers), and estimate apogee. Save. The <strong>Tuning lab</strong> is a quick 1-axis playground for gains.</li>
+          <li><strong>Test → 3D flight sim.</strong> Run flights and 40 random flights with your real numbers; <em>Fly live</em> lets you kick, gust or steer it.</li>
+          <li><strong>Test → Board → Install firmware</strong>, or the <em>◎ Sensor test</em> button first: it checks every sensor and logs them to the SD card.</li>
+          <li>Install the <em>bench</em> image and check the nose axis and the tilt test: when the nose leans one way, the nozzle must swing the opposite way. Use <strong>Board → Live data</strong> with a USB-UART, or record on the SD card and use <em>Replay in 3D</em> in Flight logs. Fix channels and directions in Rocket setup, save, reinstall.</li>
+          <li><strong>Fly → Launch checklist:</strong> finish the bench section, then install the <em>flight</em> image.</li>
           <li>At the pad: power on, hands off. Solid green and a chirp every second means ARMED. Red, or a long beep every 2 s, means don't launch.</li>
-          <li><strong>Flight logs:</strong> put the SD card in your Mac and read the session.</li></ol>
+          <li><strong>Fly → Flight logs:</strong> put the SD card in your Mac, read or save every session, see the graphs, and <em>Replay in 3D</em>.</li></ol>
         <h2>Safety</h2>
         <p>Use 2S LiPo only (the servo rail is a linear 5 V regulator). Never connect pyro channel P2. Nothing here has flown before your first flight, so treat it as a test flight: clear area, low wind, a stand that holds the rocket vertical.</p>
         <h2>Tools you'll need on the Mac</h2>

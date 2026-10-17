@@ -106,7 +106,7 @@ function currentState(now) {
   }
   if (gim.source === "live") {
     const bench = liveStatus && liveStatus.latest && liveStatus.latest.bench;
-    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect the USB-UART on Live board)"};
+    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect the USB-UART under Board → Live data)"};
     return {servos: [servoInfo(0, bench.pulse_a), servoInfo(1, bench.pulse_b)], label: `Live board · tilt X ${bench.tilt_x.toFixed(1)}° Y ${bench.tilt_y.toFixed(1)}°`};
   }
   if (gim.sweep) {
