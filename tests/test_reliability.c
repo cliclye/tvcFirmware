@@ -46,10 +46,20 @@ static void controller_faults_and_axes(void)
     EasyTVCQuaternion q = {.w = cosf(0.05f), .x = sinf(0.05f)};
     EasyTVCControlOutput out = EasyTVC_ControllerStep(&c, &s, &q, 0, 0, 0.005f, true, true, true);
     assert(out.enabled && out.command[0] < 0 && fabsf(out.command[1]) < 0.00001f);
+    /* A missed sample (same sample time again) holds the last command: no fault, TVC stays on. */
+    const float first = out.command[0];
     out = EasyTVC_ControllerStep(&c, &s, &q, 5, 0, 0.005f, true, true, true);
+    assert(!out.fault && out.enabled && out.command[0] == first);
+    out = EasyTVC_ControllerStep(&c, &s, &q, 10, 0, 0.005f, false, true, true);   /* unhealthy tick too */
+    assert(!out.fault && out.enabled && out.command[0] == first);
+    out = EasyTVC_ControllerStep(&c, &s, &q, 15, 15, 0.005f, true, true, true);   /* samples are back */
+    assert(!out.fault && out.enabled && out.command[0] < 0);
+    /* ... but a problem that lasts EASYTVC_CONTROL_HOLD_MS latches, and faults do not silently clear */
+    for (uint32_t t = 20; t <= 20 + EASYTVC_CONTROL_HOLD_MS; t += 5)
+        out = EasyTVC_ControllerStep(&c, &s, &q, t, 15, 0.005f, true, true, true);
     assert(out.fault && !out.enabled && out.pulse_us[0] == 1500);
-    out = EasyTVC_ControllerStep(&c, &s, &q, 10, 10, 0.005f, true, true, true);
-    assert(out.fault && !out.enabled); /* Faults do not silently clear. */
+    out = EasyTVC_ControllerStep(&c, &s, &q, 200, 200, 0.005f, true, true, true);
+    assert(out.fault && !out.enabled);
     EasyTVC_ControllerReset(&c);
     q = (EasyTVCQuaternion){.w = cosf(0.5f), .z = sinf(0.5f)};
     out = EasyTVC_ControllerStep(&c, &s, &q, 0, 0, 0.005f, true, true, true);
@@ -61,7 +71,8 @@ static void controller_faults_and_axes(void)
     assert(EasyTVC_ControllerStep(&c, &s, &q, 0, 0, 0.005f, true, true, true).fault);
     EasyTVC_ControllerReset(&c);
     q = (EasyTVCQuaternion){.w = 1};
-    assert(EasyTVC_ControllerStep(&c, &s, &q, 30, 0, 0.005f, true, true, true).fault);
+    assert(!EasyTVC_ControllerStep(&c, &s, &q, 30, 0, 0.005f, true, true, true).fault);   /* stale: held */
+    assert(EasyTVC_ControllerStep(&c, &s, &q, 30 + EASYTVC_CONTROL_HOLD_MS, 0, 0.005f, true, true, true).fault);
     EasyTVC_ControllerReset(&c);
     assert(!EasyTVC_ControllerStep(&c, &s, &q, UINT32_MAX - 2, UINT32_MAX - 2,
         0.005f, true, true, true).fault);

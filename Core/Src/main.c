@@ -12,6 +12,13 @@
 #include "data_logger.h"
 #include "app.h"
 #include "pad_arm.h"
+#include "link.h"
+#include "servo_test.h"
+#include "recovery_charge.h"
+#include "tunables.h"
+#include "pyro_test.h"
+#include "adc_driver.h"
+#include "version.h"
 #include "vehicle_config.h"
 
 #include <math.h>
@@ -44,12 +51,18 @@
     (EASYTVC_CHUTE_CHANNEL == EASYTVC_SERVO_A_CHANNEL || EASYTVC_CHUTE_CHANNEL == EASYTVC_SERVO_B_CHANNEL)
 #error "The parachute servo cannot share a channel with a TVC servo"
 #endif
+#if EASYTVC_PYRO_CHUTE_CHANNEL != 0 && EASYTVC_PYRO_CHUTE_CHANNEL != 1 && EASYTVC_PYRO_CHUTE_CHANNEL != 3
+#error "The parachute charge goes on P1 or P3 (0 = none). P2 is the SWD pin and can't be used."
+#endif
 
 #define LOOP_HZ              200U
 #define LOOP_PERIOD_US       (1000000UL / LOOP_HZ)
 #define BARO_DIVIDER         4U      /* 50 Hz */
 #define LOG_DIVIDER_PAD      20U     /* 10 Hz SD records on the pad / bench */
 #define LOG_DIVIDER_FLIGHT   2U      /* 100 Hz SD records from arming until landing */
+#define TLM_DIVIDER_PAD      20U     /* 10 Hz ground-link telemetry on the pad / bench */
+#define TLM_DIVIDER_FLIGHT   10U     /* 20 Hz from launch until landing */
+#define LINK_RX_BYTES_PER_TICK 64U   /* bounded work per tick: at most one request is answered */
 #define TELEMETRY_DIVIDER    20U     /* 10 Hz serial */
 #define STATUS_DIVIDER       200U    /* 1 Hz serial status line */
 #define FLUSH_DIVIDER        200U    /* queue the partial sector every second */
@@ -89,6 +102,254 @@ static EasyTVCController bench_controller;
 
 static float gyro_bias[3];
 static float baro_reference_pa;
+
+static int32_t milli(float value)
+{
+    return (int32_t)lroundf(value * 1000.0f);
+}
+
+/* ---- ground link (USART2): telemetry out, read-only requests in (docs/wireless-telemetry.md) ---- */
+static EasyTVCLink ground_link;
+static EasyTVCCharge charge;          /* parachute ejection charge (recovery_charge.h) */
+static EasyTVCChargeConfig charge_config;   /* from `tun` */
+static EasyTVCServoTest servo_test;   /* TVC gimbal test from the ground, IDLE only (servo_test.h) */
+static EasyTVCPyroTest pyro_test;     /* pyro channel ground test, IDLE + not armed only (pyro_test.h) */
+static uint32_t beep_test_until_ms;   /* LED + buzzer check from the ground */
+static EasyTVCPadArm pad;
+static uint32_t tick;
+
+/* Settings that can change over the link (tunables.h): `tun` is what runs, compiled from
+ * vehicle_config.h unless a set sent over the link is stored on the SD card for this install. */
+static EasyTVCTunables tun, tun_compiled;
+static bool tun_from_link;
+static uint32_t tun_sequence;
+static const EasyTVCServoLimits servo_limits = {
+    {EASYTVC_SERVO_A_MIN_US, EASYTVC_SERVO_B_MIN_US}, {EASYTVC_SERVO_A_MAX_US, EASYTVC_SERVO_B_MAX_US}};
+static bool store_tunables(const EasyTVCTunables *t, const char **error);
+static bool clear_tunables(const char **error);
+static bool apply_tunables_now(const EasyTVCTunables *t);
+
+/* What the request handler may report; refreshed every tick by the loop. */
+static struct {
+    EasyTVCFlightState state;
+    bool armed, recovery, imu_ok, baro_ok;
+} link_view;
+
+/* one SD sector cached for LOGREAD: four 128-byte replies per card read */
+static uint8_t log_cache[DATA_LOGGER_SECTOR_SIZE];
+static uint32_t log_cache_sector = 0xFFFFFFFFu;
+
+static bool link_write(void *context, const char *frame, size_t length)
+{
+    (void)context;
+    return EasyTVC_USART2_QueueAll((const uint8_t *)frame, length);
+}
+
+static bool parse_two_uints(const char *s, uint32_t *a, uint32_t *b)
+{
+    uint64_t v[2] = {0, 0};
+    unsigned i = 0, digits = 0;
+    for (; *s; ++s) {
+        if (*s == ',' && i == 0U && digits) { i = 1; digits = 0; continue; }
+        if (*s < '0' || *s > '9') return false;
+        v[i] = v[i] * 10U + (uint64_t)(*s - '0');
+        if (v[i] > 0xFFFFFFFFull) return false;
+        ++digits;
+    }
+    if (i != 1U || !digits) return false;
+    *a = (uint32_t)v[0];
+    *b = (uint32_t)v[1];
+    return true;
+}
+
+/* Requests. The link module has already refused everything but HELLO/PING when the rocket is
+ * not IDLE. The only commands that change anything are the TVC gimbal test (SERVO, SWEEP, CENTER,
+ * TRIM): servos A/B only, IDLE only, ended and un-trimmed the moment the state leaves IDLE. */
+static bool link_handle(void *context, const char *command, const char *payload, char *out, size_t capacity)
+{
+    (void)context;
+    EasyTVCTextLine line = {out, 0, capacity};
+    if (!strcmp(command, "HELLO")) {
+        EasyTVC_LineStr(&line, "EASYTVC,2,");
+        EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? "bench," : "flight,");
+        EasyTVC_LineStr(&line, EASYTVC_FW_VERSION ",");
+        EasyTVC_LineStr(&line, EASYTVC_GIT_HASH);
+        return true;
+    }
+    if (!strcmp(command, "PING")) {
+        EasyTVC_LineStr(&line, "PONG");
+        EasyTVC_LineField(&line, (int32_t)STM32_Millis());
+        return true;
+    }
+    if (!strcmp(command, "STATUS")) {
+        EasyTVC_LineInt(&line, (int32_t)link_view.state);
+        EasyTVC_LineField(&line, link_view.armed);
+        EasyTVC_LineField(&line, link_view.recovery);
+        EasyTVC_LineField(&line, link_view.imu_ok);
+        EasyTVC_LineField(&line, link_view.baro_ok);
+        EasyTVC_LineField(&line, logger.initialized);
+        return true;
+    }
+    if (!strcmp(command, "CFG")) {
+        /* the settings in use: compiled into this image (vehicle_config.h), with the tunable ones
+         * replaced by a set sent over the link if one is stored (last field: 1) */
+        const int32_t v[] = {
+            milli(tun.kp), milli(tun.ki), milli(tun.kd), milli(tun.integrator_limit),
+            milli(tun.output_rate_limit), milli(tun.derivative_cutoff_hz), milli(tun.max_tilt_deg),
+            EASYTVC_SERVO_A_CHANNEL, EASYTVC_SERVO_A_MIN_US, tun.center_us[0], EASYTVC_SERVO_A_MAX_US,
+            EASYTVC_SERVO_A_DIRECTION, EASYTVC_SERVO_B_CHANNEL, EASYTVC_SERVO_B_MIN_US, tun.center_us[1],
+            EASYTVC_SERVO_B_MAX_US, EASYTVC_SERVO_B_DIRECTION, EASYTVC_SERVO_RATE_HZ, milli(EASYTVC_LAUNCH_ACCEL_G),
+            (int32_t)EASYTVC_LAUNCH_CONFIRM_MS, (int32_t)EASYTVC_TVC_ENABLE_DELAY_MS, EASYTVC_CHUTE_CHANNEL,
+            EASYTVC_CHUTE_CLOSED_US, EASYTVC_CHUTE_OPEN_US, (int32_t)tun.chute_backup_ms,
+            (int32_t)EASYTVC_ARM_HOLD_MS, milli(EASYTVC_ARM_MAX_TILT_DEG), milli(EASYTVC_DISARM_TILT_DEG),
+            EASYTVC_NOSE_AXIS, EASYTVC_LED_ACTIVE_LOW, EASYTVC_LED_BRIGHTNESS_PCT, EASYTVC_REQUIRE_SD,
+            EASYTVC_PYRO_CHUTE_CHANNEL, (int32_t)tun.pyro_delay_ms, (int32_t)tun.pyro_fire_ms,
+            EASYTVC_PYRO_OUTPUTS_COMPILED_IN, milli(tun.pyro_deploy_alt_m), (int32_t)tun.pyro_backup_ms,
+            tun_from_link,
+        };
+        for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); ++i) {
+            if (i) EasyTVC_LineStr(&line, ",");
+            EasyTVC_LineInt(&line, v[i]);
+        }
+        return line.used + 1U < capacity;
+    }
+    if (!strcmp(command, "SETCFG")) {
+        /* new tunables (tunables.h order): checked, stored on the card, read back, then used.
+         * The reply is the set now in use, so the ground can compare what it sent. */
+        EasyTVCTunables t;
+        const char *error = "COMMAND";
+        if (!EasyTVC_TunablesParse(payload, &t)) { EasyTVC_LineStr(&line, "PAYLOAD"); return false; }
+        if (!EasyTVC_TunablesValid(&t, &servo_limits)) { EasyTVC_LineStr(&line, "RANGE"); return false; }
+        if (pad.armed || link_view.state != EASYTVC_FLIGHT_IDLE) { EasyTVC_LineStr(&line, "ARMED"); return false; }
+        if (!store_tunables(&t, &error)) { EasyTVC_LineStr(&line, error); return false; }
+        if (!apply_tunables_now(&t)) { EasyTVC_LineStr(&line, "ARMED"); return false; }
+        tun_from_link = true;
+        return EasyTVC_TunablesFormat(&tun, out, capacity) > 0U;
+    }
+    if (!strcmp(command, "CFGRESET")) {
+        const char *error = "COMMAND";
+        if (pad.armed || link_view.state != EASYTVC_FLIGHT_IDLE) { EasyTVC_LineStr(&line, "ARMED"); return false; }
+        if (!clear_tunables(&error)) { EasyTVC_LineStr(&line, error); return false; }
+        if (!apply_tunables_now(&tun_compiled)) { EasyTVC_LineStr(&line, "ARMED"); return false; }
+        tun_from_link = false;
+        return EasyTVC_TunablesFormat(&tun, out, capacity) > 0U;
+    }
+    if (!strcmp(command, "PYROARM") || !strcmp(command, "PYROFIRE")) {
+        /* pyro channel ground test with a test load (pyro_test.h): IDLE and not armed only */
+        uint32_t a = 0, b = 0, c = 0;
+        const char *p = payload, *error = "PAYLOAD";
+        uint32_t *fields[3] = {&a, &b, &c};
+        unsigned n = 0;
+        while (n < 3U) {
+            if (*p < '0' || *p > '9') break;
+            while (*p >= '0' && *p <= '9') { *fields[n] = *fields[n] * 10U + (uint32_t)(*p - '0'); if (*fields[n] > 100000U) break; ++p; }
+            ++n;
+            if (*p != ',') break;
+            ++p;
+        }
+        const bool arm = command[4] == 'A';
+        if (*p != '\0' || n != (arm ? 1U : 3U)) { EasyTVC_LineStr(&line, "PAYLOAD"); return false; }
+        const uint32_t now = STM32_Millis();
+        const bool ok = arm ? EasyTVC_PyroTestArm(&pyro_test, (uint8_t)a, link_view.state, pad.armed, now, tick, &error)
+                            : EasyTVC_PyroTestFire(&pyro_test, (uint8_t)a, (uint16_t)b, c, link_view.state, pad.armed, now, &error);
+        if (!ok) { EasyTVC_LineStr(&line, error); return false; }
+        EasyTVC_LineInt(&line, (int32_t)a);
+        EasyTVC_LineField(&line, arm ? pyro_test.code : (int32_t)c);
+        EasyTVC_LineField(&line, !EASYTVC_PYRO_OUTPUTS_COMPILED_IN);      /* 1: locked, the pin stays off */
+        EasyTVC_LineField(&line, EasyTVC_GPIO_ContinuityBits());
+        return true;
+    }
+    if (!strcmp(command, "BEEP")) {
+        /* LED + buzzer check: about 2 s of red/green/blue and beeps */
+        beep_test_until_ms = STM32_Millis() + 2000U;
+        EasyTVC_LineInt(&line, 2000);
+        return true;
+    }
+    if (!strcmp(command, "LOGINFO")) {
+        EasyTVC_LineInt(&line, logger.initialized);
+        EasyTVC_LineField(&line, (int32_t)logger.session);
+        EasyTVC_LineField(&line, (int32_t)DATA_LOGGER_MAX_SESSIONS);
+        EasyTVC_LineField(&line, (int32_t)DATA_LOGGER_SESSION_SECTORS);
+        return true;
+    }
+    if (!strcmp(command, "LOGREAD")) {
+        uint32_t session, offset;
+        if (!parse_two_uints(payload, &session, &offset)) { EasyTVC_LineStr(&line, "PAYLOAD"); return false; }
+        const uint32_t region = DATA_LOGGER_SESSION_SECTORS * DATA_LOGGER_SECTOR_SIZE;
+        if (!logger.initialized || session > logger.session || logger.session - session >= DATA_LOGGER_MAX_SESSIONS ||
+            offset >= region || offset % EASYTVC_LINK_LOG_CHUNK != 0U) { EasyTVC_LineStr(&line, "RANGE"); return false; }
+        const uint32_t sector = DATA_LOGGER_FIRST_SESSION + (session % DATA_LOGGER_MAX_SESSIONS) * DATA_LOGGER_SESSION_SECTORS +
+                                offset / DATA_LOGGER_SECTOR_SIZE;
+        if (sector != log_cache_sector) {
+            if (!DataLogger_ReadSector(&logger, sector, log_cache)) {
+                log_cache_sector = 0xFFFFFFFFu;
+                EasyTVC_LineStr(&line, "BUSY");   /* the logger is writing: the ground retries */
+                return false;
+            }
+            log_cache_sector = sector;
+        }
+        const uint8_t *chunk = log_cache + offset % DATA_LOGGER_SECTOR_SIZE;
+        static const char hex[] = "0123456789abcdef";
+        const uint32_t crc = EasyTVC_Crc32(chunk, EASYTVC_LINK_LOG_CHUNK);
+        char crc_text[9];
+        for (unsigned i = 0; i < 8U; ++i) crc_text[i] = hex[(crc >> (28U - 4U * i)) & 15U];
+        crc_text[8] = '\0';
+        EasyTVC_LineInt(&line, (int32_t)session);
+        EasyTVC_LineField(&line, (int32_t)offset);
+        EasyTVC_LineField(&line, (int32_t)EASYTVC_LINK_LOG_CHUNK);
+        EasyTVC_LineStr(&line, ",");
+        EasyTVC_LineStr(&line, crc_text);
+        EasyTVC_LineStr(&line, ",");
+        char b64[EASYTVC_LINK_LOG_CHUNK / 3U * 4U + 8U];
+        if (!EasyTVC_Base64(chunk, EASYTVC_LINK_LOG_CHUNK, b64, sizeof(b64))) return false;
+        EasyTVC_LineStr(&line, b64);
+        return line.used + 1U < capacity;
+    }
+    if (!strcmp(command, "SERVO") || !strcmp(command, "SWEEP") || !strcmp(command, "CENTER") || !strcmp(command, "TRIM")) {
+        const char *error;
+        if (!EasyTVC_ServoTestCommand(&servo_test, &app.settings, link_view.state, command, payload,
+                                      STM32_Millis(), &error)) {
+            EasyTVC_LineStr(&line, error);
+            return false;
+        }
+        EasyTVC_LineInt(&line, (int32_t)servo_test.mode);
+        EasyTVC_LineField(&line, servo_test.trim_us[0]);
+        EasyTVC_LineField(&line, servo_test.trim_us[1]);
+        return true;
+    }
+    EasyTVC_LineStr(&line, "COMMAND");
+    return false;
+}
+
+static const char *state_event(EasyTVCFlightState state)
+{
+    switch (state) {
+    case EASYTVC_FLIGHT_IDLE: return "IDLE";
+    case EASYTVC_FLIGHT_ARMED: return "ARMED";
+    case EASYTVC_FLIGHT_BOOST: return "LAUNCH_DETECTED";
+    case EASYTVC_FLIGHT_COAST: return "BURNOUT";
+    case EASYTVC_FLIGHT_APOGEE: return "APOGEE";
+    case EASYTVC_FLIGHT_DESCENT: return "DESCENT";
+    case EASYTVC_FLIGHT_LANDED: return "LANDED";
+    default: return "FAULT";
+    }
+}
+
+/* Events go out twice (now and ~15 ms later): the link drops frames, the ground de-duplicates. */
+static struct { char text[40]; uint8_t repeat_in; } pending_event;
+
+static void send_event(uint32_t now_ms, const char *text)
+{
+    char payload[48];
+    EasyTVCTextLine line = {payload, 0, sizeof(payload)};
+    EasyTVC_LineInt(&line, (int32_t)now_ms);
+    EasyTVC_LineStr(&line, ",");
+    EasyTVC_LineStr(&line, text);
+    (void)EasyTVC_LinkSend(&ground_link, "EVT", payload);
+    memcpy(pending_event.text, payload, sizeof(pending_event.text) - 1U);
+    pending_event.text[sizeof(pending_event.text) - 1U] = '\0';
+    pending_event.repeat_in = 3;
+}
 
 static int16_t clamp_i16(float value)
 {
@@ -227,10 +488,6 @@ static bool calibrate_baro(uint32_t *last_us)
     return true;
 }
 
-static int32_t milli(float value)
-{
-    return (int32_t)lroundf(value * 1000.0f);
-}
 
 /* ---- outputs ---- */
 
@@ -302,34 +559,130 @@ static bool booted_in_motion(void)
 
 /* ---- configuration ---- */
 
-static bool apply_vehicle_config(uint32_t now_ms)
+static EasyTVCTunables compiled_tunables(void)
+{
+    return (EasyTVCTunables){
+        .kp = EASYTVC_KP, .ki = EASYTVC_KI, .kd = EASYTVC_KD, .integrator_limit = EASYTVC_INTEGRATOR_LIMIT,
+        .output_rate_limit = EASYTVC_OUTPUT_RATE_LIMIT, .derivative_cutoff_hz = EASYTVC_DERIVATIVE_CUTOFF,
+        .max_tilt_deg = EASYTVC_MAX_TILT_DEG, .center_us = {EASYTVC_SERVO_A_CENTER_US, EASYTVC_SERVO_B_CENTER_US},
+        .chute_backup_ms = EASYTVC_CHUTE_BACKUP_MS, .pyro_deploy_alt_m = EASYTVC_PYRO_DEPLOY_ALT_M,
+        .pyro_delay_ms = EASYTVC_PYRO_CHUTE_DELAY_MS, .pyro_fire_ms = EASYTVC_PYRO_FIRE_MS,
+        .pyro_backup_ms = EASYTVC_PYRO_BACKUP_MS,
+    };
+}
+
+/* After the SD card is up: use a stored set if one was made for this install. */
+static void load_tunables(void)
+{
+    tun_compiled = compiled_tunables();
+    tun = tun_compiled;
+    tun_from_link = false;
+    tun_sequence = 0;
+    static uint8_t sector[DATA_LOGGER_SECTOR_SIZE];
+    const uint32_t base = EasyTVC_TunablesCrc(&tun_compiled);
+    for (uint32_t i = 0; i < 2U; ++i) {
+        EasyTVCTunables t;
+        uint32_t sequence;
+        if (DataLogger_ReadReserved(&logger, EASYTVC_TUNABLES_SECTOR + i, sector) &&
+            EasyTVC_TunablesDecode(sector, base, &t, &sequence) && EasyTVC_TunablesValid(&t, &servo_limits) &&
+            (!tun_from_link || sequence > tun_sequence)) {
+            tun = t;
+            tun_from_link = true;
+            tun_sequence = sequence;
+        }
+    }
+}
+
+/* Store `t` over the older copy, read it back and check it. NO_SD, BUSY (a log write is in
+ * flight: the ground retries), WRITE, READBACK. */
+static bool store_tunables(const EasyTVCTunables *t, const char **error)
+{
+    static uint8_t sector[DATA_LOGGER_SECTOR_SIZE];
+    if (!logger.initialized) { *error = "NO_SD"; return false; }
+    if (logger.write_in_flight) { *error = "BUSY"; return false; }
+    const uint32_t base = EasyTVC_TunablesCrc(&tun_compiled), sequence = tun_sequence + 1U;
+    const uint32_t where = EASYTVC_TUNABLES_SECTOR + (sequence & 1U);
+    EasyTVC_TunablesEncode(t, base, sequence, sector);
+    if (!DataLogger_WriteReserved(&logger, where, sector)) { *error = "WRITE"; return false; }
+    EasyTVCTunables back;
+    uint32_t back_sequence;
+    memset(sector, 0, sizeof(sector));
+    if (!DataLogger_ReadReserved(&logger, where, sector) || !EasyTVC_TunablesDecode(sector, base, &back, &back_sequence) ||
+        back_sequence != sequence || EasyTVC_TunablesCrc(&back) != EasyTVC_TunablesCrc(t)) {
+        *error = "READBACK";
+        return false;
+    }
+    tun_sequence = sequence;
+    return true;
+}
+
+/* Forget a stored set: both copies cleared, back to the compiled values. */
+static bool clear_tunables(const char **error)
+{
+    static uint8_t sector[DATA_LOGGER_SECTOR_SIZE];
+    if (!logger.initialized) { *error = "NO_SD"; return false; }
+    if (logger.write_in_flight) { *error = "BUSY"; return false; }
+    memset(sector, 0, sizeof(sector));
+    for (uint32_t i = 0; i < 2U; ++i) {
+        if (!DataLogger_WriteReserved(&logger, EASYTVC_TUNABLES_SECTOR + i, sector)) { *error = "WRITE"; return false; }
+    }
+    tun_sequence = 0;
+    return true;
+}
+
+static EasyTVCSettings settings_from(const EasyTVCTunables *t)
 {
     EasyTVCSettings s;
     EasyTVC_SettingsDefault(&s);
     for (unsigned i = 0; i < 2U; ++i) {
         s.axis[i] = (EasyTVCPidConfig){
-            .kp = EASYTVC_KP, .ki = EASYTVC_KI, .kd = EASYTVC_KD,
-            .integrator_limit = EASYTVC_INTEGRATOR_LIMIT, .output_limit = 1.0f,
-            .output_rate_limit = EASYTVC_OUTPUT_RATE_LIMIT,
-            .derivative_cutoff_hz = EASYTVC_DERIVATIVE_CUTOFF,
+            .kp = t->kp, .ki = t->ki, .kd = t->kd,
+            .integrator_limit = t->integrator_limit, .output_limit = 1.0f,
+            .output_rate_limit = t->output_rate_limit,
+            .derivative_cutoff_hz = t->derivative_cutoff_hz,
         };
     }
     s.servo[0] = (EasyTVCServoSettings){
-        .minimum_us = EASYTVC_SERVO_A_MIN_US, .center_us = EASYTVC_SERVO_A_CENTER_US,
+        .minimum_us = EASYTVC_SERVO_A_MIN_US, .center_us = t->center_us[0],
         .maximum_us = EASYTVC_SERVO_A_MAX_US, .channel = EASYTVC_SERVO_A_CHANNEL,
         .direction = EASYTVC_SERVO_A_DIRECTION};
     s.servo[1] = (EasyTVCServoSettings){
-        .minimum_us = EASYTVC_SERVO_B_MIN_US, .center_us = EASYTVC_SERVO_B_CENTER_US,
+        .minimum_us = EASYTVC_SERVO_B_MIN_US, .center_us = t->center_us[1],
         .maximum_us = EASYTVC_SERVO_B_MAX_US, .channel = EASYTVC_SERVO_B_CHANNEL,
         .direction = EASYTVC_SERVO_B_DIRECTION};
-    s.maximum_tilt_deg = EASYTVC_MAX_TILT_DEG;
+    s.maximum_tilt_deg = t->max_tilt_deg;
+    return s;
+}
 
+static void charge_from(const EasyTVCTunables *t)
+{
+    charge_config = (EasyTVCChargeConfig){
+        .channel = EASYTVC_PYRO_CHUTE_CHANNEL, .delay_ms = t->pyro_delay_ms, .backup_ms = t->pyro_backup_ms,
+        .fire_ms = t->pyro_fire_ms, .deploy_alt_m = t->pyro_deploy_alt_m};
+}
+
+static bool apply_vehicle_config(uint32_t now_ms)
+{
+    const EasyTVCSettings s = settings_from(&tun);
+    charge_from(&tun);
     app.flight_config.launch_accel_g = EASYTVC_LAUNCH_ACCEL_G;
     app.flight_config.launch_confirm_ms = EASYTVC_LAUNCH_CONFIRM_MS;
     app.flight_config.tvc_enable_delay_ms = EASYTVC_TVC_ENABLE_DELAY_MS;
-    app.flight_config.failsafe_apogee_ms = EASYTVC_CHUTE_BACKUP_MS;
+    app.flight_config.failsafe_apogee_ms = tun.chute_backup_ms;
     EasyTVC_FlightInit(&app.flight, &app.flight_config, now_ms);
     return EasyTVC_AppApplySettings(&app, &s, false);
+}
+
+/* A new set from the ground, on the pad (IDLE, not armed): used from the next tick. */
+static bool apply_tunables_now(const EasyTVCTunables *t)
+{
+    const EasyTVCSettings s = settings_from(t);
+    if (!EasyTVC_AppApplySettings(&app, &s, pad.armed)) return false;   /* refuses unless IDLE and disarmed */
+    tun = *t;
+    charge_from(&tun);
+    app.flight_config.failsafe_apogee_ms = tun.chute_backup_ms;
+    app.flight.config.failsafe_apogee_ms = tun.chute_backup_ms;
+    return true;
 }
 
 static void build_header(char *buffer, size_t capacity, bool recovery_boot)
@@ -403,6 +756,10 @@ int main(void)
     EasyTVC_USART2_Init();
     EasyTVC_UART4_Init();
     EasyTVC_HardwareBus_Init();
+    EasyTVC_ADC_Init();
+    EasyTVC_LinkInit(&ground_link, link_write, link_handle, 0);
+    EasyTVC_ServoTestInit(&servo_test);
+    EasyTVC_ChargeInit(&charge);
 
     EasyTVC_Bmi088Init(&bmi088, EasyTVC_GetBMI088_AccelBus(), EasyTVC_GetBMI088_GyroBus());
     EasyTVC_Bme280Init(&bme280, EasyTVC_GetBME280Bus());
@@ -431,6 +788,7 @@ int main(void)
     char header[480];   /* the logger keeps up to 495 characters */
     build_header(header, sizeof(header), recovery_boot);
     (void)DataLogger_Init(&logger, header);   /* SD init: can take ~1 s */
+    load_tunables();                          /* settings sent over the link, if stored for this install */
 
     EasyTVC_GPIO_LedSet(0, imu_ok);
     EasyTVC_GPIO_LedSet(1, baro_ok);
@@ -447,6 +805,7 @@ int main(void)
     }
 
     EasyTVC_AppInit(&app, STM32_Millis());
+    app.skip_text_telemetry = true;      /* the ground link sends TLM frames instead */
     const bool config_ok = apply_vehicle_config(STM32_Millis());
 #if EASYTVC_BENCH_MODE
     EasyTVC_ControllerReset(&bench_controller);
@@ -455,7 +814,7 @@ int main(void)
     gyro_cal_ok = imu_ok;
 #endif
 
-    uint32_t tick = 0;
+    tick = 0;
     uint32_t last_imu_good_ms = STM32_Millis();
     uint32_t last_baro_good_ms = STM32_Millis();
     uint32_t last_imu_retry_ms = 0;
@@ -463,7 +822,6 @@ int main(void)
     unsigned imu_failures = 0;
     float altitude_m = 0.0f;
 
-    EasyTVCPadArm pad;
     EasyTVC_PadArmInit(&pad);
     const EasyTVCPadArmConfig pad_config = {
         .hold_ms = EASYTVC_ARM_HOLD_MS,
@@ -477,10 +835,22 @@ int main(void)
     uint32_t launch_ms = 0;
     bool chute_open = recovery_boot;
 
+    /* ground-link bookkeeping */
+    EasyTVCFlightState reported_state = EASYTVC_FLIGHT_IDLE;
+    bool reported_imu_ok = imu_ok, reported_chute = chute_open, reported_charge = false;
+    uint8_t reported_test = 0;
+    uint32_t loop_max_us = 0, late_ticks = 0, imu_errors = 0;
+    if (recovery_boot) send_event(STM32_Millis(), "RECOVERY_BOOT");
+    if (!logger.initialized) send_event(STM32_Millis(), "SD_MISSING");
+
     for (;;) {
         const uint32_t elapsed_us = wait_for_tick(&last_us);
+        const uint32_t tick_start_us = STM32_Micros();
         const uint32_t now_ms = STM32_Millis();
         ++tick;
+        if (elapsed_us > LOOP_PERIOD_US + LOOP_PERIOD_US / 2U) {
+            ++late_ticks;
+        }
         /* Blocking sensor recovery (tens of ms) is only allowed before arming. */
         const bool on_ground_idle = app.flight.state == EASYTVC_FLIGHT_IDLE;
 
@@ -491,8 +861,11 @@ int main(void)
                 last_imu_good_ms = now_ms;
                 imu_failures = 0;
                 imu_fresh = true;
-            } else if (++imu_failures >= IMU_FAIL_RETRY_COUNT) {
-                imu_ok = false;
+            } else {
+                ++imu_errors;
+                if (++imu_failures >= IMU_FAIL_RETRY_COUNT) {
+                    imu_ok = false;
+                }
             }
         } else if (on_ground_idle && (uint32_t)(now_ms - last_imu_retry_ms) >= IMU_RETRY_MS) {
             last_imu_retry_ms = now_ms;
@@ -573,6 +946,7 @@ int main(void)
         uint16_t pulse_b = output.control.pulse_us[1];
         bool tvc_active = output.control.enabled;
         bool ctrl_fault = output.control.fault;
+        float command[2] = {output.control.command[0], output.control.command[1]};
 #if EASYTVC_BENCH_MODE
         {
             const bool healthy = input.sensors_healthy && input.sensor_age_ms <= 20U &&
@@ -582,13 +956,15 @@ int main(void)
                 input.dt_s, healthy, true, true);
             pulse_a = bench.pulse_us[0];
             pulse_b = bench.pulse_us[1];
+            command[0] = bench.command[0];
+            command[1] = bench.command[1];
             tvc_active = bench.enabled;
             ctrl_fault = bench.fault;
             if (bench.fault) {
                 /* past max tilt or a bad sample: centre, and start again next tick */
                 EasyTVC_ControllerReset(&bench_controller);
-                pulse_a = EASYTVC_SERVO_A_CENTER_US;
-                pulse_b = EASYTVC_SERVO_B_CENTER_US;
+                pulse_a = tun.center_us[0];
+                pulse_b = tun.center_us[1];
             }
         }
 #endif
@@ -596,8 +972,29 @@ int main(void)
         /* ---- recovery ---- */
         if (EASYTVC_CHUTE_CHANNEL != 0 && !chute_open &&
             EasyTVC_ChuteShouldOpen(launched, now_ms - launch_ms, state,
-                                    output.flight.drogue_deploy_requested, EASYTVC_CHUTE_BACKUP_MS)) {
+                                    output.flight.drogue_deploy_requested, tun.chute_backup_ms)) {
             chute_open = true;
+        }
+
+        /* ejection charge: after a launch detected in this boot only (a reboot never fires it); the
+         * pin is driven only if EASYTVC_PYRO_OUTPUTS_COMPILED_IN is 1 */
+        const bool reached_apogee = output.flight.drogue_deploy_requested ||
+                                    (state >= EASYTVC_FLIGHT_APOGEE && state <= EASYTVC_FLIGHT_LANDED);
+        const bool charge_on = EasyTVC_ChargeStep(&charge, &charge_config, launched, launch_ms, reached_apogee,
+                                                  app.nav.altitude_m, baro_fresh, now_ms);
+        /* the ground test drives a channel only in IDLE, never armed (pyro_test.h); both outputs are
+         * written every tick, and only when EASYTVC_PYRO_OUTPUTS_COMPILED_IN does the pin move */
+        const uint8_t test_channel = EasyTVC_PyroTestStep(&pyro_test, state, pad.armed, now_ms);
+        EasyTVC_GPIO_PyroWrite(1U, (charge_on && charge_config.channel == 1U) || test_channel == 1U);
+        EasyTVC_GPIO_PyroWrite(3U, (charge_on && charge_config.channel == 3U) || test_channel == 3U);
+
+        /* ---- TVC gimbal test from the ground (IDLE only; parachute servo never) ---- */
+        {
+            uint16_t test_pulse[2] = {pulse_a, pulse_b};
+            if (EasyTVC_ServoTestApply(&servo_test, &app.settings, state, now_ms, test_pulse)) {
+                pulse_a = test_pulse[0];
+                pulse_b = test_pulse[1];
+            }
         }
 
         write_outputs(pulse_a, pulse_b, chute_open);
@@ -637,14 +1034,78 @@ int main(void)
             (void)DataLogger_Flush(&logger);
         }
 
-        /* ---- serial telemetry (queued, dropped if the line is slow) ---- */
+        /* ---- ground link: requests in, telemetry out (queued whole or dropped, never waits) ---- */
+        link_view.state = state;
+        link_view.armed = pad.armed;
+        link_view.recovery = recovery_boot;
+        link_view.imu_ok = imu_ok;
+        link_view.baro_ok = baro_fresh;
+        /* a request is taken only when its reply is sure to fit in the transmit ring: back-pressure
+         * instead of dropped replies when the ground pipelines requests */
+        for (unsigned i = 0; EasyTVC_USART2_QueueFree() > EASYTVC_LINK_MAX_FRAME && i < LINK_RX_BYTES_PER_TICK; ++i) {
+            uint8_t byte;
+            if (EasyTVC_USART2_Receive(&byte, 1U) != 1) break;
+            if (EasyTVC_LinkFeed(&ground_link, byte, state)) break;   /* one request per tick */
+        }
+        if (state != reported_state) {
+            send_event(now_ms, state_event(state));
+            reported_state = state;
+        } else if (imu_ok != reported_imu_ok) {
+            send_event(now_ms, imu_ok ? "IMU_OK" : "IMU_LOST");
+            reported_imu_ok = imu_ok;
+        } else if (chute_open != reported_chute) {
+            send_event(now_ms, "PARACHUTE_RELEASED");
+            reported_chute = chute_open;
+        } else if (test_channel != reported_test) {
+            if (test_channel) {
+                send_event(now_ms, test_channel == 1U ? (EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? "PYRO_TEST_P1" : "PYRO_TEST_P1_LOCKED")
+                                                      : (EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? "PYRO_TEST_P3" : "PYRO_TEST_P3_LOCKED"));
+            }
+            reported_test = test_channel;
+        } else if (charge.fired != reported_charge) {
+            send_event(now_ms, EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? "CHARGE_FIRED" : "CHARGE_DUE_LOCKED");
+            reported_charge = charge.fired;
+        } else if (pending_event.repeat_in && --pending_event.repeat_in == 0U) {
+            (void)EasyTVC_LinkSend(&ground_link, "EVT", pending_event.text);
+        }
+        const uint32_t tlm_divider = (state >= EASYTVC_FLIGHT_BOOST && state <= EASYTVC_FLIGHT_DESCENT) ?
+                                     TLM_DIVIDER_FLIGHT : TLM_DIVIDER_PAD;
+        if (tick % tlm_divider == tlm_divider / 2U) {   /* phase 5 / 10: off the barometer's tick */
+            const EasyTVCQuaternion q = app.attitude.orientation;
+            EasyTVCLinkTlm t = {
+                .ms = now_ms, .state = (uint8_t)state,
+                .since_launch_ms = launched ? (int32_t)(now_ms - launch_ms) : -1,
+                .pressure_pa = baro_ok ? bme280.pressure : 0U, .baro_temp_cdeg = baro_ok ? (int16_t)bme280.temperature : 0,
+                .deploy_eta_ms = EasyTVC_RecoveryEtaMs(&charge, &charge_config, EASYTVC_CHUTE_CHANNEL != 0,
+                                                       chute_open, launched, launch_ms, now_ms),
+                .q = {q.w, q.x, q.y, q.z},
+                .altitude_m = app.nav.altitude_m, .vertical_speed_m_s = app.nav.vertical_speed_m_s,
+                .tilt_rad = {tilt[0], tilt[1]}, .command = {command[0], command[1]},
+                .pulse_us = {pulse_a, pulse_b, (uint16_t)(EASYTVC_CHUTE_CHANNEL == 0 ? 0U :
+                             chute_open ? EASYTVC_CHUTE_OPEN_US : EASYTVC_CHUTE_CLOSED_US)},
+                .flags = (uint16_t)((imu_ok ? EASYTVC_TLM_IMU_OK : 0U) | (baro_fresh ? EASYTVC_TLM_BARO_OK : 0U) |
+                                    (gyro_cal_ok ? EASYTVC_TLM_GYRO_CAL : 0U) |
+                                    (bmi088.accel_saturated ? EASYTVC_TLM_ACCEL_SAT : 0U) |
+                                    (bmi088.gyro_saturated ? EASYTVC_TLM_GYRO_SAT : 0U) |
+                                    (tvc_active ? EASYTVC_TLM_TVC : 0U) | (ctrl_fault ? EASYTVC_TLM_CTRL_FAULT : 0U) |
+                                    (chute_open ? EASYTVC_TLM_CHUTE : 0U) | (pad.armed ? EASYTVC_TLM_ARMED : 0U) |
+                                    (recovery_boot ? EASYTVC_TLM_RECOVERY : 0U) |
+                                    (servo_test.mode != EASYTVC_SERVO_TEST_OFF ||
+                                     servo_test.trim_us[0] != 0 || servo_test.trim_us[1] != 0 ? EASYTVC_TLM_SERVO_TEST : 0U)),
+            };
+            memcpy(t.gyro_rad_s, gyro_body, sizeof(t.gyro_rad_s));
+            memcpy(t.accel_m_s2, accel_body, sizeof(t.accel_m_s2));
+            char payload[EASYTVC_LINK_MAX_PAYLOAD + 1U];
+            if (EasyTVC_LinkFormatTlm(&t, payload, sizeof(payload))) {
+                (void)EasyTVC_LinkSend(&ground_link, "TLM", payload);
+            }
+        }
         if (tick % TELEMETRY_DIVIDER == TELEMETRY_PHASE) {
 #if EASYTVC_BENCH_MODE
-            /* B,ms,tiltX_cdeg,tiltY_cdeg,pulseA,pulseB,raw_ax_mg,raw_ay_mg,raw_az_mg,body_az_mg */
+            /* BEN: ms,tiltX_cdeg,tiltY_cdeg,pulseA,pulseB,raw_ax_mg,raw_ay_mg,raw_az_mg,body_az_mg */
             char text[120];
             EasyTVCTextLine line = {text, 0, sizeof(text)};
-            EasyTVC_LineStr(&line, "B");
-            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineInt(&line, (int32_t)now_ms);
             EasyTVC_LineField(&line, (int32_t)(tilt[0] * 5729.578f));
             EasyTVC_LineField(&line, (int32_t)(tilt[1] * 5729.578f));
             EasyTVC_LineField(&line, pulse_a);
@@ -653,34 +1114,47 @@ int main(void)
                 EasyTVC_LineField(&line, (int32_t)(bmi088.accel_m_s2[axis] / GRAVITY * 1000.0f));
             }
             EasyTVC_LineField(&line, (int32_t)(accel_body[2] / GRAVITY * 1000.0f));
-            EasyTVC_LineStr(&line, "\n");
-            EasyTVC_USART2_QueueText(text);
-#else
-            EasyTVC_USART2_QueueText(output.telemetry);
+            (void)EasyTVC_LinkSend(&ground_link, "BEN", text);
 #endif
         }
 
         const bool error = !imu_ok || !config_ok || recovery_boot || state == EASYTVC_FLIGHT_FAULT ||
                            (EASYTVC_REQUIRE_SD && !EASYTVC_BENCH_MODE && !logger.initialized);
         if (tick % STATUS_DIVIDER == STATUS_PHASE) {
-            /* S,imu,baro,sd,gyro_cal,records,dropped,write_errors,session,state,armed,recovery,chute */
-            char text[120];
-            EasyTVCTextLine line = {text, 0, sizeof(text)};
-            EasyTVC_LineStr(&line, "S");
-            EasyTVC_LineField(&line, imu_ok);
-            EasyTVC_LineField(&line, baro_fresh);
-            EasyTVC_LineField(&line, logger.initialized);
-            EasyTVC_LineField(&line, gyro_cal_ok);
-            EasyTVC_LineField(&line, (int32_t)logger.record_count);
-            EasyTVC_LineField(&line, (int32_t)logger.dropped_records);
-            EasyTVC_LineField(&line, (int32_t)logger.write_errors);
-            EasyTVC_LineField(&line, (int32_t)logger.session);
-            EasyTVC_LineField(&line, (int32_t)state);
-            EasyTVC_LineField(&line, pad.armed);
-            EasyTVC_LineField(&line, recovery_boot);
-            EasyTVC_LineField(&line, chute_open);
-            EasyTVC_LineStr(&line, "\n");
-            EasyTVC_USART2_QueueText(text);
+            const uint32_t used_kb = (logger.current_sector >= logger.end_sector - DATA_LOGGER_SESSION_SECTORS)
+                ? (logger.current_sector - (logger.end_sector - DATA_LOGGER_SESSION_SECTORS)) / 2U : 0U;
+            const uint16_t vdda_mv = EasyTVC_ADC_VddaMv(EasyTVC_ADC_Read(EASYTVC_ADC_CH_VREF));
+            const uint16_t batt_raw = EasyTVC_ADC_Read(EASYTVC_ADC_BATT_CHANNEL);
+            const EasyTVCLinkSys sys = {
+                .ms = now_ms, .image = EASYTVC_BENCH_MODE ? 1U : 0U, .state = (uint8_t)state,
+                .armed = pad.armed, .chute_open = chute_open,
+                .batt_pin_mv = batt_raw > 4095U ? 0U : (uint16_t)((uint32_t)batt_raw * vdda_mv / 4095U),
+                .vdda_mv = vdda_mv,
+                .continuity = EasyTVC_GPIO_ContinuityBits(),
+                /* live only with the outputs compiled in (easytvc_safety.h) */
+                .pyro_armed = EASYTVC_PYRO_OUTPUTS_COMPILED_IN && EASYTVC_PYRO_CHUTE_CHANNEL != 0 && launched && !charge.fired,
+                .pyro_fired = EASYTVC_PYRO_OUTPUTS_COMPILED_IN && charge.fired,
+                .sd_ok = logger.initialized, .session = logger.session, .records = logger.record_count,
+                .dropped = logger.dropped_records, .write_errors = logger.write_errors,
+                .sd_left_kb = logger.initialized ? DATA_LOGGER_SESSION_SECTORS / 2U - used_kb : 0U,
+                .loop_max_us = loop_max_us, .late_ticks = late_ticks, .imu_errors = imu_errors,
+                .baro_age_ms = now_ms - last_baro_good_ms, .link_dropped = ground_link.tx_dropped,
+                .link_ignored = ground_link.rx_ignored,
+                .errors = (uint16_t)((!imu_ok ? EASYTVC_SYS_IMU_FAIL : 0U) | (!baro_fresh ? EASYTVC_SYS_BARO_STALE : 0U) |
+                                     (!logger.initialized ? EASYTVC_SYS_SD_MISSING : 0U) |
+                                     (!config_ok ? EASYTVC_SYS_CONFIG_BAD : 0U) |
+                                     (recovery_boot ? EASYTVC_SYS_RECOVERY : 0U) |
+                                     (state == EASYTVC_FLIGHT_FAULT ? EASYTVC_SYS_FAULT : 0U) |
+                                     (logger.write_errors ? EASYTVC_SYS_SD_ERRORS : 0U) |
+                                     (logger.region_full ? EASYTVC_SYS_SD_FULL : 0U) |
+                                     (ground_link.tx_dropped ? EASYTVC_SYS_LINK_DROPS : 0U) |
+                                     (late_ticks ? EASYTVC_SYS_LATE_TICKS : 0U)),
+            };
+            char payload[EASYTVC_LINK_MAX_PAYLOAD + 1U];
+            if (EasyTVC_LinkFormatSys(&sys, payload, sizeof(payload))) {
+                (void)EasyTVC_LinkSend(&ground_link, "SYS", payload);
+            }
+            loop_max_us = 0;
         }
 
         /* LEDs: blue = alive, red = do not launch, green = arming progress / armed. */
@@ -697,6 +1171,14 @@ int main(void)
             green = false;
         }
         EasyTVC_GPIO_LedSet(1, green);
+        const bool beep_test = state == EASYTVC_FLIGHT_IDLE && (int32_t)(beep_test_until_ms - now_ms) > 0;
+        if (beep_test) {
+            /* check from the ground: red, green, blue in turn, with beeps */
+            const uint32_t phase = (now_ms / 250U) % 3U;
+            EasyTVC_GPIO_LedSet(2, phase == 0U);
+            EasyTVC_GPIO_LedSet(1, phase == 1U);
+            EasyTVC_GPIO_LedSet(0, phase == 2U);
+        }
 
         BuzzPattern pattern = BUZZ_OFF;
         if (launched && (uint32_t)(now_ms - launch_ms) >= LOCATOR_AFTER_MS) {
@@ -706,6 +1188,11 @@ int main(void)
         } else if (state == EASYTVC_FLIGHT_ARMED) {
             pattern = BUZZ_ARMED;
         }
-        EasyTVC_GPIO_BuzzerSet(buzzer_on(pattern, now_ms));
+        EasyTVC_GPIO_BuzzerSet(beep_test ? (now_ms % 400U) < 150U : buzzer_on(pattern, now_ms));
+
+        const uint32_t body_us = STM32_Micros() - tick_start_us;
+        if (body_us > loop_max_us) {
+            loop_max_us = body_us;
+        }
     }
 }

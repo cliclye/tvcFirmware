@@ -50,6 +50,9 @@ typedef struct {
     EasyTVCLogRecord log_storage[32];
     EasyTVCFlightConfig flight_config;
     EasyTVCPyroConfig pyro_config;
+    /* The firmware sends E1 frames instead of output.telemetry: set this to skip formatting it
+     * every tick (output.telemetry is then empty). The host sims leave it false. */
+    bool skip_text_telemetry;
 } EasyTVCApp;
 
 void EasyTVC_AppInit(EasyTVCApp *app, uint32_t now_ms);

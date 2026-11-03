@@ -11,6 +11,9 @@
 #include "bme280.h"
 #include "data_logger.h"
 #include "sensor_test.h"
+#include "adc_driver.h"
+#include "link.h"
+#include "version.h"
 #include "vehicle_config.h"
 
 #include <math.h>
@@ -51,46 +54,47 @@
 #define GRAVITY_LSB      (9.80665f / bmi088.accel_m_s2_per_lsb)
 #define GYRO_LSB_DPS     (0.017453292519943f / bmi088.gyro_rad_s_per_lsb)
 
-/* ADC common registers (not in stm32f4xx.h) and the factory VREFINT calibration (3.3 V, 30 C). */
-#define ADC_COMMON_CCR      (*(volatile uint32_t *)(STM32_ADC1_BASE + 0x300UL + 0x04UL))   /* 0x40012304 */
-#define ADC_CCR_TSVREFE     (1UL << 23)
-#define ADC_CCR_ADCPRE_DIV4 (1UL << 16)               /* 84 MHz / 4 = 21 MHz (max 36) */
-#define VREFINT_CAL         (*(const volatile uint16_t *)0x1FFF7A2AUL)
 #define ADC_CH_BATT         EASYTVC_ADC_BATT_CHANNEL
-#define ADC_CH_TEMP         16U
-#define ADC_CH_VREF         17U
+#define ADC_CH_TEMP         EASYTVC_ADC_CH_TEMP
+#define ADC_CH_VREF         EASYTVC_ADC_CH_VREF
 
 static EasyTVCBmi088 bmi088;
 static EasyTVCBme280 bme280;
 static DataLogger logger;
 static uint8_t record_seq;
 
-/* ---- ADC: battery pin, internal reference, MCU temperature ---- */
+/* Ground link (USART2): the same E1 frames as the flight image. This image never arms, so it only
+ * answers HELLO / PING / STATUS. */
+static EasyTVCLink ground_link;
 
-static void adc_init(void)
+static bool link_write(void *context, const char *frame, size_t length)
 {
-    ADC_COMMON_CCR = (ADC_COMMON_CCR & ~(3UL << 16)) | ADC_CCR_ADCPRE_DIV4 | ADC_CCR_TSVREFE;
-    STM32_ADC1->CR1 = 0;                                   /* 12-bit, single channel */
-    STM32_ADC1->CR2 = STM32_ADC_CR2_ADON;
-    /* 480-cycle sampling: the temperature sensor needs >= 10 us */
-    STM32_ADC1->SMPR1 = (7UL << ((ADC_CH_TEMP - 10U) * 3U)) | (7UL << ((ADC_CH_VREF - 10U) * 3U));
-    STM32_ADC1->SMPR2 = 7UL << (ADC_CH_BATT * 3U);
-    STM32_DelayMicroseconds(20U);
+    (void)context;
+    return EasyTVC_USART2_QueueAll((const uint8_t *)frame, length);
 }
 
-static uint16_t adc_read(uint32_t channel)
+static bool link_handle(void *context, const char *command, const char *payload, char *out, size_t capacity)
 {
-    STM32_ADC1->SQR1 = 0;                                  /* one conversion */
-    STM32_ADC1->SQR3 = channel;
-    STM32_ADC1->SR = 0;
-    STM32_ADC1->CR2 |= STM32_ADC_CR2_SWSTART;
-    const uint32_t start = STM32_Micros();
-    while ((STM32_ADC1->SR & STM32_ADC_SR_EOC) == 0U) {
-        if ((uint32_t)(STM32_Micros() - start) > 200U) {
-            return 0xFFFFU;
-        }
+    (void)context;
+    (void)payload;
+    EasyTVCTextLine line = {out, 0, capacity};
+    if (!strcmp(command, "HELLO")) {
+        EasyTVC_LineStr(&line, "EASYTVC,2,sensortest," EASYTVC_FW_VERSION ",");
+        EasyTVC_LineStr(&line, EASYTVC_GIT_HASH);
+        return true;
     }
-    return (uint16_t)(STM32_ADC1->DR & 0xFFFU);
+    if (!strcmp(command, "PING")) {
+        EasyTVC_LineStr(&line, "PONG");
+        EasyTVC_LineField(&line, (int32_t)STM32_Millis());
+        return true;
+    }
+    if (!strcmp(command, "STATUS")) {
+        EasyTVC_LineStr(&line, "0,0,0,1,1");   /* IDLE, not armed, normal boot (details are in SCK) */
+        EasyTVC_LineField(&line, logger.initialized);
+        return true;
+    }
+    EasyTVC_LineStr(&line, "COMMAND");
+    return false;
 }
 
 /* ---- BMI088 accelerometer die temperature (0x22/0x23, 11-bit, 0.125 C/LSB, 23 C offset) ---- */
@@ -230,9 +234,10 @@ int main(void)
     EasyTVC_I2C2_Init();
     EasyTVC_PWM_Init();                 /* every servo channel held at 1500 us */
     EasyTVC_USART2_Init();
+    EasyTVC_LinkInit(&ground_link, link_write, link_handle, 0);
     EasyTVC_UART4_Init();
     EasyTVC_HardwareBus_Init();
-    adc_init();
+    EasyTVC_ADC_Init();
 
     /* outputs: red, green, blue, then a beep */
     for (uint8_t led = 3; led-- > 0;) {
@@ -290,7 +295,7 @@ int main(void)
     EasyTVC_LineStr(&h, " gyro_range_code="); EasyTVC_LineInt(&h, bmi088.readback[4] & 7U);
     EasyTVC_LineStr(&h, " baro_config="); EasyTVC_LineInt(&h, baro_ok);
     EasyTVC_LineStr(&h, " nose_axis="); EasyTVC_LineInt(&h, EASYTVC_NOSE_AXIS);
-    EasyTVC_LineStr(&h, " vrefint_cal="); EasyTVC_LineInt(&h, VREFINT_CAL);
+    EasyTVC_LineStr(&h, " vrefint_cal="); EasyTVC_LineInt(&h, EasyTVC_ADC_VrefintCal());
     (void)DataLogger_Init(&logger, header);
 
     STM32_WatchdogStart();
@@ -392,11 +397,11 @@ int main(void)
                 accel_temp_ok = read_accel_temp(&accel_temp) && accel_temp > -2000 && accel_temp < 7000;
             }
             memset(&record, 0, sizeof(record));
-            record.u.adc.batt_raw = adc_read(ADC_CH_BATT);
-            record.u.adc.vref_raw = adc_read(ADC_CH_VREF);
-            record.u.adc.mcu_temp_raw = adc_read(ADC_CH_TEMP);
+            record.u.adc.batt_raw = EasyTVC_ADC_Read(ADC_CH_BATT);
+            record.u.adc.vref_raw = EasyTVC_ADC_Read(ADC_CH_VREF);
+            record.u.adc.mcu_temp_raw = EasyTVC_ADC_Read(ADC_CH_TEMP);
             const uint16_t vref = record.u.adc.vref_raw;
-            vdda_mv = (vref > 0U && vref < 4096U) ? (uint16_t)(3300UL * VREFINT_CAL / vref) : 0U;
+            vdda_mv = EasyTVC_ADC_VddaMv(vref);
             batt_pin_mv = (uint16_t)((uint32_t)record.u.adc.batt_raw * vdda_mv / 4095UL);
             /* datasheet: V25 = 0.76 V, 2.5 mV/C */
             const int32_t sense_uv = (int32_t)((uint32_t)record.u.adc.mcu_temp_raw * vdda_mv * 1000UL / 4095UL);
@@ -451,12 +456,11 @@ int main(void)
             record.u.status.sd_write_errors = (uint16_t)logger.write_errors;
             log_record(&record, SENSOR_REC_STATUS, STM32_Micros());
 
-            /* Q,ms,checks,boot_checks,accel_id,gyro_id,baro_id,imu_samples,imu_errors,baro_samples,
+            /* SCK: ms,checks,boot_checks,accel_id,gyro_id,baro_id,imu_samples,imu_errors,baro_samples,
              *   baro_errors,sd,records,dropped,write_errors,session,overruns */
             char text[160];
             EasyTVCTextLine line = {text, 0, sizeof(text)};
-            EasyTVC_LineStr(&line, "Q");
-            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineInt(&line, (int32_t)now_ms);
             EasyTVC_LineField(&line, (int32_t)checks);
             EasyTVC_LineField(&line, (int32_t)boot_checks);
             EasyTVC_LineField(&line, accel_id);
@@ -472,8 +476,7 @@ int main(void)
             EasyTVC_LineField(&line, (int32_t)logger.write_errors);
             EasyTVC_LineField(&line, (int32_t)logger.session);
             EasyTVC_LineField(&line, loop_overruns);
-            EasyTVC_LineStr(&line, "\n");
-            EasyTVC_USART2_QueueText(text);
+            (void)EasyTVC_LinkSend(&ground_link, "SCK", text);
             max_loop_us = 0;
             /* after the power-up test, judge the IMU over the most recent second only */
             if (boot_done) {
@@ -481,14 +484,13 @@ int main(void)
             }
         }
 
-        /* ---- serial values: 10 Hz ----
-         * T,ms,ax_mg,ay_mg,az_mg,gx_cdps,gy_cdps,gz_cdps,accel_temp_cc,pressure_pa,baro_temp_cc,
+        /* ---- ground link: requests in, sensor values out at 10 Hz ----
+         * SNS: ms,ax_mg,ay_mg,az_mg,gx_cdps,gy_cdps,gz_cdps,accel_temp_cc,pressure_pa,baro_temp_cc,
          *   humidity_permille,vdda_mv,batt_pin_mv,mcu_temp_cc */
         if (tick % SERIAL_DIVIDER == SERIAL_PHASE) {
             char text[160];
             EasyTVCTextLine line = {text, 0, sizeof(text)};
-            EasyTVC_LineStr(&line, "T");
-            EasyTVC_LineField(&line, (int32_t)now_ms);
+            EasyTVC_LineInt(&line, (int32_t)now_ms);
             EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_x * 1000.0f / GRAVITY_LSB));
             EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_y * 1000.0f / GRAVITY_LSB));
             EasyTVC_LineField(&line, (int32_t)lroundf(bmi088.accel_z * 1000.0f / GRAVITY_LSB));
@@ -502,8 +504,14 @@ int main(void)
             EasyTVC_LineField(&line, vdda_mv);
             EasyTVC_LineField(&line, batt_pin_mv);
             EasyTVC_LineField(&line, mcu_temp_cc);
-            EasyTVC_LineStr(&line, "\n");
-            EasyTVC_USART2_QueueText(text);
+            (void)EasyTVC_LinkSend(&ground_link, "SNS", text);
+        }
+        /* a request is taken only when its reply is sure to fit in the transmit ring: back-pressure
+         * instead of dropped replies when the ground pipelines requests */
+        for (unsigned i = 0; EasyTVC_USART2_QueueFree() > EASYTVC_LINK_MAX_FRAME && i < 64U; ++i) {
+            uint8_t byte;
+            if (EasyTVC_USART2_Receive(&byte, 1U) != 1) break;
+            if (EasyTVC_LinkFeed(&ground_link, byte, EASYTVC_FLIGHT_IDLE)) break;
         }
 
         DataLogger_Poll(&logger);

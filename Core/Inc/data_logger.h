@@ -79,7 +79,15 @@ bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record);
 /* Same, for any other 32-byte record layout (the sensor-test image's records). */
 bool DataLogger_LogRaw(DataLogger *logger, const void *record);
 
+/* Read one raw sector for a log download, only while no write is in flight (non-blocking for the
+ * logger; the read itself takes ~1 ms). Returns false when busy, uninitialised or out of range. */
+bool DataLogger_ReadSector(DataLogger *logger, uint32_t sector, uint8_t *buffer);
+
 /* Queue the partly filled sector so a power loss costs at most ~1 s (it keeps filling). */
+/* Sectors 1 .. DATA_LOGGER_DIR_SECTOR-1 (outside the logs): false if no card, a log write is in
+ * flight (try again next tick) or the card failed. Blocking. */
+bool DataLogger_ReadReserved(DataLogger *logger, uint32_t sector, uint8_t *buffer);
+bool DataLogger_WriteReserved(DataLogger *logger, uint32_t sector, const uint8_t *buffer);
 bool DataLogger_Flush(DataLogger *logger);
 
 /* Call every loop: advances queued writes without blocking. */

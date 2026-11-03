@@ -56,7 +56,8 @@ pulls *up* at reset. Pyro outputs are compiled out of this firmware altogether.
   SDA2, GND). It's much bigger than the 1 mm Qwiic connector on the back, probably JST-PH
   (2.0 mm) or JST-XH (2.5 mm) pitch. **Measure it before buying a mating cable.** A USB-UART
   adapter or a telemetry radio goes here: their TX → **RX2**, their RX → **TX2**, plus GND (and
-  5V to power a radio).
+  5V to power a radio). For a XIAO ESP32-C3 with DroneBridge, see
+  [wireless-telemetry.md](wireless-telemetry.md): pins, settings and how to connect Studio.
 - **4-pin RX4/TX4 connector** (left, UART4): not used by this firmware.
 - **P1/P2/P3/SW screw terminals** (top): pyro outputs and the vendor's pyro arming switch. Pyro is
   compiled out, so **leave them all empty**, and especially never use P2.
@@ -130,9 +131,13 @@ rocket back to vertical.
    moves at each step. Watch for binding: if the gimbal hits a stop, shrink `MIN_US`/`MAX_US`
    for that servo. If you hear no beep at all, the buzzer is not working; note it.
 2. **Nose axis.** Stand the rocket nose-up and keep it still. A **solid green LED** means the
-   board thinks it's vertical, so `EASYTVC_NOSE_AXIS` is right. If the green LED is off, read
-   the `B,...` telemetry line. One of the three `raw` accel numbers is near +1000 (or −1000):
-   set `EASYTVC_NOSE_AXIS` to that axis (`POS_`/`NEG_`), rebuild and reflash.
+   board thinks it's vertical, so `EASYTVC_NOSE_AXIS` is right. If the green LED is off, open
+   **Live → Pad tools**: it reads the bench image's raw accelerometer and suggests the nose axis
+   (one of the three raw numbers is near +1 g or −1 g). Set `EASYTVC_NOSE_AXIS` to that axis
+   (`POS_`/`NEG_`), rebuild and reflash.
+   With a wireless link (or USB-UART) you can also drive each servo from **Live → Pad tools → TVC
+   gimbal test**: sweep A then B, hold a slider to move one, and trim the centres until the motor
+   points straight along the body. Then use "Save trim to Rocket setup" and reinstall over USB-C.
 3. **Channel and direction (the tilt test).** Hold the rocket vertical, then lean the nose about
    10° toward one side. **The motor nozzle must swing to the opposite side** of the lean,
    because that pushes the tail back under the nose. Repeat for all four directions.
@@ -146,6 +151,35 @@ rocket back to vertical.
 5. **Logging.** Power-cycle twice, then put the card in your Mac and run
    `./scripts/read-sd-data.sh /dev/diskN`. It should report the latest session, and
    `python3 scripts/telemetry_viewer.py session_N.bin` should show your tilt test.
+
+### Pyro bench test (only if you want an ejection charge on P1 or P3)
+
+The vendor hasn't tested the pyro circuit, so the firmware ships with the outputs **locked**
+(`EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0` in `Core/Inc/easytvc_safety.h`). Locked, the board still
+counts down and logs when the charge is due (Live shows "DUE · locked"), but the pin never switches
+on. Don't connect an igniter or a charge until every step below has passed with a **test load**: an
+LED with a 1 kΩ resistor across the terminal (or a small bulb), never a real igniter.
+
+1. Pick the terminal in **Rocket setup → Board outputs** (P1 or P3; P2 can't be used: it's the
+   processor's debug pin and goes high at every reset). Set the delay and on-time under Recovery,
+   then save and install.
+2. **Locked image:** with the test load on the terminal, power up, unplug and replug, press reset, and
+   install firmware over USB-C. The LED must stay **off** the whole time. A meter across the terminal
+   reads 0 V.
+3. **Unlocked image (by hand, deliberately):** set `EASYTVC_PYRO_OUTPUTS_COMPILED_IN` to `1`, build
+   and install the flight image. Rocket setup's recovery card then shows the outputs as LIVE.
+4. Repeat step 2: still off at power-up and reset.
+5. Stand the board vertical and still until it arms (solid green, chirps), then give it a sharp upward
+   jerk so it detects a launch. The LED must light for the on-time at the backup time (or apogee +
+   delay), exactly once, and the event log shows `CHARGE_FIRED`. Reboot: it must not light again.
+   Quicker check without a flight: **Live → Pad tools → Pyro channel test** (IDLE, disarmed) pulses
+   the channel once for 100–500 ms. The LED must light once with the unlocked image, and must stay
+   dark with the locked one.
+6. During the pulse, the meter across the terminal should read about the battery voltage. If it reads
+   much less, the output can't drive an igniter: stay with the parachute servo.
+
+If any step fails, set the lock back to `0`. Even after a pass, connect the igniter **last**, at the
+pad, with the rocket pointed away from people, following your club's safety code.
 
 ## 5. Flight image
 

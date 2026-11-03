@@ -86,7 +86,7 @@ $("gim-center").onclick = () => { gim.sweep = null; gim.pulse = [cfg.SERVO_A_CEN
 async function pollGimbalLive() {
   clearTimeout(gim.liveTimer);
   if (gim.source !== "live" || $("sim3d").hidden) return;
-  try { liveStatus = await api("monitor/status", {}); } catch (error) { notice(error.message); return; }
+  try { liveStatus = await api("monitor/status", {since: Number.MAX_SAFE_INTEGER}); } catch (error) { notice(error.message); return; }
   gim.liveTimer = setTimeout(pollGimbalLive, 150);
 }
 function currentState(now) {
@@ -105,8 +105,9 @@ function currentState(now) {
     return {servos, label: `${simResult.live ? "LIVE" : "3D sim"} · T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(2)} s · ${SIM_STATES[row[simCol.state]]}`};
   }
   if (gim.source === "live") {
-    const bench = liveStatus && liveStatus.latest && liveStatus.latest.bench;
-    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect the USB-UART under Board → Live data)"};
+    const bench = liveStatus && liveStatus.latest && liveStatus.latest.bench, tlm = liveStatus && liveStatus.latest && liveStatus.latest.tlm;
+    if (!bench && tlm) return {servos: [servoInfo(0, tlm.pulse[0]), servoInfo(1, tlm.pulse[1])], label: `Live board · ${tlm.state} · tilt X ${tlm.tilt_x.toFixed(1)}° Y ${tlm.tilt_y.toFixed(1)}°`};
+    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect under Live → Pad tools)"};
     return {servos: [servoInfo(0, bench.pulse_a), servoInfo(1, bench.pulse_b)], label: `Live board · tilt X ${bench.tilt_x.toFixed(1)}° Y ${bench.tilt_y.toFixed(1)}°`};
   }
   if (gim.sweep) {

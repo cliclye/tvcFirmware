@@ -19,6 +19,7 @@ void EasyTVC_AppInit(EasyTVCApp *app, uint32_t now_ms)
         .main_deploy_altitude_m = 200.0f,
         .landed_speed_m_s = 1.0f,
         .landed_confirm_ms = 400U,
+        .sensor_fault_ms = EASYTVC_CONTROL_HOLD_MS,   /* same grace as the controller's hold */
         .tvc_enable_delay_ms = 80U,
     };
     app->flight_config = flight_config;
@@ -30,6 +31,7 @@ void EasyTVC_AppInit(EasyTVCApp *app, uint32_t now_ms)
     EasyTVC_SettingsDefault(&app->settings);
     EasyTVC_PyroSequencerInit(&app->pyro);
     EasyTVC_LogRingInit(&app->log, app->log_storage, 32U);
+    app->skip_text_telemetry = false;
 }
 
 bool EasyTVC_AppApplySettings(EasyTVCApp *app, const EasyTVCSettings *settings, bool physical_arm)
@@ -128,6 +130,10 @@ EasyTVCAppOutput EasyTVC_AppStep(EasyTVCApp *app, const EasyTVCAppInput *input)
         EasyTVC_LogRingAppend(&app->log, &record);
     }
 
+    if (app->skip_text_telemetry) {
+        output.telemetry[0] = '\0';
+        return output;
+    }
     const EasyTVCTelemetrySample sample = {
         .now_ms = input->now_ms,
         .state = output.flight.state,

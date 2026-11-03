@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.22)
 
 project(EasyTVCFirmware LANGUAGES C)
 
+# Firmware identity sent over the ground link (SYS/HELLO): short git hash, "+" if uncommitted edits.
+execute_process(COMMAND git rev-parse --short=8 HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE EASYTVC_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+execute_process(COMMAND git status --porcelain --untracked-files=no WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE EASYTVC_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT EASYTVC_GIT_HASH)
+    set(EASYTVC_GIT_HASH "unknown")
+elseif(EASYTVC_GIT_DIRTY)
+    set(EASYTVC_GIT_HASH "${EASYTVC_GIT_HASH}+")
+endif()
+
 set(EASYTVC_CORE_SOURCES
     Core/Src/app.c
     Core/Src/attitude.c
@@ -20,7 +31,12 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/protocol.c
     Core/Src/runtime.c
     Core/Src/pad_arm.c
+    Core/Src/servo_test.c
+    Core/Src/recovery_charge.c
+    Core/Src/tunables.c
+    Core/Src/pyro_test.c
     Core/Src/text_line.c
+    Core/Src/link.c
 )
 
 # STM32F405 register-level drivers. These touch memory-mapped peripherals and inline
@@ -35,6 +51,7 @@ set(EASYTVC_HW_SOURCES
     Core/Src/hardware_bus.c
     Core/Src/sd_raw.c
     Core/Src/data_logger.c
+    Core/Src/adc_driver.c
 )
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
@@ -64,7 +81,8 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         )
         target_include_directories(${name} PRIVATE Core/Inc)
         target_compile_features(${name} PRIVATE c_std_11)
-        target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode})
+        target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode}
+            EASYTVC_GIT_HASH="${EASYTVC_GIT_HASH}")
         target_compile_options(${name} PRIVATE
             -mcpu=cortex-m4
             -mthumb
@@ -110,7 +128,8 @@ else()
     target_link_libraries(easytvc_core PUBLIC m)
     set_target_properties(easytvc_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-    add_library(easytvc_studio SHARED Core/Src/studio_sim.c Core/Src/flight_sim3d.c)
+    # link.c is compiled in directly so Studio's tests can check its own decoder against the C encoder.
+    add_library(easytvc_studio SHARED Core/Src/studio_sim.c Core/Src/flight_sim3d.c Core/Src/link.c)
     target_link_libraries(easytvc_studio PRIVATE easytvc_core)
     target_compile_options(easytvc_studio PRIVATE -Wall -Wextra -Werror)
 
@@ -139,6 +158,10 @@ else()
     target_link_libraries(easytvc_test_sim3d PRIVATE easytvc_core)
     target_compile_options(easytvc_test_sim3d PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
+    add_executable(easytvc_test_link tests/test_link.c)
+    target_link_libraries(easytvc_test_link PRIVATE easytvc_core)
+    target_compile_options(easytvc_test_link PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
     add_executable(easytvc_sim tests/sim_flight.c)
     target_link_libraries(easytvc_sim PRIVATE easytvc_core)
 
@@ -152,4 +175,5 @@ else()
     add_test(NAME easytvc_test_logger COMMAND easytvc_test_logger)
     add_test(NAME easytvc_test_flight COMMAND easytvc_test_flight)
     add_test(NAME easytvc_test_sim3d COMMAND easytvc_test_sim3d)
+    add_test(NAME easytvc_test_link COMMAND easytvc_test_link)
 endif()

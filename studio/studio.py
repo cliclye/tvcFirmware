@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import launch  # noqa: E402  (rocket config, build/flash, live board, flight logs)
+import groundlink  # noqa: E402  (the ground link: telemetry, requests)
 AXIS_FIELDS = ("kp", "ki", "kd", "integrator_limit", "output_limit", "output_rate_limit", "derivative_cutoff_hz")
 PLANT_FIELDS = ("inertia_x", "inertia_y", "thrust_n", "thrust_arm_m", "gimbal_deg", "servo_tau_s",
                 "wind_m_s", "gust_m_s", "temperature_c", "area_m2", "drag_coefficient", "cp_arm_m", "initial_tilt_deg")
@@ -436,6 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/launch.js": ("launch.js", "text/javascript; charset=utf-8"),
                   "/sim3d.js": ("sim3d.js", "text/javascript; charset=utf-8"),
                   "/gimbal.js": ("gimbal.js", "text/javascript; charset=utf-8"),
+                  "/live.js": ("live.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/terminal.css": ("terminal.css", "text/css; charset=utf-8")}
         if self.path in static:
@@ -456,7 +458,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/rocket/load":
             project = self.project()
             return {"config": launch.read_config(project), "project": str(project),
-                    "build": launch.image_info(project), "state": launch.load_state()}
+                    "build": launch.image_info(project), "state": launch.load_state(),
+                    "pyro_compiled_in": launch.pyro_outputs_compiled_in(project)}
         if path == "/api/rocket/save":
             return {"config": launch.write_config(self.project(), data.get("config")),
                     "build": launch.image_info(self.project())}
@@ -501,11 +504,65 @@ class Handler(BaseHTTPRequestHandler):
             finally: server.build_lock.release()
         if path == "/api/monitor/connect":
             server.device.close()
-            return server.monitor.connect(data.get("port"))
+            kind = data.get("kind", "serial")
+            if kind not in ("serial", "udp", "tcp", "ble"): raise ValueError("Choose Bluetooth, USB serial, UDP or TCP.")
+            options = {k: data[k] for k in ("port", "host", "listen_port") if k in data}
+            for k in ("port", "listen_port"):
+                if kind != "serial" and k in options:
+                    if isinstance(options[k], bool) or not isinstance(options[k], int) or not 1 <= options[k] <= 65535:
+                        raise ValueError("Ports are 1-65535.")
+            if "host" in options and (not isinstance(options["host"], str) or not 0 < len(options["host"]) <= 253):
+                raise ValueError("Enter the bridge's address.")
+            try:
+                return server.monitor.connect(kind, **options)
+            except OSError as error:
+                raise ValueError(f"Could not open the link: {error}") from error
         if path == "/api/monitor/disconnect":
             server.monitor.disconnect(); return server.monitor.status()
         if path == "/api/monitor/status":
-            return server.monitor.status()
+            since = data.get("since")
+            return server.monitor.status(since if isinstance(since, int) and not isinstance(since, bool) else None)
+        if path == "/api/monitor/request":
+            command = data.get("command")
+            if command not in ("HELLO", "PING", "STATUS"): raise ValueError("Unknown request.")
+            return {"reply": server.monitor.request(command)}
+        if path == "/api/monitor/gimbal":
+            try:
+                return server.monitor.gimbal(data.get("command"), data.get("a", 0), data.get("b", 0))
+            except TimeoutError as error:
+                raise ValueError(str(error)) from error
+        if path == "/api/monitor/settings/send":
+            values = data.get("values")
+            if not isinstance(values, dict):
+                raise ValueError("Send the settings as name: value.")
+            clean = launch.validate_config({**launch.read_config(server.project), **{k: values[k] for k in values
+                                            if k in dict(groundlink.TUNABLE_FIELDS)}})   # same ranges as Rocket setup
+            try:
+                return {"board": server.monitor.send_settings({k: clean[k] for k, _ in groundlink.TUNABLE_FIELDS})}
+            except TimeoutError as error:
+                raise ValueError(str(error)) from error
+        if path == "/api/monitor/settings/reset":
+            return {"board": server.monitor.reset_settings()}
+        if path == "/api/monitor/pyro/arm":
+            return server.monitor.pyro_arm(data.get("channel"))
+        if path == "/api/monitor/pyro/fire":
+            return server.monitor.pyro_fire(data.get("channel"), data.get("code"), data.get("pulse_ms"))
+        if path == "/api/monitor/beep":
+            return server.monitor.beep()
+        if path == "/api/monitor/config":
+            board = server.monitor.read_config()
+            saved = launch.read_config(server.project)
+            return {"board": board, "rows": launch.compare_config(board, saved)}
+        if path == "/api/monitor/log/start":
+            session = data.get("session")
+            if session is not None and (isinstance(session, bool) or not isinstance(session, int) or session < 0):
+                raise ValueError("Session must be a whole number.")
+            save = lambda raw, n: launch._save_session(raw, n)[0].name
+            return {"download": server.monitor.start_download(session, save)}
+        if path == "/api/monitor/log/status":
+            return {"download": server.monitor.download_status()}
+        if path == "/api/monitor/log/cancel":
+            server.monitor.cancel_download(); return {"download": server.monitor.download_status()}
         if path == "/api/logs/disks":
             return {"disks": launch.external_disks(), "folder": str(launch.flights_dir(create=False))}
         if path == "/api/logs/read-sd":

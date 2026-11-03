@@ -20,6 +20,9 @@ static const EasyTVCPadArmConfig pad_config = {
     .disarm_confirm_ms = 500U,
 };
 
+/* Set by a test to replay a failed IMU read: the firmware passes the same sample again, older. */
+static uint32_t stale_sensor_age_ms;
+
 typedef struct {
     EasyTVCApp app;
     EasyTVCPadArm pad;
@@ -60,7 +63,7 @@ static void vehicle_step(Vehicle *v, uint32_t now, const float accel[3], const f
     EasyTVCAppInput in = {
         .baro_altitude_m = baro_alt, .sensors_healthy = true,
         .physical_arm_qualified = v->pad.armed, .software_arm_request = v->pad.armed,
-        .accel_is_gravity_reference = true, .now_ms = now, .sensor_age_ms = 0,
+        .accel_is_gravity_reference = true, .now_ms = now, .sensor_age_ms = stale_sensor_age_ms,
         .dt_s = DT_MS * 1e-3f,
     };
     memcpy(in.accel_m_s2, accel, sizeof(in.accel_m_s2));
@@ -176,6 +179,51 @@ static void test_backup_timer_opens_chute_after_fault(void)
     assert(v.chute_open && v.chute_ms - v.launch_ms >= 7000 && v.chute_ms - v.launch_ms <= 7010);
 }
 
+/* Missed IMU reads in the middle of the burn (a failed SPI transfer reuses the last sample):
+ * TVC must keep steering on its last command, not switch off for the rest of the flight. Only a
+ * dropout longer than EASYTVC_CONTROL_HOLD_MS gives up. */
+static void test_imu_dropout_in_boost(void)
+{
+    for (int run = 0; run < 2; ++run) {
+        const uint32_t dropout_ms = run == 0 ? 15U : 150U;     /* 3 missed reads, then 30 */
+        Vehicle v;
+        vehicle_init(&v);
+        const float zero[3] = {0};
+        uint32_t t = 0;
+        for (; t < 3500; t += DT_MS) {
+            const float a[3] = {0, 0, G};
+            vehicle_step(&v, t, a, zero, 0.0f);
+        }
+        for (; t < 4200; t += DT_MS) {
+            const float a[3] = {0, 0, 3.0f * G};
+            const float g[3] = {0.05f, 0, 0};                 /* a slow tilt the TVC is fighting */
+            vehicle_step(&v, t, a, g, 0.0f);
+        }
+        assert(v.out.flight.state == EASYTVC_FLIGHT_BOOST && v.out.control.enabled);
+        const float before = v.out.control.command[0];
+        assert(before != 0.0f);
+        const uint32_t start = t;
+        for (; t < start + dropout_ms; t += DT_MS) {
+            stale_sensor_age_ms = t - start + DT_MS;
+            const float a[3] = {0, 0, 3.0f * G};
+            const float g[3] = {0.05f, 0, 0};
+            vehicle_step(&v, t, a, g, 0.0f);
+            if (run == 0) assert(v.out.control.enabled && v.out.control.command[0] == before &&
+                                 v.out.flight.state == EASYTVC_FLIGHT_BOOST);
+        }
+        stale_sensor_age_ms = 0;
+        const float a[3] = {0, 0, 3.0f * G};
+        const float g[3] = {0.05f, 0, 0};
+        vehicle_step(&v, t, a, g, 0.0f);
+        if (run == 0) {
+            assert(v.out.flight.state == EASYTVC_FLIGHT_BOOST && v.out.control.enabled && !v.out.control.fault);
+        } else {
+            assert(v.out.flight.state == EASYTVC_FLIGHT_FAULT && !v.out.control.enabled);
+        }
+    }
+    printf("flight: 15 ms IMU dropout in boost held the gimbal and kept TVC on; 150 ms gave up\n");
+}
+
 static void test_pad_safety(void)
 {
     Vehicle v;
@@ -223,6 +271,7 @@ static void test_pad_safety(void)
 
 int main(void)
 {
+    test_imu_dropout_in_boost();
     test_full_flight();
     test_backup_timer_opens_chute_after_fault();
     test_pad_safety();

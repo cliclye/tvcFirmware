@@ -2,6 +2,7 @@
 #include "stm32f4xx.h"
 #include "board_pins.h"
 #include "vehicle_config.h"
+#include "easytvc_safety.h"
 
 /* LED "off" level: high for an active-low (common-anode) RGB LED. */
 #define LED_OFF_SET(pin) ((EASYTVC_LED_ACTIVE_LOW) ? (1U << (pin)) : ((1U << (pin)) << 16))
@@ -538,4 +539,29 @@ void EasyTVC_GPIO_HaltClockFault(void)
         for (volatile uint32_t i = 0; i < 400000UL; ++i) {
         }
     }
+}
+
+uint8_t EasyTVC_GPIO_ContinuityBits(void)
+{
+    /* Pyro continuity sense inputs (vendor-untested): P1 = PB12, P2 = PC4, P3 = PC2. Inputs only;
+     * reading them changes nothing. Raw pin levels: what "continuity" reads as is not verified. */
+    return (uint8_t)(((STM32_GPIOB->IDR >> 12) & 1U) | (((STM32_GPIOC->IDR >> 4) & 1U) << 1) |
+                     (((STM32_GPIOC->IDR >> 2) & 1U) << 2));
+}
+
+void EasyTVC_GPIO_PyroWrite(uint8_t channel, bool on)
+{
+#if EASYTVC_PYRO_OUTPUTS_COMPILED_IN
+    /* P1 = PB2, P3 = PC3 (configured as push-pull LOW outputs at boot). P2 (PA13) is SWDIO and is
+     * never driven. */
+    if (channel == 1U) {
+        STM32_GPIOB->BSRR = on ? (1U << 2) : ((1U << 2) << 16);
+    } else if (channel == 3U) {
+        STM32_GPIOC->BSRR = on ? (1U << 3) : ((1U << 3) << 16);
+    }
+#else
+    /* outputs compiled out (easytvc_safety.h): the pins stay LOW */
+    (void)channel;
+    (void)on;
+#endif
 }

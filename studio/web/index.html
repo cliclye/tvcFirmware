@@ -10,6 +10,7 @@
   <script defer src="/launch.js"></script>
   <script defer src="/sim3d.js"></script>
   <script defer src="/gimbal.js"></script>
+  <script defer src="/live.js"></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -20,7 +21,8 @@
       <button class="nav-item" data-tab="tune">⌁ <span>Tuning lab</span></button>
       <div class="nav-group">Test</div>
       <button class="nav-item" data-tab="sim3d">◭ <span>3D flight sim</span></button>
-      <button class="nav-item" data-tab="flash" data-also="live">⇩ <span>Board</span></button>
+      <button class="nav-item" data-tab="flash">⇩ <span>Board</span></button>
+      <button class="nav-item" data-tab="live">◉ <span>Live</span></button>
       <div class="nav-group">Fly</div>
       <button class="nav-item" data-tab="checklist">✓ <span>Launch checklist</span></button>
       <button class="nav-item" data-tab="logs">≋ <span>Flight logs</span></button>
@@ -51,12 +53,15 @@
         <div class="title-actions"><span id="rocket-dirty" class="chip" hidden>Unsaved changes</span><button id="rocket-revert" class="quiet">Revert</button><button id="rocket-save">Save</button><button id="rocket-install" class="primary">Save &amp; install on board <span>↗</span></button></div></div>
       <div id="rocket-banner" class="banner"><strong>Loading</strong><span>Reading vehicle_config.h…</span></div>
       <div class="section-index" role="navigation" aria-label="Rocket setup sections"><span class="eyebrow">JUMP TO</span>
-        <button data-jump="rs-mounting">Mounting</button><button data-jump="rs-control">Gains</button><button data-jump="rs-launch">Launch</button>
+        <button data-jump="rs-outputs">Wiring</button><button data-jump="rs-mounting">Mounting</button><button data-jump="rs-control">Gains</button><button data-jump="rs-launch">Launch</button>
         <button data-jump="rs-recovery">Recovery</button><button data-jump="rs-vehicle">Vehicle &amp; parts</button><button data-jump="rs-linkage">TVC linkage</button><button data-jump="rs-firmware">Firmware</button></div>
       <div class="workspace-grid">
         <div class="controls">
+          <article id="rs-outputs" class="card"><div class="card-heading"><div><span class="eyebrow">00 / WIRING</span><h2>Board outputs</h2></div><span class="chip">4 servo · 3 pyro</span></div>
+            <p class="help">Set what is plugged into each header. Picking a job that another header has swaps the two. Servo headers S1–S4 are the 3-pin rows; pyro terminals P1–P3 are the screw terminals on top.</p>
+            <div id="cfg-outputs" class="outputs"></div></article>
           <article id="rs-mounting" class="card"><div class="card-heading"><div><span class="eyebrow">01 / MOUNTING</span><h2>IMU &amp; TVC servos</h2></div><span class="chip">Bench-checked</span></div>
-            <p class="help">Nose axis: the sensor axis that points at the nose. Check it with the rocket standing nose-up: <em>Board → Live data</em>, or a sensor test replayed from <em>Flight logs</em>. Servo A tilts the motor about body X, servo B about body Y. Set MIN/MAX at the gimbal's mechanical stops.</p>
+            <p class="help">Nose axis: the sensor axis that points at the nose. Check it with the rocket standing nose-up: <em>Live → Pad tools</em>, or a sensor test replayed from <em>Flight logs</em>. Servo A tilts the motor about body X, servo B about body Y. Set MIN/MAX at the gimbal's mechanical stops.</p>
             <div id="cfg-mount"></div></article>
           <article id="rs-control" class="card"><div class="card-heading"><div><span class="eyebrow">02 / CONTROL</span><h2>Controller gains</h2></div><span class="chip">Both axes</span></div>
             <p class="help">Output is a fraction of full gimbal travel per radian of tilt. Try changes in the Tuning lab first.</p>
@@ -64,8 +69,10 @@
           <article id="rs-launch" class="card"><div class="card-heading"><div><span class="eyebrow">03 / LAUNCH</span><h2>Arming &amp; launch detection</h2></div></div>
             <p class="help">The flight image arms after standing vertical and still for the hold time, and disarms if it's tipped past the disarm angle.</p>
             <div id="cfg-launch" class="field-grid"></div></article>
-          <article id="rs-recovery" class="card"><div class="card-heading"><div><span class="eyebrow">04 / RECOVERY</span><h2>Parachute release servo</h2></div></div>
-            <p class="help">It opens at detected apogee, or at the backup time after launch at the latest. Set the backup from the apogee estimate on the right. Channel 0 means no servo (motor ejection).</p>
+          <article id="rs-recovery" class="card"><div class="card-heading"><div><span class="eyebrow">04 / RECOVERY</span><h2>Parachute deployment</h2></div></div>
+            <p id="cfg-recovery-method" class="recovery-method"></p>
+            <p class="help">Set the backup from the apogee estimate on the right (apogee + ~0.5 s). Nothing deploys before launch is detected. After an unexpected reboot the servo opens but the charge never fires, since the board can't tell the pad from the air.</p>
+            <div id="cfg-recovery-lock" class="assessment" hidden></div>
             <div id="cfg-recovery" class="field-grid"></div></article>
         </div>
         <div class="results">
@@ -170,7 +177,7 @@
 
     <section id="flash" class="tab" hidden>
       <div class="page-title"><div><h1>Code to board.</h1><p>Build the images from your saved setup, then flash over USB-C. Every byte is read back to verify.</p></div>
-        <div class="segmented board-switch" role="group" aria-label="Board"><button data-goto="flash" class="selected">Install firmware</button><button data-goto="live">Live data</button></div></div>
+        <button data-goto="live" class="quiet">Live telemetry →</button></div>
       <div class="flash-grid">
         <article class="card"><span class="eyebrow">STEP 1</span><h2>Build firmware</h2>
           <div id="build-status" class="assessment">—</div>
@@ -190,10 +197,92 @@
       </div>
     </section>
 
-    <section id="live" class="tab" hidden>
-      <div class="page-title"><div><h1>Live board.</h1><p>Read the board's telemetry through a 3.3 V USB-UART adapter: adapter RX → <strong>TX2</strong>, TX → <strong>RX2</strong>, GND → GND.</p></div>
-        <div class="segmented board-switch" role="group" aria-label="Board"><button data-goto="flash">Install firmware</button><button data-goto="live" class="selected">Live data</button></div></div>
-      <article class="card"><div class="connection-controls"><select id="live-port" aria-label="Serial port"></select><button id="live-refresh">Refresh</button><button id="live-connect" class="primary">Connect</button><button id="live-disconnect" disabled>Disconnect</button></div><p id="live-state" class="help">Not connected. Read-only: Studio never sends anything to the board.</p></article>
+    <section id="live" class="tab live-tab" hidden>
+      <div class="live-top">
+        <div class="live-title"><h1>Live.</h1>
+          <div class="segmented" role="group" aria-label="Live view" id="live-view"><button data-view="dash" class="selected">Dashboard</button><button data-view="pad">Pad tools</button></div></div>
+        <div class="link-bar">
+          <span id="link-pill" class="link-pill off"><i></i><b id="link-title">Not connected</b></span>
+          <div class="segmented" role="group" aria-label="Link type" id="link-kind"><button data-kind="ble" class="selected">Bluetooth</button><button data-kind="serial">USB</button><button data-kind="udp">Wi-Fi UDP</button><button data-kind="tcp">Wi-Fi TCP</button></div>
+          <span id="link-ble" class="link-fields"><span id="ble-state" class="chip">Bluetooth</span></span>
+          <span id="link-serial" class="link-fields" hidden><select id="live-port" aria-label="Serial port"></select><button id="live-refresh" class="small" title="Look for USB serial ports again">↻</button></span>
+          <span id="link-net" class="link-fields" hidden><input id="link-host" type="text" spellcheck="false" aria-label="Bridge address" title="Bridge address">
+            <input id="link-port" type="number" min="1" max="65535" aria-label="Bridge port" title="Bridge port">
+            <span id="link-listen-wrap" class="inline-mini">listen <input id="link-listen" type="number" min="1" max="65535" aria-label="Local UDP port" title="Local UDP port"></span>
+            <button id="link-defaults" class="small quiet" title="192.168.2.1 · UDP 14550 · TCP 5760">Defaults</button></span>
+          <button id="live-connect" class="primary small">Connect</button><button id="live-disconnect" class="small" disabled>Disconnect</button>
+          <button id="link-help" class="small quiet">How to connect</button>
+        </div>
+      </div>
+      <div id="link-chips" class="link-chips"></div>
+      <p id="live-state" class="help live-state">Not connected.</p>
+
+      <div id="live-dash" class="live-dash">
+        <article class="card dash-clock">
+          <div class="clock-main"><span class="eyebrow" id="clock-label">MISSION CLOCK</span><strong id="clock-time">T− --:--.-</strong><span id="tlm-headline" class="clock-state">—</span></div>
+          <div class="clock-chute"><span class="eyebrow">PARACHUTE</span><strong id="chute-eta">—</strong><span id="chute-how" class="clock-sub">—</span></div>
+          <div class="clock-apogee"><span class="eyebrow">APOGEE</span><strong id="apogee-eta">—</strong><span id="apogee-sub" class="clock-sub">—</span></div>
+          <div class="clock-actions"><label class="inline-mini">T− <input id="count-from" type="number" min="3" max="600" value="10" aria-label="Countdown seconds"> s</label>
+            <button id="count-start" class="small">Start countdown</button><button id="count-stop" class="small quiet" hidden>Reset</button>
+            <span class="clock-note">Countdown is on this Mac only: it sends nothing to the rocket.</span></div>
+          <div class="clock-age"><button id="batt-cal" class="small quiet">Battery divider…</button><span id="tlm-age" class="chip">no data</span></div>
+        </article>
+        <div id="tlm-readouts" class="readouts dash-readouts"></div>
+        <article class="card dash-3d"><div class="dash-head"><span class="eyebrow">ATTITUDE · 3D</span><span class="chip" id="att-chip">—</span></div>
+          <div class="att-wrap"><canvas id="att-canvas" aria-label="Live 3D attitude"></canvas></div></article>
+        <article class="card dash-events"><div class="dash-head"><span class="eyebrow">EVENTS</span><span class="chip" id="evt-count">0</span></div>
+          <ul id="tlm-events" class="events live-events"><li><span class="help-inline">No events yet.</span></li></ul></article>
+        <article class="card dash-plots"><div class="dash-head"><span class="eyebrow">LAST 30 SECONDS</span><span class="chip" id="plot-chip">—</span></div>
+          <div class="plot-grid">
+            <div><div class="plot-title">Altitude · m</div><canvas id="plot-alt" class="live-plot" aria-label="Altitude plot"></canvas></div>
+            <div><div class="plot-title">Vertical speed · m/s</div><canvas id="plot-vs" class="live-plot" aria-label="Vertical speed plot"></canvas></div>
+            <div><div class="plot-title">Accel · g <span class="x">X</span> <span class="y">Y</span> <span class="z">Z</span></div><canvas id="plot-acc" class="live-plot" aria-label="Acceleration plot"></canvas></div>
+            <div><div class="plot-title">Rotation · °/s <span class="x">X</span> <span class="y">Y</span> <span class="z">Z</span></div><canvas id="plot-gyro" class="live-plot" aria-label="Rotation rate plot"></canvas></div>
+            <div><div class="plot-title">Tilt · ° <span class="x">about X</span> <span class="y">about Y</span></div><canvas id="plot-att" class="live-plot" aria-label="Tilt plot"></canvas></div>
+            <div><div class="plot-title">Pressure · hPa</div><canvas id="plot-baro" class="live-plot" aria-label="Pressure plot"></canvas></div>
+            <div><div class="plot-title">TVC X (A) <span class="x">command</span> <span class="y">servo</span></div><canvas id="plot-tvca" class="live-plot" aria-label="TVC A plot"></canvas></div>
+            <div><div class="plot-title">TVC Y (B) <span class="x">command</span> <span class="y">servo</span></div><canvas id="plot-tvcb" class="live-plot" aria-label="TVC B plot"></canvas></div>
+          </div></article>
+        <div id="dash-connect" class="dash-connect" hidden></div>
+      </div>
+
+      <div id="live-pad" class="live-pad" hidden>
+      <article class="card pad-tools"><div class="card-heading"><div><span class="eyebrow">ON THE PAD · ONLY WHILE IDLE</span><h2>Board tools</h2></div><span class="chip" id="pad-lock">locked</span></div>
+        <p class="help">These ask the board for data. They work only while it reports IDLE; in any other state the board ignores them and Studio won't send them. Nothing here can arm, fire, move a servo or start a launch.</p>
+        <div class="actions"><button id="pad-status">Status</button><button id="pad-config">Read config</button><button id="pad-download" class="primary">Download latest log</button><button id="pad-beep">LED + buzzer check</button>
+          <button id="pad-resume" hidden>Resume</button><button id="pad-cancel" class="quiet" hidden>Cancel</button></div>
+        <div id="pad-progress" class="pad-progress" hidden><div class="progress-bar"><i id="pad-bar"></i></div><span id="pad-progress-text" class="help-inline"></span></div>
+        <div id="pad-result"></div>
+        <div class="gimbal-test">
+          <div class="card-heading"><div><span class="eyebrow">TVC GIMBAL TEST</span><h2>Move and align the mount</h2></div><span class="chip" id="gim-chip">—</span></div>
+          <p class="help">Hold a slider to move the gimbal; let go and it centres. Servos A and B only, never the parachute servo. The test ends by itself within 1 s if the link drops, and the moment the board leaves IDLE.</p>
+          <div class="gimbal-sliders">
+            <label class="field">Servo A <input id="gim-a" type="range" min="-100" max="100" value="0" aria-label="Servo A position"><span id="gim-a-out" class="mono">—</span></label>
+            <label class="field">Servo B <input id="gim-b" type="range" min="-100" max="100" value="0" aria-label="Servo B position"><span id="gim-b-out" class="mono">—</span></label>
+          </div>
+          <div class="actions"><button id="gim-sweep">Sweep A, then B</button><button id="gim-center">Centre</button></div>
+          <h3 class="gimbal-sub">Alignment trim</h3>
+          <p class="help">Nudge each centre until the motor points straight along the body. The trim is temporary (cleared when the board leaves IDLE or restarts): save it to Rocket setup, then build and install over USB-C to make it permanent.</p>
+          <div class="trim-grid">
+            <div><span>Servo A</span><button class="small" data-trim="0,-5">−5</button><button class="small" data-trim="0,-1">−1</button><strong id="trim-a">0 µs</strong><button class="small" data-trim="0,1">+1</button><button class="small" data-trim="0,5">+5</button></div>
+            <div><span>Servo B</span><button class="small" data-trim="1,-5">−5</button><button class="small" data-trim="1,-1">−1</button><strong id="trim-b">0 µs</strong><button class="small" data-trim="1,1">+1</button><button class="small" data-trim="1,5">+5</button></div>
+          </div>
+          <div class="actions"><button id="trim-reset" class="quiet">Reset trim</button><button id="trim-board" class="primary">Save trim to the board</button><button id="trim-save">Save trim to Rocket setup only</button></div>
+          <p class="help">"Save trim to the board" makes the trimmed position the new centre right away: it's stored on the board's SD card, read back to check it, and kept until you install firmware again (Rocket setup is updated too, so the next install keeps it).</p>
+        </div></article>
+      <article class="card board-settings"><div class="card-heading"><div><span class="eyebrow">OVER THE RADIO · ONLY WHILE IDLE</span><h2>Board settings</h2></div><span class="chip" id="bs-chip">—</span></div>
+        <p class="help">Tune the gains, the TVC centres and the recovery timing without a cable. Studio sends them, the board checks the ranges, stores them on its SD card, reads them back and echoes them, and Studio compares every value. Wiring (channels, directions, endpoints, nose axis) still changes only by installing over USB-C. Installing firmware again replaces anything sent here.</p>
+        <div id="bs-fields" class="field-grid bs-grid"></div>
+        <label class="check"><input id="bs-also-setup" type="checkbox" checked> Also put these values in Rocket setup (so the next install keeps them)</label>
+        <div class="actions"><button id="bs-load-board">Load from board</button><button id="bs-load-setup" class="quiet">Load from Rocket setup</button>
+          <button id="bs-send" class="primary">Send to board</button><button id="bs-reset" class="quiet">Back to installed values</button></div>
+        <div id="bs-result"></div></article>
+      <article class="card pyro-test"><div class="card-heading"><div><span class="eyebrow">GROUND TEST · TEST LOAD ONLY</span><h2>Pyro channel test</h2></div><span class="chip" id="pt-chip">—</span></div>
+        <p class="help">Checks a pyro channel with a <strong>test load</strong> (an LED with a 1 kΩ resistor, or a small bulb) on the terminal, before any igniter goes near it. Only while the rocket is IDLE and not armed. Two steps: the board gives a one-off code, then fires one short pulse. While the pyro outputs are locked in the firmware the test runs but the pin stays off, and Studio tells you so.</p>
+        <div class="actions"><label class="inline">Channel <select id="pt-channel" aria-label="Pyro channel"><option value="1">P1</option><option value="3">P3</option></select></label>
+          <label class="inline">Pulse <select id="pt-ms" aria-label="Pulse length"><option value="100">100 ms</option><option value="250" selected>250 ms</option><option value="500">500 ms</option></select></label>
+          <button id="pt-start" class="primary">Test channel…</button></div>
+        <div id="pt-result"></div></article>
       <div class="live-grid">
         <article class="card"><div class="card-heading"><div><span class="eyebrow">STATUS · 1 Hz</span><h2 id="live-headline">—</h2></div><span id="live-age" class="chip">no data</span></div><div id="live-tiles" class="telemetry-grid"></div></article>
         <article class="card"><div class="card-heading"><div><span class="eyebrow">ATTITUDE</span><h2>Tilt from vertical</h2></div><span class="chip" id="live-mode">—</span></div>
@@ -204,6 +293,7 @@
       <article id="live-sensors" class="card" hidden><div class="card-heading"><div><span class="eyebrow">SENSOR TEST · 10 Hz</span><h2 id="sensor-headline">—</h2></div><span id="sensor-age" class="chip">—</span></div>
         <div id="sensor-values" class="telemetry-grid"></div><ul id="sensor-checks" class="sensor-checks"></ul></article>
       <article class="card"><details><summary>Raw lines</summary><pre id="live-lines" class="log">—</pre></details></article>
+      </div>
     </section>
 
     <section id="checklist" class="tab" hidden>
@@ -213,8 +303,8 @@
     </section>
 
     <section id="logs" class="tab" hidden>
-      <div class="page-title"><div><h1>What happened.</h1><p>Read a session straight from the microSD card, or open a saved <code>session_N.bin</code>.</p></div></div>
-      <article class="card"><div class="connection-controls"><select id="disk" aria-label="Card reader"></select><button id="disk-refresh">Refresh</button><label class="inline">Session <input id="session-number" type="number" min="0" placeholder="latest"></label><button id="sd-read" class="primary">Read from SD card</button><button id="sd-save-all" title="Copy every session on the card to this Mac, with one password">Save everything from card</button><button id="log-import">Open file…</button><input id="log-file" type="file" accept=".bin" hidden></div>
+      <div class="page-title"><div><h1>What happened.</h1><p>Read a session straight from the microSD card, open a saved <code>session_N.bin</code>, or a live-telemetry recording (<code>.etlog</code>).</p></div></div>
+      <article class="card"><div class="connection-controls"><select id="disk" aria-label="Card reader"></select><button id="disk-refresh">Refresh</button><label class="inline">Session <input id="session-number" type="number" min="0" placeholder="latest"></label><button id="sd-read" class="primary">Read from SD card</button><button id="sd-save-all" title="Copy every session on the card to this Mac, with one password">Save everything from card</button><button id="log-import">Open file…</button><input id="log-file" type="file" accept=".bin,.etlog" hidden></div>
         <p class="help" id="logs-help">macOS may ask for your password: raw card access needs it (if macOS blocks the app, a Terminal window opens and asks instead). The card is only read, never written. Each session read is saved to <code>~/Documents/EasyTVC Flights</code>.</p></article>
       <article class="card saved-card"><div class="card-heading"><div><span class="eyebrow">SAVED ON THIS MAC</span><h2>Your sessions</h2></div><button id="saved-refresh" class="quiet small">Refresh</button></div>
         <p class="help">Every session read from the card is kept here, so you can open it again without the card.</p>
@@ -236,12 +326,12 @@
         <ol><li><strong>Design → Rocket setup.</strong> Enter your servos, endpoints, parts and the TVC linkage (measure with calipers), and estimate apogee. Save. The <strong>Tuning lab</strong> is a quick 1-axis playground for gains.</li>
           <li><strong>Test → 3D flight sim.</strong> Run flights and 40 random flights with your real numbers; <em>Fly live</em> lets you kick, gust or steer it.</li>
           <li><strong>Test → Board → Install firmware</strong>, or the <em>◎ Sensor test</em> button first: it checks every sensor and logs them to the SD card.</li>
-          <li>Install the <em>bench</em> image and check the nose axis and the tilt test: when the nose leans one way, the nozzle must swing the opposite way. Use <strong>Board → Live data</strong> with a USB-UART, or record on the SD card and use <em>Replay in 3D</em> in Flight logs. Fix channels and directions in Rocket setup, save, reinstall.</li>
+          <li>Install the <em>bench</em> image and check the nose axis and the tilt test: when the nose leans one way, the nozzle must swing the opposite way. Use <strong>Live → Pad tools</strong> with a USB-UART, or record on the SD card and use <em>Replay in 3D</em> in Flight logs. Fix channels and directions in Rocket setup, save, reinstall.</li>
           <li><strong>Fly → Launch checklist:</strong> finish the bench section, then install the <em>flight</em> image.</li>
           <li>At the pad: power on, hands off. Solid green and a chirp every second means ARMED. Red, or a long beep every 2 s, means don't launch.</li>
           <li><strong>Fly → Flight logs:</strong> put the SD card in your Mac, read or save every session, see the graphs, and <em>Replay in 3D</em>.</li></ol>
         <h2>Safety</h2>
-        <p>Use 2S LiPo only (the servo rail is a linear 5 V regulator). Never connect pyro channel P2. Nothing here has flown before your first flight, so treat it as a test flight: clear area, low wind, a stand that holds the rocket vertical.</p>
+        <p>Use 2S LiPo only (the servo rail is a linear 5 V regulator). Never connect pyro channel P2. Pyro outputs ship locked: an ejection charge on P1/P3 only fires after the pyro bench test in <code>docs/flight-guide.md</code> (test load first, never a real igniter) and a deliberate unlock in <code>easytvc_safety.h</code>. Nothing here has flown before your first flight, so treat it as a test flight: clear area, low wind, a stand that holds the rocket vertical.</p>
         <h2>Tools you'll need on the Mac</h2>
         <p><code>brew install cmake dfu-util</code>. The ARM compiler is in the project's <code>.tools</code> folder.</p>
       </article>

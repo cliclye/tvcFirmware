@@ -2,7 +2,7 @@
 /* Rocket setup, build & flash, live board, launch checklist and flight logs.
  * Shares $, api, action, notice, download, textNode, grid, profile, render and showTab with app.js. */
 
-let cfg = null, savedCfg = null, buildInfo = null, appState = {}, vehicle = null;
+let cfg = null, savedCfg = null, buildInfo = null, appState = {}, vehicle = null, pyroCompiledIn = false;
 let liveTimer = null, liveStatus = null, logData = null, validateTimer = null, rocketModel = null, modelTimer = null;
 const AXES = ["POS_X", "NEG_X", "POS_Y", "NEG_Y", "POS_Z", "NEG_Z"];
 
@@ -36,8 +36,62 @@ const CONTROL_FIELDS = [["KP", "P · per rad", 0, 100, .05], ["KI", "I · per ra
 const LAUNCH_FIELDS = [["LAUNCH_ACCEL_G", "Launch at · g", 1.2, 10, .1], ["LAUNCH_CONFIRM_MS", "Confirm for · ms", 10, 500, 5],
   ["TVC_ENABLE_DELAY_MS", "TVC starts after · ms", 0, 1000, 10], ["ARM_HOLD_MS", "Still for · ms to arm", 1000, 30000, 500],
   ["ARM_MAX_TILT_DEG", "Arm within · ° of vertical", 1, 30, 1], ["DISARM_TILT_DEG", "Disarm past · °", 2, 60, 1]];
-const RECOVERY_FIELDS = [["CHUTE_CLOSED_US", "Closed pulse · µs", 1000, 2000, 10], ["CHUTE_OPEN_US", "Open pulse · µs", 1000, 2000, 10],
-  ["CHUTE_BACKUP_MS", "Backup after launch · ms", 1000, 30000, 100]];
+const RECOVERY_SERVO_FIELDS = [["CHUTE_CLOSED_US", "Servo closed · µs", 1000, 2000, 10], ["CHUTE_OPEN_US", "Servo open · µs", 1000, 2000, 10]];
+const RECOVERY_PYRO_FIELDS = [["PYRO_DEPLOY_ALT_M", "Charge at height on the way down · m (0 = at apogee)", 0, 1000, 0.5],
+  ["PYRO_CHUTE_DELAY_MS", "Charge delay after that · ms", 0, 10000, 100], ["PYRO_BACKUP_MS", "Charge backup after launch · ms", 1000, 60000, 100],
+  ["PYRO_FIRE_MS", "Charge on-time · ms", 100, 3000, 50]];
+
+/* ---- board outputs: which servo header / pyro terminal does what ---- */
+const SERVO_PORTS = [[1, "PB0"], [2, "PB1"], [3, "PB8"], [4, "PB9"]];
+const SERVO_ROLES = [["SERVO_A_CHANNEL", "TVC X (A)", "servo A: tilts the motor about body X"],
+  ["SERVO_B_CHANNEL", "TVC Y (B)", "servo B: tilts the motor about body Y"], ["CHUTE_CHANNEL", "Chute servo", "releases the parachute"]];
+function servoRoleOf(port) { const r = SERVO_ROLES.find(([key]) => cfg[key] === port); return r ? r[0] : ""; }
+function assignServoPort(port, key) {
+  /* the role moves here; whatever was here moves to the role's old header (a swap), so A and B
+   * always stay plugged in somewhere */
+  const here = servoRoleOf(port);
+  if (here === key) return;
+  if (key === "") {
+    if (here !== "CHUTE_CHANNEL") throw new Error("The TVC servos must stay plugged in: pick another header for them instead.");
+    cfg.CHUTE_CHANNEL = 0;
+  } else {
+    const old = cfg[key];
+    if (here && here !== "CHUTE_CHANNEL" && !old)
+      throw new Error(`S${port} holds a TVC servo. Move that servo to a free header first, or pick a free header for the parachute servo.`);
+    cfg[key] = port;
+    if (here) cfg[here] = old || 0;
+  }
+  renderRocket(); cfgChanged();
+}
+function renderOutputs() {
+  const ports = SERVO_PORTS.map(([port, pin]) => {
+    const role = servoRoleOf(port), select = el("select", {"aria-label": `Servo header ${port}`});
+    [["", "Not used"], ...SERVO_ROLES.map(([key, name]) => [key, name])].forEach(([key, name]) => {
+      const o = el("option", {text: name}); o.value = key;
+      if (key === "" && role && role !== "CHUTE_CHANNEL") o.disabled = true;
+      select.append(o);
+    });
+    select.value = role;
+    select.onchange = () => { try { assignServoPort(port, select.value); } catch (error) { notice(error.message); renderRocket(); } };
+    const info = SERVO_ROLES.find(([key]) => key === role);
+    return el("div", {class: `port ${role ? "used" : ""} ${role === "CHUTE_CHANNEL" ? "chute" : role ? "tvc" : ""}`},
+      el("div", {class: "port-head"}, el("b", {text: `S${port}`}), el("span", {class: "mono", text: pin})), select,
+      el("small", {text: info ? info[2] : "nothing plugged in"}));
+  });
+  const pyro = [[1, "PB2"], [2, "PA13"], [3, "PC3"]].map(([p, pin]) => {
+    if (p === 2) return el("div", {class: "port blocked"}, el("div", {class: "port-head"}, el("b", {text: "P2"}), el("span", {class: "mono", text: pin})),
+      el("select", {disabled: "", "aria-label": "Pyro P2"}, el("option", {text: "Can't be used"})), el("small", {text: "the processor's debug pin: high at every reset"}));
+    const used = cfg.PYRO_CHUTE_CHANNEL === p, select = el("select", {"aria-label": `Pyro P${p}`});
+    [["0", "Not used"], ["1", "Chute charge"]].forEach(([v, name]) => { const o = el("option", {text: name}); o.value = v; select.append(o); });
+    select.value = used ? "1" : "0";
+    select.onchange = () => { cfg.PYRO_CHUTE_CHANNEL = select.value === "1" ? p : (used ? 0 : cfg.PYRO_CHUTE_CHANNEL); renderRocket(); cfgChanged(); };
+    return el("div", {class: `port ${used ? "used pyro" : ""}`}, el("div", {class: "port-head"}, el("b", {text: `P${p}`}), el("span", {class: "mono", text: pin})), select,
+      el("small", {text: used ? (pyroCompiledIn ? "ejection charge: LIVE" : "ejection charge (outputs locked)") : "leave the terminal empty"}));
+  });
+  $("cfg-outputs").replaceChildren(
+    el("div", {class: "port-group"}, el("span", {class: "eyebrow", text: "SERVO HEADERS"}), el("div", {class: "port-row"}, ...ports)),
+    el("div", {class: "port-group"}, el("span", {class: "eyebrow", text: "PYRO TERMINALS"}), el("div", {class: "port-row three"}, ...pyro)));
+}
 
 function cfgField(key, label, min, max, step) {
   const input = el("input", {type: "number", min, max, step, "aria-label": label});
@@ -67,10 +121,9 @@ function renderRocket() {
   mount.append(top, el("label", {class: "check"}, led, " Status LED is active-low (power-up shows red → green → blue one at a time; untick if you see the opposite)"),
     el("label", {class: "field led-brightness"}, brightLabel, bright));
   for (const s of ["A", "B"]) {
-    const block = el("div", {class: "servo-block"}, el("h3", {text: `Servo ${s} · tilts about body ${s === "A" ? "X" : "Y"}`}));
+    const block = el("div", {class: "servo-block"}, el("h3", {text: `Servo ${s} · tilts about body ${s === "A" ? "X" : "Y"} · on header S${cfg[`SERVO_${s}_CHANNEL`]}`}));
     const g = grid();
-    g.append(cfgSelect(`SERVO_${s}_CHANNEL`, "Header", [[1, "1 (PB0)"], [2, "2 (PB1)"], [3, "3 (PB8)"], [4, "4 (PB9)"]]),
-      cfgField(`SERVO_${s}_MIN_US`, "Min · µs", 1000, 2000, 5), cfgField(`SERVO_${s}_CENTER_US`, "Centre · µs", 1000, 2000, 5),
+    g.append(cfgField(`SERVO_${s}_MIN_US`, "Min · µs", 1000, 2000, 5), cfgField(`SERVO_${s}_CENTER_US`, "Centre · µs", 1000, 2000, 5),
       cfgField(`SERVO_${s}_MAX_US`, "Max · µs", 1000, 2000, 5), cfgSelect(`SERVO_${s}_DIRECTION`, "Direction", [[1, "Normal (+1)"], [-1, "Reversed (−1)"]]));
     block.append(g); mount.append(block);
   }
@@ -79,8 +132,25 @@ function renderRocket() {
   const sd = el("input", {type: "checkbox"}); sd.checked = cfg.REQUIRE_SD === 1;
   sd.onchange = () => { cfg.REQUIRE_SD = sd.checked ? 1 : 0; cfgChanged(); };
   $("cfg-launch").replaceChildren(...launchFields, el("label", {class: "check"}, sd, " Refuse to arm without an SD card"));
-  $("cfg-recovery").replaceChildren(cfgSelect("CHUTE_CHANNEL", "Parachute servo header", [[0, "None (motor ejection)"], [1, "1"], [2, "2"], [3, "3"], [4, "4"]]),
-    ...RECOVERY_FIELDS.map(f => cfgField(...f)));
+  renderOutputs();
+  const servo = cfg.CHUTE_CHANNEL !== 0, charge = cfg.PYRO_CHUTE_CHANNEL !== 0;
+  const method = servo && charge ? `Release servo on S${cfg.CHUTE_CHANNEL} and ejection charge on P${cfg.PYRO_CHUTE_CHANNEL}`
+    : servo ? `Release servo on header S${cfg.CHUTE_CHANNEL}` : charge ? `Ejection charge on P${cfg.PYRO_CHUTE_CHANNEL}` : "None from the board (motor ejection)";
+  $("cfg-recovery-method").replaceChildren(el("strong", {text: method}),
+    el("span", {text: !servo && !charge ? " · choose a servo header or pyro terminal under Board outputs above."
+      : ` · ${servo ? `the servo opens at detected apogee, or ${(cfg.CHUTE_BACKUP_MS / 1000).toFixed(1)} s after launch at the latest` : ""}${servo && charge ? "; " : ""}`
+        + `${charge ? `the charge fires ${cfg.PYRO_DEPLOY_ALT_M ? `when the rocket comes back down through ${cfg.PYRO_DEPLOY_ALT_M} m` : "at apogee"}`
+          + `${cfg.PYRO_CHUTE_DELAY_MS ? ` + ${cfg.PYRO_CHUTE_DELAY_MS} ms` : ""}, or ${(cfg.PYRO_BACKUP_MS / 1000).toFixed(1)} s after launch at the latest (the timer, if the barometer fails)` : ""}.`}));
+  $("cfg-recovery-lock").hidden = !charge;
+  const nothingDeploys = charge && !servo && !pyroCompiledIn;
+  $("cfg-recovery-lock").className = `assessment ${pyroCompiledIn || nothingDeploys ? "bad-note" : ""}`;
+  $("cfg-recovery-lock").textContent = nothingDeploys
+    ? "Nothing on the board will deploy the parachute: the charge is the only recovery set, and the pyro outputs are locked in the firmware (EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0), so it never fires. Only fly like this with a motor that has its own ejection charge (E12-4, not E12-0), or put the release servo back on a header under Board outputs."
+    : pyroCompiledIn
+    ? "Pyro outputs are LIVE in this firmware: the charge will really fire. Only connect an igniter at the pad, rocket pointed away from people."
+    : "Pyro outputs are locked in the firmware (EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0). The board counts down and logs when the charge is due, but the pin stays off. They unlock only after the board's pyro circuit passes the bench test in the Guide.";
+  $("cfg-recovery").replaceChildren(...(servo ? [cfgField("CHUTE_BACKUP_MS", "Servo backup after launch · ms", 1000, 30000, 100)] : []),
+    ...(servo ? RECOVERY_SERVO_FIELDS.map(f => cfgField(...f)) : []), ...(charge ? RECOVERY_PYRO_FIELDS.map(f => cfgField(...f)) : []));
   renderVehicle();
   updateRocketStatus();
 }
@@ -114,6 +184,7 @@ async function loadRocket() {
   try {
     const result = await api("rocket/load", {});
     cfg = result.config; savedCfg = structuredClone(cfg); buildInfo = result.build; appState = result.state || {};
+    pyroCompiledIn = !!result.pyro_compiled_in;
     appState.project = result.project;
     const upgraded = await api("rocket/model", {vehicle: appState.vehicle || {}});
     vehicle = upgraded.vehicle; rocketModel = upgraded.model;
@@ -322,7 +393,7 @@ const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
     el("li", {text: "LEDs red → green → blue, one beep, then 3 s of fast green blinking while it tests. Don't touch it."}),
     el("li", {text: "Two short beeps + steady green = every sensor passed. Long beeps + red blinking = a failure; count them: 1 = IMU, 2 = barometer, 3 = SD card, 4 = power."}),
     el("li", {text: "Leave it running as long as you like (blue blinks while recording, ~9 min of space), then read the card in Flight logs for every value."})),
-  el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2, Board → Live data shows the values live."})];
+  el("p", {class: "help", text: "Servos stay centred and nothing arms. With a USB-UART on TX2/RX2, Live → Pad tools shows the values live."})];
 function renderImages() {
   const info = buildInfo; if (!info) return;
   const list = $("images"); list.replaceChildren();
@@ -397,15 +468,8 @@ function showLivePorts(ports, current) {
   ports.forEach(p => select.append(el("option", {value: p, text: p})));
   if (ports.includes(old)) select.value = old;
 }
-action("live-refresh", async () => showLivePorts((await api("monitor/status", {})).ports));
-action("live-connect", async () => { liveStatus = await api("monitor/connect", {port: $("live-port").value}); renderLive(); pollLive(); });
-action("live-disconnect", async () => { clearTimeout(liveTimer); liveStatus = await api("monitor/disconnect", {}); renderLive(); });
-async function pollLive() {
-  clearTimeout(liveTimer);
-  try { liveStatus = await api("monitor/status", {}); renderLive(); }
-  catch (error) { notice(error.message); return; }
-  if (liveStatus.connected) liveTimer = setTimeout(pollLive, 250);
-}
+/* connecting, polling and the live telemetry views are in live.js; this draws the status tiles,
+ * bubble, nose-axis check and sensor test from the same status */
 const SENSOR_CHECK_TEXT = {accel_id: "IMU accelerometer answers", gyro_id: "IMU gyroscope answers", baro_id: "Barometer answers",
   accel_1g: "Accelerometer reads 1 g at rest", gyro_still: "Gyroscope quiet at rest", imu_alive: "IMU values change (not stuck)",
   imu_rate: "IMU read every time", pressure: "Pressure 60–110 kPa", baro_temp: "Barometer temperature sane", humidity: "Humidity sane and changing",
@@ -436,10 +500,7 @@ function renderSensorTest(s) {
 }
 function renderLive() {
   const s = liveStatus || {connected: false, latest: {}, age: {}, lines: []};
-  $("live-connect").disabled = s.connected; $("live-disconnect").disabled = !s.connected;
   $("connection-badge").textContent = s.connected ? `BOARD · ${s.latest.status ? s.latest.status.state : "LISTENING"}` : "BOARD · NOT CONNECTED";
-  $("live-state").textContent = s.connected ? `Listening on ${s.port}.` : "Not connected. Read-only: Studio never sends anything to the board.";
-  if (s.ports) showLivePorts(s.ports, s.port);
   const st = s.latest.status, age = s.age.status;
   $("live-age").textContent = age == null ? "no data" : age > 2.5 ? `STALE ${age.toFixed(0)} s` : "live";
   $("live-age").className = age != null && age <= 2.5 ? "chip good" : "chip";
@@ -454,9 +515,10 @@ function renderLive() {
         if (["FAIL", "YES"].includes(String(value)) && label !== "Armed") t.className = "bad"; tiles.append(t); });
   } else $("live-headline").textContent = s.connected ? "Waiting for the 1 Hz status line…" : "—";
   renderSensorTest(s);
-  const bench = s.latest.bench, flight = s.latest.flight;
+  const bench = s.latest.bench, flight = s.latest.flight, tlm = s.latest.tlm;
   let tx = null, ty = null;
   if (bench && s.age.bench < 1.5) { tx = bench.tilt_x; ty = bench.tilt_y; $("live-mode").textContent = "bench image"; }
+  else if (tlm && s.age.tlm < 1.5) { tx = tlm.tilt_x; ty = tlm.tilt_y; $("live-mode").textContent = "flight image"; }
   else if (flight && s.age.flight < 1.5) { tx = flight.roll * 57.2958; ty = flight.pitch * 57.2958; $("live-mode").textContent = "flight image"; }
   else $("live-mode").textContent = "—";
   drawBubble(tx, ty);
@@ -505,7 +567,7 @@ const CHECKLIST = [
     ["b-flash", "Bench image flashed; board power-cycled"],
     ["b-led", "Power-up LED test shows red, then green, then blue (otherwise flip the LED setting)"],
     ["b-sweep", "Power-up sweep: servo A moves, then B, then the parachute servo. Nothing binds at the ends"],
-    ["b-nose", "Nose axis correct: green LED solid (and Board → Live data agrees) with the rocket nose-up"],
+    ["b-nose", "Nose axis correct: green LED solid (and Live → Pad tools agrees) with the rocket nose-up"],
     ["b-tilt-a", "Tilt test, servo A: when the nose leans, the nozzle swings to the opposite side"],
     ["b-tilt-b", "Tilt test, servo B: same for the other two directions"],
     ["b-limit", "Past the give-up tilt (≈25°) the gimbal centres"],
@@ -633,9 +695,10 @@ async function renderSaved() {
   if (!result.sessions.length) { list.append(el("li", {class: "help", text: "Nothing saved yet. Read a session from the card and it appears here."})); return; }
   const when = t => new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
   result.sessions.forEach(s => {
-    const title = s.kind === "sensortest" ? `Sensor test · session ${s.session}` : s.kind === "flight" ? `Flight log · session ${s.session}` : s.name;
+    const title = s.kind === "sensortest" ? `Sensor test · session ${s.session}` : s.kind === "flight" ? `Flight log · session ${s.session}`
+      : s.kind === "telemetry" ? `Live telemetry · ${s.name.replace(/^live_|\.etlog$/g, "")}` : s.name;
     const badge = s.kind === "sensortest" ? el("span", {class: `chip ${s.passed ? "good" : "bad"}`, text: s.passed ? "PASSED" : "FAILED"})
-      : s.kind === "flight" ? el("span", {class: "chip", text: s.flew ? `flew · ${s.max_alt_m.toFixed(0)} m` : "on the ground"})
+      : s.kind === "flight" || s.kind === "telemetry" ? el("span", {class: "chip", text: s.flew ? `flew · ${s.max_alt_m.toFixed(0)} m` : "on the ground"})
       : el("span", {class: "chip bad", text: "unreadable"});
     const meta = [s.duration_s != null ? `${s.duration_s.toFixed(1)} s` : null, `${(s.bytes / 1024).toFixed(0)} KB`, `saved ${when(s.saved)}`, s.name].filter(Boolean).join(" · ");
     const open = el("button", {class: "small", text: "Open", onclick: async () => {
@@ -850,7 +913,7 @@ function showLog(result) {
     tile("FLEW", s.flew ? "yes" : "no"), tile("MAX ALTITUDE", `${s.max_alt_m.toFixed(1)} m`),
     tile("WORST BOOST TILT", s.worst_boost_tilt_deg == null ? "—" : `${s.worst_boost_tilt_deg.toFixed(1)}°`, s.worst_boost_tilt_deg > 15 ? "bad" : ""),
     tile("PARACHUTE", s.chute_open_s == null ? "not opened" : `${s.chute_open_s.toFixed(2)} s`), tile("CONTROLLER FAULT", s.fault_s == null ? "none" : `${s.fault_s.toFixed(2)} s`, s.fault_s == null ? "" : "bad"));
-  $("log-title").textContent = `Session ${result.session}`;
+  $("log-title").textContent = result.kind === "telemetry" ? `Live telemetry recording · ${result.source || result.saved_name || ""}` : `Session ${result.session}`;
   $("log-header").textContent = `${result.header}  ·  ${result.source}`;
   $("log-events").replaceChildren(...result.events.map(e => el("li", {class: /FAULT/.test(e.event) ? "bad" : ""}, el("time", {text: `${e.t.toFixed(2)} s`}), el("span", {text: e.event}))));
   const sessions = $("log-sessions"); sessions.replaceChildren();
@@ -920,7 +983,7 @@ action("log-csv", async () => {
 
 /* ------------------------------------------------------------------ start-up */
 window.onTabShown = id => {
-  if (id === "live") { api("monitor/status", {}).then(s => { liveStatus = s; renderLive(); if (s.connected) pollLive(); }).catch(e => notice(e.message)); }
+  if (id === "live" && window.liveShown) window.liveShown();
   if (id === "logs") { refreshDisks().catch(e => notice(e.message)); renderSaved().catch(e => notice(e.message)); }
   if (id === "flash") api("build/status", {}).then(b => { buildInfo = b; renderImages(); }).catch(e => notice(e.message));
   if (id === "logs" && logData) drawLogCharts();

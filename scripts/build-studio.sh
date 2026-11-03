@@ -6,9 +6,14 @@ cmake --build "$PROJECT_ROOT/build-host" --parallel 4
 ctest --test-dir "$PROJECT_ROOT/build-host" --output-on-failure
 if [[ "$(uname -s)" == Darwin ]]; then
     APP_DIR="$PROJECT_ROOT/EasyTVC Studio.app"
+    # Remove signed code before replacing it: macOS caches a file's code signature, and a library or
+    # executable rewritten in place gets the process SIGKILLed when it loads (the app then quits
+    # silently at launch). A removed-then-copied file is a new file with a fresh signature.
+    rm -f "$APP_DIR/Contents/MacOS/EasyTVCStudio" "$APP_DIR/Contents/Resources/libeasytvc_studio.dylib"
     mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources/web" "$PROJECT_ROOT/build-host/swift-cache"
     swiftc -module-cache-path "$PROJECT_ROOT/build-host/swift-cache" -O \
-        "$PROJECT_ROOT/studio/Launcher.swift" -o "$APP_DIR/Contents/MacOS/EasyTVCStudio" -framework AppKit -framework WebKit
+        "$PROJECT_ROOT/studio/Launcher.swift" "$PROJECT_ROOT/studio/BleRelay.swift" -o "$APP_DIR/Contents/MacOS/EasyTVCStudio" \
+        -framework AppKit -framework WebKit -framework CoreBluetooth
     ICONSET="$PROJECT_ROOT/build-host/EasyTVCStudio.iconset"
     rm -rf "$ICONSET"
     swiftc -module-cache-path "$PROJECT_ROOT/build-host/swift-cache" "$PROJECT_ROOT/studio/make_icon.swift" \
@@ -16,10 +21,10 @@ if [[ "$(uname -s)" == Darwin ]]; then
     "$PROJECT_ROOT/build-host/make_icon" "$ICONSET"
     iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
     cp "$PROJECT_ROOT/studio/Info.plist" "$APP_DIR/Contents/Info.plist"
-    cp "$PROJECT_ROOT/studio/studio.py" "$PROJECT_ROOT/studio/launch.py" \
+    cp "$PROJECT_ROOT/studio/studio.py" "$PROJECT_ROOT/studio/launch.py" "$PROJECT_ROOT/studio/groundlink.py" \
         "$PROJECT_ROOT/scripts/telemetry_viewer.py" "$PROJECT_ROOT/scripts/sd_dump.py" "$APP_DIR/Contents/Resources/"
     cp "$PROJECT_ROOT/build-host/libeasytvc_studio.dylib" "$APP_DIR/Contents/Resources/"
-    cp "$PROJECT_ROOT/studio/web/index.html" "$PROJECT_ROOT/studio/web/app.js" "$PROJECT_ROOT/studio/web/launch.js" "$PROJECT_ROOT/studio/web/sim3d.js" "$PROJECT_ROOT/studio/web/gimbal.js" \
+    cp "$PROJECT_ROOT/studio/web/index.html" "$PROJECT_ROOT/studio/web/app.js" "$PROJECT_ROOT/studio/web/launch.js" "$PROJECT_ROOT/studio/web/sim3d.js" "$PROJECT_ROOT/studio/web/gimbal.js" "$PROJECT_ROOT/studio/web/live.js" \
         "$PROJECT_ROOT/studio/web/style.css" "$PROJECT_ROOT/studio/web/terminal.css" "$APP_DIR/Contents/Resources/web/"
     codesign --force --sign - "$APP_DIR"
     echo "Ready: $APP_DIR"

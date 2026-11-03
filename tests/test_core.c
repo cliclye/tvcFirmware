@@ -118,7 +118,7 @@ static void test_fault_on_unhealthy_sensors(void)
     input = healthy_input(3U);
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_ARMED);
 
-    /* In flight it is a FAULT. */
+    /* In flight, with no grace time configured, it is a FAULT at once. */
     input = healthy_input(10U);
     input.acceleration_magnitude_g = 3.0f;
     (void)EasyTVC_FlightStep(&machine, &input);
@@ -126,6 +126,29 @@ static void test_fault_on_unhealthy_sensors(void)
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
     input.now_ms = 62U;
     input.sensors_healthy = false;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_FAULT);
+
+    /* With a grace time, one bad sample in flight is ridden through; a lasting one is a FAULT. */
+    EasyTVCFlightConfig graced = test_config();
+    graced.sensor_fault_ms = 100U;
+    EasyTVC_FlightInit(&machine, &graced, 0U);
+    input = healthy_input(1U);
+    (void)EasyTVC_FlightStep(&machine, &input);
+    input = healthy_input(10U);
+    input.acceleration_magnitude_g = 3.0f;
+    (void)EasyTVC_FlightStep(&machine, &input);
+    input.now_ms = 61U;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 62U;
+    input.sensors_healthy = false;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 67U;
+    input.sensors_healthy = true;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.sensors_healthy = false;
+    for (input.now_ms = 70U; input.now_ms < 170U; input.now_ms += 5U)
+        assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 170U;
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_FAULT);
 }
 

@@ -78,6 +78,9 @@ CONFIG_FIELDS = (
     ("CHUTE_OPEN_US", "int", 1000, 2000), ("CHUTE_BACKUP_MS", "uint", 1000, 30000),
     ("ARM_HOLD_MS", "uint", 1000, 30000), ("ARM_MAX_TILT_DEG", "float", 1, 30),
     ("DISARM_TILT_DEG", "float", 2, 60), ("REQUIRE_SD", "int", 0, 1),
+    ("PYRO_CHUTE_CHANNEL", "int", 0, 3), ("PYRO_CHUTE_DELAY_MS", "uint", 0, 10000),
+    ("PYRO_FIRE_MS", "uint", 100, 3000), ("PYRO_DEPLOY_ALT_M", "float", 0, 1000),
+    ("PYRO_BACKUP_MS", "uint", 1000, 60000),
 )
 FIELD_KINDS = {name: (kind, low, high) for name, kind, low, high in CONFIG_FIELDS}
 DEFINE = re.compile(r"^(\s*#define\s+EASYTVC_)([A-Z0-9_]+)(\s+)(\S+)(.*)$")
@@ -111,6 +114,12 @@ def format_token(name, value):
     if kind == "uint":
         return f"{int(value)}U"
     return str(int(value))
+
+
+def pyro_outputs_compiled_in(project: Path) -> bool:
+    """The master pyro lock in Core/Inc/easytvc_safety.h (Studio shows it; it never changes it)."""
+    match = re.search(r"^\s*#define\s+EASYTVC_PYRO_OUTPUTS_COMPILED_IN\s+(\d+)", (project / "Core" / "Inc" / "easytvc_safety.h").read_text(), re.M)
+    return bool(match and int(match.group(1)))
 
 
 def read_config(project: Path) -> dict:
@@ -153,6 +162,8 @@ def validate_config(values: dict) -> dict:
         raise ValueError("TVC servos A and B need different channels.")
     if clean["CHUTE_CHANNEL"] in (clean["SERVO_A_CHANNEL"], clean["SERVO_B_CHANNEL"]):
         raise ValueError("The parachute servo cannot share a channel with a TVC servo.")
+    if clean["PYRO_CHUTE_CHANNEL"] == 2:
+        raise ValueError("Pyro P2 can't be used: it's the processor's SWD pin, pulled high at every reset. Use P1 or P3.")
     if clean["SERVO_RATE_HZ"] not in SERVO_RATES:
         raise ValueError("Servo rate must be one of " + ", ".join(map(str, SERVO_RATES)) + " Hz.")
     if clean["LED_BRIGHTNESS_PCT"] % 10:
@@ -264,156 +275,39 @@ def flash(project: Path, image: str, sha256: str, serial: str | None) -> dict:
 
 
 # --------------------------------------------------------------------------------------------
-# live board monitor (USB-UART on TX2/RX2): read-only
+# ground link (USART2): USB-UART or a DroneBridge ESP32 bridge; see studio/groundlink.py
 # --------------------------------------------------------------------------------------------
 
-def serial_ports():
-    import glob
-    return sorted(set(glob.glob("/dev/cu.usbserial*") + glob.glob("/dev/cu.usbmodem*") +
-                      glob.glob("/dev/cu.SLAB*") + glob.glob("/dev/cu.wchusbserial*")))
+sys.path.insert(0, str(HERE))
+import groundlink  # noqa: E402  (next to this file, in the app bundle too)
+
+serial_ports = groundlink.serial_ports
+suggest_nose_axis = groundlink.suggest_nose_axis
+SENSOR_CHECKS = [(k, 0) for k in groundlink.SENSOR_CHECKS]
 
 
 def parse_line(text: str):
-    """Classify one firmware telemetry line. Returns (kind, dict) or None."""
-    parts = text.strip().split(",")
-    try:
-        if parts[0] == "S" and len(parts) == 13:
-            v = [int(x) for x in parts[1:]]
-            return "status", {"imu": v[0], "baro": v[1], "sd": v[2], "gyro_cal": v[3],
-                              "records": v[4], "dropped": v[5], "write_errors": v[6],
-                              "session": v[7], "state": STATES[v[8]] if 0 <= v[8] < 8 else str(v[8]),
-                              "armed": v[9], "recovery": v[10], "chute": v[11]}
-        if parts[0] == "T" and len(parts) == 15:
-            v = [int(x) for x in parts[1:]]
-            return "sensors", {"ms": v[0], "accel_g": [v[1] / 1000, v[2] / 1000, v[3] / 1000],
-                               "gyro_dps": [v[4] / 100, v[5] / 100, v[6] / 100], "imu_temp_c": v[7] / 100,
-                               "pressure_pa": v[8], "baro_temp_c": v[9] / 100, "humidity_pct": v[10] / 10,
-                               "vdda_v": v[11] / 1000, "batt_pin_v": v[12] / 1000, "mcu_temp_c": v[13] / 100}
-        if parts[0] == "Q" and len(parts) == 17:
-            v = [int(x) for x in parts[1:]]
-            names = [key for key, _ in _viewer(None).SENSOR_CHECKS]   # bit order of sensor_test.h
-            return "sensor_checks", {"ms": v[0], "checks": {n: bool(v[1] >> i & 1) for i, n in enumerate(names)},
-                                     "boot": {n: bool(v[2] >> i & 1) for i, n in enumerate(names)},
-                                     "ids": [v[3], v[4], v[5]], "imu_samples": v[6], "imu_errors": v[7],
-                                     "baro_samples": v[8], "baro_errors": v[9], "sd": v[10], "records": v[11],
-                                     "dropped": v[12], "write_errors": v[13], "session": v[14], "overruns": v[15]}
-        if parts[0] == "B" and len(parts) == 10:
-            v = [int(x) for x in parts[1:]]
-            return "bench", {"ms": v[0], "tilt_x": v[1] / 100, "tilt_y": v[2] / 100,
-                             "pulse_a": v[3], "pulse_b": v[4],
-                             "raw": [v[5] / 1000, v[6] / 1000, v[7] / 1000], "body_z": v[8] / 1000}
-        if len(parts) == 12:
-            v = [int(x) for x in parts]
-            if 0 <= v[1] < 8 and all(x in (0, 1) for x in v[9:]):
-                return "flight", {"ms": v[0], "state": STATES[v[1]], "roll": v[2] / 1000,
-                                  "pitch": v[3] / 1000, "yaw": v[4] / 1000, "alt": v[5] / 1000,
-                                  "vspeed": v[6] / 1000, "cmd_a": v[7] / 1000, "cmd_b": v[8] / 1000,
-                                  "tvc": v[9], "armed": v[10]}
-    except (ValueError, IndexError):
-        return None
-    return None
+    """One line from the board: an E1 frame, or a text line from older firmware. (kind, dict) or None."""
+    frame = groundlink.decode_frame((text.strip() + "\n").encode("ascii", "replace"))
+    if frame:
+        return groundlink.parse_message(frame[1], frame[2])
+    return groundlink.parse_legacy(text)
 
 
-def suggest_nose_axis(raw):
-    """From raw accel (g) while the rocket stands nose-up: the axis reading ~ +/-1 g."""
-    if raw is None:
-        return None
-    index = max(range(3), key=lambda i: abs(raw[i]))
-    if not 0.85 <= abs(raw[index]) <= 1.15:
-        return None
-    others = [abs(raw[i]) for i in range(3) if i != index]
-    if max(others) > 0.3:
-        return None
-    return ("POS_" if raw[index] > 0 else "NEG_") + "XYZ"[index]
+def Monitor():
+    return groundlink.Monitor(folder_fn=flights_dir)
 
 
-class Monitor:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.fd = None
-        self.port = None
-        self.thread = None
-        self.latest = {}
-        self.updated = {}
-        self.lines = deque(maxlen=200)
-        self.history = deque(maxlen=600)
-
-    def connect(self, port):
-        if port not in serial_ports():
-            raise ValueError("Choose an available USB serial port.")
-        self.disconnect()
-        fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-        try:
-            tty.setraw(fd)
-            attributes = termios.tcgetattr(fd)
-            attributes[4] = attributes[5] = termios.B115200
-            attributes[2] |= termios.CLOCAL | termios.CREAD
-            termios.tcsetattr(fd, termios.TCSANOW, attributes)
-            termios.tcflush(fd, termios.TCIOFLUSH)
-        except OSError:
-            os.close(fd)
-            raise
-        with self.lock:
-            self.fd, self.port = fd, port
-            self.latest, self.updated = {}, {}
-            self.lines.clear()
-            self.history.clear()
-        self.thread = threading.Thread(target=self._run, args=(fd,), daemon=True)
-        self.thread.start()
-        return self.status()
-
-    def disconnect(self):
-        with self.lock:
-            fd, self.fd, self.port = self.fd, None, None
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-    def _run(self, fd):
-        pending = bytearray()
-        while True:
-            with self.lock:
-                if self.fd != fd:
-                    return
-            try:
-                ready = select.select([fd], [], [], 0.2)[0]
-                chunk = os.read(fd, 4096) if ready else b""
-            except (OSError, ValueError):
-                self.disconnect()
-                return
-            if ready and not chunk:
-                self.disconnect()
-                return
-            pending.extend(chunk)
-            if len(pending) > 65536:
-                pending.clear()
-            while b"\n" in pending:
-                raw, _, rest = pending.partition(b"\n")
-                pending = bytearray(rest)
-                text = raw.decode("ascii", "replace").strip()
-                if not text:
-                    continue
-                parsed = parse_line(text)
-                with self.lock:
-                    self.lines.append(text)
-                    if parsed:
-                        kind, data = parsed
-                        self.latest[kind] = data
-                        self.updated[kind] = time.monotonic()
-                        if kind in ("bench", "flight"):
-                            self.history.append((kind, data))
-
-    def status(self):
-        with self.lock:
-            now = time.monotonic()
-            bench = self.latest.get("bench")
-            return {"connected": self.fd is not None, "port": self.port, "ports": serial_ports(),
-                    "latest": dict(self.latest),
-                    "age": {k: round(now - t, 2) for k, t in self.updated.items()},
-                    "lines": list(self.lines)[-40:],
-                    "suggested_nose_axis": suggest_nose_axis(bench["raw"]) if bench else None}
+def compare_config(board: dict, saved: dict) -> list:
+    """The board's compiled-in settings against the saved Rocket setup."""
+    rows = []
+    for name, value in board.items():
+        if name not in FIELD_KINDS:
+            continue                       # not a setting (the pyro master lock)
+        mine = saved.get(name)
+        same = mine == value if isinstance(value, str) else mine is not None and abs(float(mine) - float(value)) < 1e-3
+        rows.append({"name": name, "board": value, "saved": mine, "same": bool(same)})
+    return rows
 
 
 # --------------------------------------------------------------------------------------------
@@ -517,11 +411,58 @@ def summarize_session(project, data: bytes, source: str) -> dict:
     return result
 
 
+def is_recording(data: bytes) -> bool:
+    return data.startswith(groundlink.RECORD_HEADER.encode())
+
+
+def recording_rows(data: bytes):
+    """A live-telemetry recording as flight-log rows (the same keys telemetry_viewer.parse_session gives),
+    so the existing charts and the 3D replay work on it. Returns (header, rows, events)."""
+    text = data.decode("ascii", "replace")
+    header = text.splitlines()[0] if text else ""
+    rows, events, seen = [], [], set()
+    t0 = None
+    for host_ms, kind, d in groundlink.read_recording(text):
+        if kind == "tlm":
+            if rows and d["ms"] <= rows[-1]["_ms"]:
+                continue
+            t0 = d["ms"] if t0 is None else t0
+            f = d["flags"]
+            rows.append({"_ms": d["ms"], "t_s": d["ms"] / 1000, "state": d["state"],
+                         "accel_x_g": d["accel_g"][0], "accel_y_g": d["accel_g"][1], "accel_z_g": d["accel_g"][2],
+                         "gyro_x_dps": d["gyro_dps"][0], "gyro_y_dps": d["gyro_dps"][1], "gyro_z_dps": d["gyro_dps"][2],
+                         "tilt_x_deg": d["tilt_x"], "tilt_y_deg": d["tilt_y"], "servo_a_us": d["pulse"][0],
+                         "servo_b_us": d["pulse"][1], "baro_alt_m": d["alt_m"], "vspeed_m_s": d["vspeed"],
+                         "imu_ok": int(f["imu_ok"]), "baro_ok": int(f["baro_ok"]), "gyro_cal_ok": int(f["gyro_cal"]),
+                         "accel_sat": int(f["accel_sat"]), "gyro_sat": int(f["gyro_sat"]), "tvc_active": int(f["tvc"]),
+                         "ctrl_fault": int(f["ctrl_fault"]), "chute_open": int(f["chute"])})
+        elif kind == "event" and (d["ms"], d["text"]) not in seen:
+            seen.add((d["ms"], d["text"]))
+            events.append({"t": d["ms"] / 1000, "event": d["text"].replace("_", " ")})
+    for r in rows:
+        r.pop("_ms")
+    return header, rows, events
+
+
 def _summarize_session(project, data: bytes, source: str) -> dict:
     viewer = _viewer(project)
     if viewer.is_sensor_session(data):
         return summarize_sensor_session(viewer, data, source)
+    if is_recording(data):
+        header, rows, board_events = recording_rows(data)
+        if not rows:
+            raise ValueError("This recording has no telemetry frames in it.")
+        result = _summarize_rows(0, header, rows, source)
+        derived = result["events"]      # from state changes; the board's own EVT frames name some of the same
+        extra = [e for e in board_events if not any(d["event"] == e["event"] and abs(d["t"] - e["t"]) < 0.25 for d in derived)]
+        result["events"] = sorted(derived + extra, key=lambda e: e["t"])
+        result["kind"] = "telemetry"
+        return result
     session, header, rows = viewer.parse_session(data)
+    return _summarize_rows(session, header, rows, source)
+
+
+def _summarize_rows(session, header, rows, source: str) -> dict:
     events, previous = [], None
     for r in rows:
         if r["state"] != previous:
@@ -689,6 +630,11 @@ def _describe(project, path: Path) -> dict:
             report = viewer.sensor_report(parsed)
             info.update(kind="sensortest", session=parsed["session"], passed=report["passed"],
                         duration_s=report["duration_s"])
+        elif is_recording(data):
+            _, rows, _ = recording_rows(data)
+            info.update(kind="telemetry", session=0, duration_s=rows[-1]["t_s"] - rows[0]["t_s"] if rows else 0,
+                        flew=any(r["state"] == "BOOST" for r in rows),
+                        max_alt_m=max((r["baro_alt_m"] for r in rows), default=0))
         else:
             session, _, rows = viewer.parse_session(data)
             info.update(kind="flight", session=session, duration_s=rows[-1]["t_s"] - rows[0]["t_s"] if rows else 0,
@@ -702,13 +648,13 @@ def _describe(project, path: Path) -> dict:
 
 def saved_sessions(project) -> dict:
     folder = flights_dir()
-    items = [_describe(project, p) for p in folder.glob("*.bin") if p.is_file()]
+    items = [_describe(project, p) for p in list(folder.glob("*.bin")) + list(folder.glob("*.etlog")) if p.is_file()]
     items.sort(key=lambda x: x["saved"], reverse=True)
     return {"folder": str(folder), "sessions": items}
 
 
 def _saved_path(name) -> Path:
-    if not isinstance(name, str) or "/" in name or "\\" in name or name.startswith(".") or not name.endswith(".bin"):
+    if not isinstance(name, str) or "/" in name or "\\" in name or name.startswith(".") or not name.endswith((".bin", ".etlog")):
         raise ValueError("Choose a saved session from the list.")
     path = flights_dir() / name
     if not path.is_file():
@@ -753,6 +699,8 @@ def save_state(update: dict) -> dict:
     if len(json.dumps(update)) > 65536:
         raise ValueError("State is too large.")
     state = load_state()
+    if isinstance(update.get("ui"), dict) and isinstance(state.get("ui"), dict):
+        update = {**update, "ui": {**state["ui"], **update["ui"]}}   # theme and live-link settings save separately
     state.update(update)
     temporary = state_path().with_suffix(".tmp")
     temporary.write_text(json.dumps(state, indent=1))
@@ -786,6 +734,10 @@ E12_CURVE = [[0.052, 5.045], [0.096, 9.910], [0.196, 24.144], [0.251, 31.351], [
              [0.800, 10.09], [0.900, 9.73], [1.000, 9.55], [1.101, 9.91], [1.200, 9.55], [1.300, 9.73], [1.400, 9.73],
              [1.500, 9.73], [1.600, 9.73], [1.700, 9.55], [1.800, 9.73], [1.900, 9.73], [2.000, 9.55], [2.100, 9.55],
              [2.200, 9.73], [2.300, 9.19], [2.375, 9.37], [2.400, 5.95], [2.440, 0.0]]
+# Estes F15, RASP data (thrustcurve.org, H. Smart 2013): 49.2 N*s, 26.8 N peak, 3.4 s
+F15_CURVE = [[0.063, 2.127], [0.118, 4.407], [0.158, 8.359], [0.228, 13.68], [0.340, 20.82], [0.386, 26.75], [0.425, 25.38],
+             [0.481, 22.19], [0.583, 17.93], [0.883, 16.11], [1.191, 14.59], [1.364, 15.35], [1.569, 15.65], [1.727, 14.74],
+             [2.00, 14.28], [2.39, 13.68], [2.68, 13.08], [2.96, 13.07], [3.25, 13.05], [3.35, 13.0], [3.39, 7.30], [3.40, 0.0]]
 
 
 def parse_eng(text: str) -> dict:
@@ -868,7 +820,7 @@ def sim_params(config: dict, vehicle: dict, sim: dict) -> list:
         raise ValueError("The gimbal pivot must be behind the CG: check part positions.")
     values.update(clean)
     values.update(sim)
-    values["chute_enabled"] = 1 if clean["CHUTE_CHANNEL"] else 0
+    values["chute_enabled"] = 1 if clean["CHUTE_CHANNEL"] or clean["PYRO_CHUTE_CHANNEL"] else 0
     values["ignition_s"] = clean["ARM_HOLD_MS"] / 1000 + 2.0
     return [float(values[name]) for name in SIM3D_PARAMS]
 
@@ -893,7 +845,7 @@ def sim_verdict(s: dict, config: dict) -> list:
         add("warn", f"Rolling up to {s['max_roll_dps']:.0f}°/s during boost. The TVC compensates, but find the asymmetry (a lug, a crooked motor mount) before it gets worse.")
     if s["saturation_pct"] > 10:
         add("warn", f"The gimbal was at full travel {s['saturation_pct']:.0f}% of the burn: little margin left.")
-    if config["CHUTE_CHANNEL"]:
+    if config["CHUTE_CHANNEL"] or config.get("PYRO_CHUTE_CHANNEL"):
         if s["chute_t"] < 0:
             add("bad", "Parachute never opened.")
         elif s["chute_speed"] > 20:
@@ -959,7 +911,7 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
         _, summary = native.sim3d(params, rows=False, curve=motor_curve(vehicle))
         s = dict(zip(SIM3D_SUMMARY, summary))
         success = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"] and
-                       (s["under_chute"] or not config.get("CHUTE_CHANNEL")) and 0 < s["landing_speed"] < 9)
+                       (s["under_chute"] or not (config.get("CHUTE_CHANNEL") or config.get("PYRO_CHUTE_CHANNEL"))) and 0 < s["landing_speed"] < 9)
         ok += success
         runs.append({"success": success, "wind": trial["wind_m_s"], "gust": trial["gust_m_s"],
                      "misalign": trial["misalign_deg"], "pad_tilt": trial["pad_tilt_deg"],
@@ -981,22 +933,57 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
 NOSE_SHAPES = {"ogive": (0.466, 2 / 3), "conical": (2 / 3, 1 / 2), "parabolic": (0.5, 2 / 3), "elliptical": (1 / 3, 0.785)}
 # shape -> (CP fraction of nose length, planform area / (D * L) for the nose)
 
-GIMBAL_DEFAULTS = {"horn_mm": 10.5, "lever_mm": 30.0, "servo_deg_per_us": 0.09, "servo_s_per_60": 0.10, "stop_deg": 8.0,
+# The default rocket is TVCRocketV3 (Fusion CAD, 2026-10-31): K-9 V8 gimbal + 2x MG90D, Blue Tube 3.0in
+# (79.35 mm OD) x 870 mm, 180 mm tangent ogive, EasyTVC standing vertically on a two-ring sled, battery
+# bay, spring-ejected nose, Estes F15-0. Part centres come from the CAD's centres of mass (z measured up
+# from the motor-tube bottom, converted to mm from the nose tip = 1060 - z); masses are CAD volumes x
+# material density plus published weights for bought parts. Weigh the real parts and edit them here.
+VEHICLE_MODEL = "TVCRocketV3"
+GIMBAL_DEFAULTS = {"horn_mm": 9.0,     # MG90D horn hole used by the K-9 pushrods
+                   "lever_mm": 42.0,   # pushrod arm about the pivot: 42.6 mm (motor tube) / 41.3 mm (inner gimbal)
+                   "servo_deg_per_us": 0.09, "servo_s_per_60": 0.10,
+                   "stop_deg": 12.0,   # K-9 V8 in the V3 airframe clears +-12 deg on both axes
                    # how a real hobby servo behaves (MG90D-class): ignored pulse change, gear + linkage slop, loop speed
                    "deadband_us": 4.0, "backlash_deg": 0.8, "tau_s": 0.010,
                    "stall_nm": 0.2}   # MG90D: ~2.0-2.2 kg*cm at the horn
-BODY_DEFAULTS = {"length_mm": 450.0, "nose_length_mm": 150.0, "nose_shape": "ogive",
-                 "motor_overhang_mm": 10.0, "pivot_from_nozzle_mm": 45.0}
+BODY_DEFAULTS = {"length_mm": 870.0, "nose_length_mm": 180.0, "nose_shape": "ogive",
+                 "motor_overhang_mm": 12.4,       # F15 nozzle 2.4 mm below the motor tube, tube starts 10 mm above it
+                 "pivot_from_nozzle_mm": 59.8}    # K-9 pivots at z 57.2 / 57.6 mm, nozzle at z -2.4 mm
+DEFAULT_MOTOR = {"name": "Estes F15-0 (ThrustCurve.org data)", "avg_thrust_n": 14.465, "burn_s": 3.40,
+                 "total_mass_g": 102.0, "prop_mass_g": 60.0, "diameter_mm": 29.0, "length_mm": 114.0}
 DEFAULT_PARTS = [  # name, grams, centre from nose tip (mm), length (mm)
-    ["Nose cone", 30, 90, 150], ["Nose ballast", 80, 40, 30], ["Body tube", 55, 375, 450], ["Parachute & shock cord", 25, 220, 90],
-    ["Parachute servo", 9, 270, 30], ["EasyTVC board", 20, 330, 65], ["2S LiPo 300 mAh", 22, 385, 55],
-    ["Wiring & hardware", 15, 420, 100], ["TVC servos ×2", 26, 505, 30], ["Gimbal & motor mount", 40, 545, 70],
+    ["Nose cone + base plate (printed)", 86, 154, 240],
+    ["Release servo + bracket + latch pin", 17, 249, 40],
+    ["Parachute 30in + Nomex + Kevlar + quick links", 103, 317, 170],
+    ["Ejection spring + piston", 43, 433, 44],
+    ["Recovery bulkhead + U-bolt", 31, 460, 25],
+    ["Battery sled (printed)", 17, 509, 82],
+    ["2S LiPo 450 mAh + strap", 31, 510, 62],
+    ["FC sled (printed) + screws", 22, 620, 118],
+    # Position = the BMI088 chip, not the board centre: the sim takes the IMU location from this part.
+    # The chip sits ~26 mm up the vertical board (board bottom edge at z 394 -> chip z 420 = 640 mm from the
+    # tip; the board's own mass centre is ~617). Moving 25 g by 23 mm shifts the CG < 1 mm.
+    ["EasyTVC board", 25, 640, 80],
+    ["Body tube (Blue Tube 3in, 870 mm)", 350, 610, 870],
+    ["Glue, epoxy fillets, misc", 15, 610, 870],
+    ["Wiring + servo extensions", 32, 840, 340],
+    ["Blast baffle + Nomex disc", 16, 934, 5],
+    ["TVC servos x2 + pushrods", 27, 1001, 84],
+    ["K-9 gimbal set (printed) + M3 hardware", 50, 1003, 114],
+    ["Motor sleeve (printed)", 11, 1002, 105],
 ]
+DEFAULT_VEHICLE = {"model": VEHICLE_MODEL, "motor": {**DEFAULT_MOTOR, "curve": F15_CURVE},
+                   "diameter_mm": 79.35, "cd": 0.6, "chute_diameter_cm": 76, "chute_cd": 0.8,
+                   "body": dict(BODY_DEFAULTS), "gimbal": dict(GIMBAL_DEFAULTS), "parts": [list(p) for p in DEFAULT_PARTS]}
 
 
 def upgrade_vehicle(vehicle: dict | None) -> dict:
     """Older saved vehicles had parts as [name, grams]; add positions and the new sections."""
     v = json.loads(json.dumps(vehicle)) if isinstance(vehicle, dict) else {}
+    if v.get("model") != VEHICLE_MODEL:
+        # Rockets saved before the TVCRocketV3 CAD (the 610 mm BT-80 / E12 model, or an empty request) are
+        # replaced by the CAD model. Edits made after that keep the "model" tag and are preserved.
+        v = json.loads(json.dumps(DEFAULT_VEHICLE))
     v.setdefault("motor", {"name": "Estes E12-0 (approx.)", "avg_thrust_n": 12, "burn_s": 2.5,
                            "total_mass_g": 58, "prop_mass_g": 36})
     v["motor"].setdefault("diameter_mm", 24.0)
@@ -1283,11 +1270,15 @@ def replay_session(project, data_id, config, vehicle) -> dict:
         samples = _replay_sensor_test(parsed, model, clean)
         kind, session = "sensortest", parsed["session"]
     else:
-        session, _, log_rows = viewer.parse_session(data)
+        if is_recording(data):
+            session, (_, log_rows, _) = 0, recording_rows(data)
+            kind = "telemetry"
+        else:
+            session, _, log_rows = viewer.parse_session(data)
+            kind = "flight"
         if len(log_rows) < 2:
             raise ValueError("This log is too short to replay.")
         samples = _replay_flight(log_rows, model, clean)
-        kind = "flight"
     rows = _replay_rows(samples, model, clean)
     col = {c: i for i, c in enumerate(SIM3D_COLUMNS)}
     boost = next((r for r in rows if STATES[int(r[col["state"]])] == "BOOST"), None)
@@ -1314,6 +1305,10 @@ def replay_session(project, data_id, config, vehicle) -> dict:
         verdict = [{"level": "info", "text": f"Replay of sensor test session {session}: orientation worked out from the raw IMU, "
                     f"with the nose axis set to {clean['NOSE_AXIS']}. Stand the rocket nose-up while it records: if this 3D rocket "
                     "doesn't point straight up then, the nose axis setting is wrong."}]
+    elif kind == "telemetry":
+        verdict = [{"level": "info", "text": "Replay of live telemetry received over the ground link: tilt is the board's own "
+                    "estimate, height from the barometer, gimbal from the servo pulses it reported. Frames lost on the link "
+                    "show as gaps; the SD card log has every sample."}]
     else:
         verdict = [{"level": "info", "text": f"Replay of real flight data, session {session}: tilt is the board's own estimate, roll from the gyro, "
                     "height from the barometer, gimbal from the logged servo pulses. Sideways drift is integrated from the "

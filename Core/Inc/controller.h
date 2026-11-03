@@ -16,9 +16,22 @@
 #define EASYTVC_ROLL_LEAD_S 0.015f
 #endif
 
+/* A missed or stale IMU sample in boost (one failed SPI read, one late tick) holds the last
+ * command instead of switching TVC off: losing control for the rest of the burn is far worse for
+ * a finless rocket than steering on a 5-10 ms old command. Only a problem that lasts this long
+ * latches the fault. Hard faults (bad settings, a broken attitude, the tilt limit, the arm lost)
+ * still latch at once. */
+#ifndef EASYTVC_CONTROL_HOLD_MS
+#define EASYTVC_CONTROL_HOLD_MS 100U
+#endif
+
 typedef struct {
     EasyTVCPid axis[2];
     EasyTVCQuaternion previous_q;
+    float last_command[2];   /* held through a soft fault */
+    float held_s;            /* time spent holding: added to the next PID step's dt */
+    uint32_t hold_since_ms;
+    bool holding;
     float roll_rate_rad_s;   /* body Z, from successive attitude samples */
     bool roll_rate_valid;
     bool fault_latched;

@@ -32,7 +32,7 @@ class FlightSim3DTests(unittest.TestCase):
     def setUpClass(cls):
         cls.native = studio.NativeController()
         cls.config = studio.launch.read_config(studio.launch.find_project())
-        cls.vehicle = studio.launch.upgrade_vehicle({})   # the default 610 mm / 380 g rocket model
+        cls.vehicle = studio.launch.upgrade_vehicle({})   # the default TVCRocketV3 model (978 g, F15)
 
     def test_configured_rocket_flies(self):
         result = studio.launch.run_sim3d(self.native, self.config, self.vehicle, studio.launch.sim_defaults())
@@ -70,12 +70,14 @@ class FlightSim3DTests(unittest.TestCase):
         self.assertAlmostEqual(m["cg_wet_mm"], (100 * 100 + 100 * 500 + 50 * 550) / 250)
         self.assertAlmostEqual(m["cg_dry_mm"], (100 * 100 + 100 * 500 + 30 * 550) / 230)
         self.assertAlmostEqual(m["cp_mm"], 100)   # cone: 2/3 of the nose length
-        self.assertAlmostEqual(m["stability_cal"], (100 - m["cg_wet_mm"]) / 66)
+        self.assertAlmostEqual(m["stability_cal"], (100 - m["cg_wet_mm"]) / v["diameter_mm"])
 
     def test_linkage_matches_c(self):
-        m = studio.launch.rocket_model({})
-        self.assertAlmostEqual(studio.launch.gimbal_angle_deg(250, m), math.degrees(math.asin(0.35 * math.sin(math.radians(22.5)))), places=6)
-        self.assertEqual(studio.launch.gimbal_angle_deg(700, m), m["stop_deg"])   # 63 deg of horn would be 18 deg: clamped
+        m = studio.launch.rocket_model({})   # TVCRocketV3: 9 mm horn / 42 mm lever, 12 deg stop
+        ratio = m["linkage_ratio"]
+        self.assertAlmostEqual(studio.launch.gimbal_angle_deg(250, m), math.degrees(math.asin(ratio * math.sin(math.radians(22.5)))), places=6)
+        self.assertLess(math.degrees(math.asin(ratio)), 13.0)   # the horn alone can't swing the gimbal far past its stop
+        self.assertEqual(studio.launch.gimbal_angle_deg(1000, m), m["stop_deg"])   # 90 deg of horn would be 12.4 deg: clamped
 
     def test_batch(self):
         result = studio.launch.run_sim3d_batch(self.native, self.config, self.vehicle, studio.launch.sim_defaults(), 10)
@@ -199,6 +201,366 @@ class SensorTestImageTests(unittest.TestCase):
     def test_flash_accepts_the_sensor_test_image(self):
         self.assertIn("sensortest", studio.launch.IMAGES)
         self.assertIn("sensortest", studio.launch.image_info(ROOT)["images"])
+
+
+class GroundLinkTests(unittest.TestCase):
+    """The E1 ground link: frames, loss, the in-flight block, recording/replay, and a simulated
+    DroneBridge link (UDP with loss and corruption) driven by the 3D sim's firmware-in-the-loop flight."""
+
+    @classmethod
+    def setUpClass(cls):
+        import groundlink
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import fake_link
+        cls.g, cls.fake = groundlink, fake_link
+        cls.native = studio.NativeController()
+
+    def test_settings_pyro_test_and_beep_over_the_link(self):
+        import socket, time as _t
+        launch = studio.launch
+        config = launch.read_config(ROOT)
+        board = self.fake.FakeBoard(dict(config), b"")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        stop = threading.Event()
+        mon = self.g.Monitor()
+        mon.connect("udp", host="127.0.0.1", port=sock.getsockname()[1], listen_port=0)
+        # a clean link: PYROFIRE never retries (a lost reply must not fire twice), so loss would only
+        # make this test flaky; lossy-link behaviour is covered by test_simulated_link_end_to_end
+        thread = threading.Thread(target=self._board_thread, args=(board, [], 0.0, 0.0, sock, stop), daemon=True)
+        thread.start()
+        try:
+            deadline = _t.monotonic() + 5
+            while not mon.board_idle() and _t.monotonic() < deadline:
+                _t.sleep(0.05)
+            values = {n: config[n] for n, _ in self.g.TUNABLE_FIELDS}
+            values.update(SERVO_A_CENTER_US=config["SERVO_A_CENTER_US"] - 7, KP=9.85, PYRO_DEPLOY_ALT_M=20.5, PYRO_BACKUP_MS=9000)
+            stored = mon.send_settings(values)                     # sent, stored, echoed back, compared
+            self.assertEqual(stored["SERVO_A_CENTER_US"], config["SERVO_A_CENTER_US"] - 7)
+            self.assertAlmostEqual(stored["KP"], 9.85)
+            board_cfg = mon.read_config()
+            self.assertEqual(board_cfg["RADIO_SETTINGS"], 1)
+            self.assertAlmostEqual(board_cfg["PYRO_DEPLOY_ALT_M"], 20.5)
+            mon.reset_settings()
+            self.assertEqual(mon.read_config()["RADIO_SETTINGS"], 0)
+            armed = mon.pyro_arm(3)
+            self.assertTrue(armed["locked"] and 1000 <= armed["code"] <= 9999)
+            with self.assertRaises(ValueError):
+                mon.pyro_fire(3, armed["code"] + 1 if armed["code"] < 9999 else 1000, 200)   # wrong code
+            armed = mon.pyro_arm(3)
+            self.assertEqual(mon.pyro_fire(3, armed["code"], 200)["pulse_ms"], 200)
+            with self.assertRaises(ValueError):
+                mon.pyro_arm(2)                                    # P2: never
+            mon.beep()
+            self.assertEqual(board.beeps, 1)
+            # out of range values are refused before anything is sent
+            with self.assertRaises(ValueError):
+                self.g.Monitor().send_settings({n: 0 for n, _ in self.g.TUNABLE_FIELDS[:3]})
+            # not IDLE: all of these are blocked in Studio (and the board ignores them)
+            mon.latest["tlm"], mon.updated["tlm"] = {"state": "ARMED"}, _t.monotonic()
+            for call in (lambda: mon.send_settings(values), mon.reset_settings, lambda: mon.pyro_arm(1), mon.beep):
+                with self.assertRaises(ValueError):
+                    call()
+        finally:
+            stop.set(); thread.join()
+            mon.disconnect()
+            sock.close()
+
+    def test_bluetooth_relay_status_never_mixes_into_frames(self):
+        """A fake BleRelay.swift: board frames split into 20-byte notifications, with the relay's own
+        status datagrams landing between the pieces. Every frame must still decode, none counted bad."""
+        import socket, time as _t
+        relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        relay.bind(("127.0.0.1", 0))
+        mon = self.g.Monitor()
+        mon.connect("ble", relay_port=relay.getsockname()[1])
+        try:
+            relay.settimeout(3)
+            _, client = relay.recvfrom(4096)            # Studio's keep-alive PING wakes the relay
+            board = self.fake.FakeBoard({}, b"")
+            for i in range(20):
+                frame = board.frame("SYS", f"{i},0,0,0,0,1234,3300,0,0,0,1,7,10,0,0,8000,900,0,0,0,0,0,0")
+                for k in range(0, len(frame), 20):
+                    relay.sendto(frame[k:k + 20], client)
+                    if k == 20:
+                        relay.sendto(b"#BLE state=connected name=DroneBridge rssi=-61\n", client)
+            deadline = _t.monotonic() + 3
+            while mon.stats.received < 20 and _t.monotonic() < deadline:
+                _t.sleep(0.02)
+            status = mon.status(0)
+            self.assertEqual((mon.stats.received, mon.stats.bad), (20, 0))
+            self.assertEqual(status["ble"], {"state": "connected", "name": "DroneBridge", "rssi": -61})
+            self.assertEqual(status["transport"], "ble")
+            self.assertFalse(any(line.startswith("#BLE") for line in status["lines"]))
+        finally:
+            mon.disconnect()
+            relay.close()
+        # with no relay at all (Studio not running as the app) the page is told so
+        mon = self.g.Monitor()
+        mon.connect("ble", relay_port=1)
+        try:
+            mon.transport.opened -= 5
+            self.assertEqual(mon.status()["ble"]["state"], "no_relay")
+        finally:
+            mon.disconnect()
+
+    def test_recovery_outputs_config_and_formats(self):
+        launch = studio.launch
+        config = launch.read_config(ROOT)
+        for channel in (0, 1, 3):
+            launch.validate_config({**config, "PYRO_CHUTE_CHANNEL": channel})
+        with self.assertRaisesRegex(ValueError, "P2"):              # the SWD pin
+            launch.validate_config({**config, "PYRO_CHUTE_CHANNEL": 2})
+        with self.assertRaises(ValueError):
+            launch.validate_config({**config, "PYRO_FIRE_MS": 50})
+        with tempfile.TemporaryDirectory() as tmp:                   # the new #defines round-trip
+            project = Path(tmp)
+            (project / "Core" / "Inc").mkdir(parents=True)
+            launch.config_path(project).write_text(launch.config_path(ROOT).read_text())
+            saved = launch.write_config(project, {**config, "PYRO_CHUTE_CHANNEL": 3, "PYRO_CHUTE_DELAY_MS": 1500, "PYRO_FIRE_MS": 800})
+            self.assertEqual(launch.read_config(project), saved)
+        self.assertFalse(launch.pyro_outputs_compiled_in(ROOT))     # the master lock stays as it is
+        # the board's CFG reply: the lock is reported but isn't a setting to compare
+        values = [0] * len(self.g.CFG_FIELDS)
+        values[[n for n, _ in self.g.CFG_FIELDS].index("NOSE_AXIS")] = 1
+        board = self.g.parse_cfg(",".join(map(str, values)))
+        self.assertNotIn("PYRO_OUTPUTS_COMPILED_IN", [r["name"] for r in launch.compare_config(board, config)])
+        self.assertEqual(len(self.g.parse_cfg(",".join(map(str, values[:self.g.CFG_FIELDS_V1])))), 32)   # firmware 0.3
+        # TLM: 24 fields with the deploy countdown, 23 from firmware 0.3
+        base = "1,3,2000,10000,0,0,0,0,0,0,0,0,1000,500,1000,10,20,0,0,1500,1500,1500,5"
+        self.assertEqual(self.g.parse_message("TLM", base + ",3700")[1]["deploy_eta_s"], 3.7)
+        self.assertIsNone(self.g.parse_message("TLM", base + ",-1")[1]["deploy_eta_s"])
+        self.assertIsNone(self.g.parse_message("TLM", base)[1]["deploy_eta_s"])
+
+    def test_history_since_and_ui_state_merge(self):
+        import time as _t
+        mon = self.g.Monitor()
+        for i in range(mon.history.maxlen + 50):      # overflow the history: the oldest 50 drop out
+            mon._store(("tlm", {"ms": i, "state": "IDLE"}), _t.monotonic())
+        status = mon.status(0)
+        self.assertEqual(status["history"][0]["ms"], 50)
+        self.assertEqual(status["history_next"], mon.history.maxlen + 50)
+        mon._store(("tlm", {"ms": 99999, "state": "IDLE"}), _t.monotonic())
+        self.assertEqual([h["ms"] for h in mon.status(status["history_next"])["history"]], [99999])   # nothing skipped
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(studio.launch, "state_path", lambda: Path(tmp) / "state.json"):
+                studio.launch.save_state({"ui": {"theme": "dark"}})
+                state = studio.launch.save_state({"ui": {"live": {"kind": "udp"}}})
+                self.assertEqual(state["ui"], {"theme": "dark", "live": {"kind": "udp"}})   # one doesn't wipe the other
+
+    def test_frames_round_trip_reject_corruption_and_resync(self):
+        g = self.g
+        frame = g.encode_frame(123, "TLM", "1,2,3")
+        self.assertEqual(g.decode_frame(frame), (123, "TLM", "1,2,3"))
+        self.assertIsNone(g.decode_frame(frame[:6] + b"9" + frame[7:]))            # one byte changed
+        self.assertIsNone(g.decode_frame(frame.replace(b"*", b"#")))
+        self.assertIsNone(g.decode_frame(b"E1 1 TLM a b *00000000\n"))
+        with self.assertRaises(ValueError):
+            g.encode_frame(1, "TLM", "has space")
+        # the line splitter recovers after junk, a cut frame and a corrupted frame
+        mon = g.Monitor()
+        mon.transport = object()                    # marks it connected; nothing is sent
+        good = [g.encode_frame(i, "EVT", f"{i},E{i}") for i in range(3)]
+        stream = b"\x00\xffgarbage\n" + good[0][:20] + b"\n" + good[1].replace(b"E1", b"E2") + good[2]
+        for line in stream.split(b"\n"):
+            mon._line(line + b"\n", 1.0)
+        self.assertEqual([e["text"] for e in mon.events], ["E2"])
+        self.assertEqual(mon.stats.bad, 1)          # the cut E1 frame; the rest wasn't E1 at all
+
+    def test_c_encoder_matches_python_decoder(self):
+        import ctypes
+        lib = self.native.lib
+
+        class Tlm(ctypes.Structure):
+            _fields_ = [("ms", ctypes.c_uint32), ("state", ctypes.c_uint8), ("since_launch_ms", ctypes.c_int32),
+                        ("q", ctypes.c_float * 4), ("gyro_rad_s", ctypes.c_float * 3), ("accel_m_s2", ctypes.c_float * 3),
+                        ("altitude_m", ctypes.c_float), ("vertical_speed_m_s", ctypes.c_float),
+                        ("tilt_rad", ctypes.c_float * 2), ("command", ctypes.c_float * 2),
+                        ("pulse_us", ctypes.c_uint16 * 3), ("flags", ctypes.c_uint16), ("deploy_eta_ms", ctypes.c_int32),
+                        ("pressure_pa", ctypes.c_uint32), ("baro_temp_cdeg", ctypes.c_int16)]
+        lib.EasyTVC_LinkFormatTlm.restype = ctypes.c_size_t
+        lib.EasyTVC_LinkEncode.restype = ctypes.c_size_t
+        rows, _ = self.fake.sim_telemetry(self.native)
+        for _, t, _ in rows[::7]:
+            c = Tlm(t["ms"], t["state"], t["since_launch_ms"], (ctypes.c_float * 4)(*t["q"]),
+                    (ctypes.c_float * 3)(*t["gyro_rad_s"]), (ctypes.c_float * 3)(*t["accel_m_s2"]),
+                    t["altitude_m"], t["vertical_speed_m_s"], (ctypes.c_float * 2)(*t["tilt_rad"]),
+                    (ctypes.c_float * 2)(*t["command"]), (ctypes.c_uint16 * 3)(*t["pulse_us"]), t["flags"],
+                    t["deploy_eta_ms"], t["pressure_pa"], t["baro_temp_cdeg"])
+            payload = ctypes.create_string_buffer(256)
+            n = lib.EasyTVC_LinkFormatTlm(ctypes.byref(c), payload, 256)
+            frame = ctypes.create_string_buffer(256)
+            m = lib.EasyTVC_LinkEncode(frame, 256, ctypes.c_uint32(77), b"TLM", payload)
+            decoded = self.g.decode_frame(frame.raw[:m])
+            self.assertEqual(decoded[:2], (77, "TLM"))
+            kind, d = self.g.parse_message("TLM", decoded[2])
+            self.assertEqual(kind, "tlm")
+            self.assertAlmostEqual(d["alt_m"], t["altitude_m"], delta=0.01)
+            # the Python formatter (used by the fake board) writes the same numbers as the C one,
+            # give or take float32 rounding on the last digit
+            py = [int(x) for x in self.fake.format_tlm(t).split(",")]
+            cc = [int(x) for x in payload.value[:n].decode().split(",")]
+            self.assertEqual(len(py), len(cc))
+            self.assertTrue(all(abs(a - b) <= 1 for a, b in zip(py, cc)), (py, cc))
+            self.assertEqual(d["deploy_eta_s"], None if t["deploy_eta_ms"] < 0 else t["deploy_eta_ms"] / 1000)
+            self.assertEqual((d["pressure_pa"], d["baro_temp_c"]), (t["pressure_pa"], 21.5))
+
+    def test_packet_loss_from_sequence_gaps(self):
+        stats = self.g.LinkStats()
+        for seq in [0, 1, 2, 5, 6, 10]:            # 3, 4, 7, 8, 9 lost
+            stats.frame(seq, 1.0)
+        self.assertEqual((stats.received, stats.lost), (6, 5))
+        self.assertAlmostEqual(stats.loss_percent(), 100 * 5 / 11)
+        stats.frame(0, 2.0)                         # board rebooted: no false loss
+        stats.frame(1, 2.0)
+        self.assertEqual(stats.lost, 5)
+        stats.frame(0xffffffff, 3.0)                 # wrap-around
+        stats.frame(1, 3.1)
+        self.assertEqual(stats.lost, 6)
+        self.assertTrue(stats.summary(10.0)["stale"])
+
+    def test_commands_blocked_unless_idle(self):
+        import time as _t
+        mon = self.g.Monitor()
+        mon.transport = object()
+        for state in ("ARMED", "BOOST", "COAST", "DESCENT", "LANDED", "FAULT"):
+            mon.latest["sys"], mon.updated["sys"] = {"state": state}, _t.monotonic()
+            for command in ("STATUS", "CFG", "LOGINFO", "LOGREAD", "SERVO", "SWEEP", "CENTER", "TRIM"):
+                with self.assertRaises(ValueError, msg=state):
+                    mon.request(command)
+            for command in mon.GIMBAL_COMMANDS:          # the gimbal test: blocked before anything is sent
+                with self.assertRaises(ValueError, msg=state):
+                    mon.gimbal(command)
+        mon.latest.clear(); mon.updated.clear()
+        with self.assertRaises(ValueError):          # no recent state at all: also blocked
+            mon.request("CFG")
+        mon.latest["sys"], mon.updated["sys"] = {"state": "IDLE"}, _t.monotonic() - 10
+        with self.assertRaises(ValueError):          # stale IDLE does not count
+            mon.request("CFG")
+        mon.latest["sys"], mon.updated["sys"] = {"state": "IDLE"}, _t.monotonic() - 1
+        mon.latest["tlm"], mon.updated["tlm"] = {"state": "BOOST"}, _t.monotonic()
+        with self.assertRaises(ValueError):          # an older SYS IDLE can't outvote a fresh TLM in flight
+            mon.request("CFG")
+        # the fake board (like the firmware) ignores the same requests once it isn't IDLE
+        board = self.fake.FakeBoard({}, b"")
+        board.state = 2
+        self.assertIsNone(board.answer(self.g.encode_frame(5, "CFG")))
+        self.assertIsNone(board.answer(self.g.encode_frame(7, "SERVO", "500,500")))
+        self.assertIsNone(board.answer(self.g.encode_frame(8, "TRIM", "10,10")))
+        self.assertIsNotNone(board.answer(self.g.encode_frame(6, "PING")))
+        with self.assertRaises(ValueError):          # out-of-range values never leave Studio
+            self.g.Monitor().gimbal("SERVO", 1001, 0)
+        with self.assertRaises(ValueError):
+            self.g.Monitor().gimbal("TRIM", 0, -101)
+        with self.assertRaises(ValueError):
+            self.g.Monitor().gimbal("CHUTE")
+
+    def _board_thread(self, board, frames, loss, corrupt, sock, stop, rng_seed=3):
+        import random, select as _select
+        rng, target, i, beacon = random.Random(rng_seed), None, 0, 0.0
+        import time as _t
+        while not stop.is_set():
+            if target and not frames and _t.monotonic() - beacon > 0.3:   # on the pad: SYS says IDLE
+                beacon = _t.monotonic()
+                sock.sendto(board.frame("SYS", "1,0,0,0,0,1234,3300,0,0,0,1,7,10,0,0,8000,900,0,0,0,0,0,0"), target)
+            if _select.select([sock], [], [], 0.002)[0]:
+                data, sender = sock.recvfrom(4096)
+                target = target or sender
+                for line in data.split(b"\n"):
+                    reply = board.answer(line + b"\n") if line else None
+                    if reply and rng.random() >= loss:
+                        sock.sendto(reply, sender)
+            if target and i < len(frames):
+                state, frame = frames[i]
+                board.state = state
+                i += 1
+                if rng.random() < loss:
+                    continue
+                if rng.random() < corrupt:
+                    frame = frame[:8] + b"?" + frame[9:]
+                sock.sendto(frame, target)
+            elif i >= len(frames):
+                stop.wait(0.005)
+
+    def test_simulated_link_end_to_end(self):
+        import socket, time as _t
+        g, launch = self.g, studio.launch
+        rows, config = self.fake.sim_telemetry(self.native)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            # a sensor-test session for the log download, from the firmware's own record layout
+            exe, out = folder / "fx", folder / "s.bin"
+            subprocess.run(["cc", "-std=c11", "-I", str(ROOT / "Core" / "Inc"), str(ROOT / "tests" / "sensor_test_fixture.c"),
+                            "-o", str(exe)], check=True)
+            subprocess.run([str(exe), str(out)], check=True)
+            session_bytes = out.read_bytes().rstrip(b"\0")
+            board = self.fake.FakeBoard(config, session_bytes)
+            frames, last = [], None
+            for _, t, state in rows:
+                if state != last:
+                    frames.append((state, board.frame("EVT", f"{t['ms']},{self.fake.EVENTS[state]}")))
+                    frames.append((state, board.frame("EVT", f"{t['ms']},{self.fake.EVENTS[state]}")))   # sent twice
+                    last = state
+                frames.append((state, board.frame("TLM", self.fake.format_tlm(t))))
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 0))
+            stop = threading.Event()
+            with patch.object(launch, "flights_dir", lambda create=True: folder):
+                mon = launch.Monitor()
+                mon.connect("udp", host="127.0.0.1", port=sock.getsockname()[1], listen_port=0)
+                # on the pad first: config read and a log download work (board IDLE, 10 % loss)
+                board_thread = threading.Thread(target=self._board_thread, args=(board, [], 0.10, 0.0, sock, stop), daemon=True)
+                board_thread.start()
+                deadline = _t.monotonic() + 5
+                while mon.rtt_ms is None and _t.monotonic() < deadline:
+                    _t.sleep(0.05)
+                while not mon.board_idle() and _t.monotonic() < deadline:
+                    _t.sleep(0.05)
+                cfg = mon.read_config()
+                self.assertTrue(all(r["same"] for r in launch.compare_config(cfg, config)))
+                # the TVC gimbal test on the pad, over the same lossy link
+                self.assertEqual(mon.gimbal("TRIM", -12, 30), {"mode": "off", "trim_us": [-12, 30]})
+                self.assertEqual(mon.gimbal("SWEEP")["mode"], "sweep")
+                self.assertEqual(mon.gimbal("CENTER")["mode"], "off")
+                mon.start_download(None, lambda raw, n: launch._save_session(raw, n)[0].name)   # latest = 7
+                while mon.download_status()["running"]:
+                    _t.sleep(0.05)
+                job = mon.download_status()
+                self.assertTrue(job["done"], job)
+                print(f"\n  log download over a 10 %-loss link: {job['bytes']} B at {job['speed_kb_s']} kB/s")
+                self.assertEqual((folder / job["saved"]).read_bytes(), session_bytes)
+                stop.set(); board_thread.join()
+                # then the flight: 10 % loss and 2 % corrupted frames
+                stop = threading.Event()
+                board_thread = threading.Thread(target=self._board_thread, args=(board, frames, 0.10, 0.02, sock, stop), daemon=True)
+                board_thread.start()
+                deadline = _t.monotonic() + 20
+                while mon.status()["link"]["frames"] < 0.8 * len(frames) and _t.monotonic() < deadline:
+                    _t.sleep(0.05)
+                _t.sleep(0.3)
+                status = mon.status(0)
+                json.dumps(status)                    # the UI gets plain JSON
+                link = status["link"]
+                self.assertGreater(link["bad"], 0)
+                self.assertTrue(5 < link["loss_pct"] < 20, link)
+                self.assertEqual(len([e for e in status["events"] if e["text"] == "APOGEE"]), 1)   # de-duplicated
+                self.assertGreater(len(status["history"]), 200)
+                self.assertFalse(status["idle"])      # landed, not IDLE: commands are now blocked
+                with self.assertRaises(ValueError):
+                    mon.request("CFG")
+                recording = mon.recorder.path
+                stop.set(); board_thread.join()
+                mon.disconnect()
+                sock.close()
+                # the recording opens like an SD session, with events and a 3D replay
+                data = recording.read_bytes()
+                opened = launch.summarize_session(ROOT, data, "test")
+                self.assertEqual(opened["kind"], "telemetry")
+                self.assertTrue(opened["summary"]["flew"])
+                self.assertEqual([e["event"] for e in opened["events"]].count("APOGEE"), 1)   # state change + EVT: shown once
+                replay = launch.replay_session(ROOT, opened["data_id"], config, launch.upgrade_vehicle({}))
+                self.assertGreater(replay["summary"]["apogee_m"], 10)
+                self.assertIn(recording.name, [s["name"] for s in launch.saved_sessions(ROOT)["sessions"]])
 
 
 class StudioTests(unittest.TestCase):
