@@ -45,9 +45,15 @@ void STM32_DelayMicroseconds(uint32_t us)
     }
 }
 
+/* Deliberate waits (sensor power-up, SD init, IMU retries) keep the watchdog fed: several of them
+ * in a row used to exceed its ~170 ms worst-case timeout and reboot the board. A real hang still
+ * trips it, because nothing spins here forever. */
 void STM32_DelayMilliseconds(uint32_t ms)
 {
-    STM32_DelayMicroseconds(ms * 1000UL);
+    for (uint32_t i = 0; i < ms; ++i) {
+        STM32_DelayMicroseconds(1000UL);
+        STM32_WatchdogFeed();
+    }
 }
 
 void STM32_SystemReset(void)

@@ -11,4 +11,5 @@
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>EasyTVC Studio uses Bluetooth to receive telemetry from your rocket's DroneBridge radio.</string>
 </dict></plist>

@@ -36,7 +36,11 @@ function renderGimbalInputs() {
     gField("lever_mm", "Gimbal lever radius · mm (pivot axis → pushrod hole)", .5),
     gField("servo_deg_per_us", "Servo travel · °/µs (MG90D ≈ 0.09)", .005),
     gField("servo_s_per_60", "Servo speed · s per 60° (MG90D ≈ 0.10)", .01),
-    gField("stop_deg", "Gimbal mechanical stop · °", .5));
+    gField("stop_deg", "Gimbal mechanical stop · °", .5),
+    gField("deadband_us", "Servo deadband · µs (ignored change)", .5),
+    gField("backlash_deg", "Gear + linkage slop · ° at the horn", .1),
+    gField("tau_s", "Servo response time · s", .002),
+    gField("stall_nm", "Servo stall torque · N·m (MG90D ≈ 0.2)", .01));
   const sliders = $("gim-sliders"); sliders.replaceChildren();
   ["A", "B"].forEach((s, i) => {
     const slider = el("input", {type: "range", min: cfg[`SERVO_${s}_MIN_US`], max: cfg[`SERVO_${s}_MAX_US`], step: 1, "aria-label": `Servo ${s} pulse`});
@@ -82,12 +86,12 @@ $("gim-center").onclick = () => { gim.sweep = null; gim.pulse = [cfg.SERVO_A_CEN
 async function pollGimbalLive() {
   clearTimeout(gim.liveTimer);
   if (gim.source !== "live" || $("sim3d").hidden) return;
-  try { liveStatus = await api("monitor/status", {}); } catch (error) { notice(error.message); return; }
+  try { liveStatus = await api("monitor/status", {since: Number.MAX_SAFE_INTEGER}); } catch (error) { notice(error.message); return; }
   gim.liveTimer = setTimeout(pollGimbalLive, 150);
 }
 function currentState(now) {
   /* returns per servo {pulse, horn, gimbal, atStop}, plus a label */
-  if (gim.source === "sim" && !simResult) {
+  if (gim.source === "sim" && (!simResult || !simResult.rows.length)) {
     return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Flight playback: press Play to fly"};
   }
   if (gim.source === "sim" && simResult) {
@@ -95,11 +99,15 @@ function currentState(now) {
     const make = (i, s) => { const info = servoInfo(i, row[simCol[`pulse_${s}`]]);
       return {...info, horn: row[simCol[`horn_${s}`]], gimbal: row[simCol[`gimbal_${s}`]]}; };
     const tt = row[0] - simResult.ignition_s;
-    return {servos: [make(0, "a"), make(1, "b")], label: `3D sim · T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(2)} s · ${SIM_STATES[row[simCol.state]]}`};
+    const jam = row[simCol.servo_fault] || 0;
+    const servos = [make(0, "a"), make(1, "b")];
+    servos.forEach((sv, i) => { if (jam & (1 << i)) sv.jammed = true; });
+    return {servos, label: `${simResult.live ? "LIVE" : "3D sim"} · T${tt < 0 ? "−" : "+"}${Math.abs(tt).toFixed(2)} s · ${SIM_STATES[row[simCol.state]]}`};
   }
   if (gim.source === "live") {
-    const bench = liveStatus && liveStatus.latest && liveStatus.latest.bench;
-    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect the USB-UART on Live board)"};
+    const bench = liveStatus && liveStatus.latest && liveStatus.latest.bench, tlm = liveStatus && liveStatus.latest && liveStatus.latest.tlm;
+    if (!bench && tlm) return {servos: [servoInfo(0, tlm.pulse[0]), servoInfo(1, tlm.pulse[1])], label: `Live board · ${tlm.state} · tilt X ${tlm.tilt_x.toFixed(1)}° Y ${tlm.tilt_y.toFixed(1)}°`};
+    if (!bench) return {servos: [servoInfo(0, cfg.SERVO_A_CENTER_US), servoInfo(1, cfg.SERVO_B_CENTER_US)], label: "Live board: no bench data (flash the bench image, connect under Live → Pad tools)"};
     return {servos: [servoInfo(0, bench.pulse_a), servoInfo(1, bench.pulse_b)], label: `Live board · tilt X ${bench.tilt_x.toFixed(1)}° Y ${bench.tilt_y.toFixed(1)}°`};
   }
   if (gim.sweep) {
@@ -197,8 +205,8 @@ function drawGimbal(now) {
   ctx.fillStyle = pal().text; ctx.font = pal().font(12, "600"); ctx.fillText(state.label, 22, 32);
   ctx.font = pal().font(12);
   state.servos.forEach((sv, i) => {
-    ctx.fillStyle = sv.atStop ? "#c0392b" : pal().text;
-    ctx.fillText(`Servo ${["A", "B"][i]}  ${Math.round(sv.pulse)} µs   horn ${sv.horn.toFixed(1)}°   gimbal ${sv.gimbal.toFixed(2)}°${sv.atStop ? "  STOP" : ""}`, 22, 56 + i * 20);
+    ctx.fillStyle = sv.atStop || sv.jammed ? "#c0392b" : pal().text;
+    ctx.fillText(`Servo ${["A", "B"][i]}  ${Math.round(sv.pulse)} µs   horn ${sv.horn.toFixed(1)}°   gimbal ${sv.gimbal.toFixed(2)}°${sv.jammed ? "  JAMMED" : sv.atStop ? "  STOP" : ""}`, 22, 56 + i * 20);
   });
   const axis = inner([0, 0, 1]);
   ctx.fillStyle = pal().muted; ctx.fillText(`motor axis tilt ${(Math.acos(Math.max(-1, Math.min(1, axis[2]))) * 180 / Math.PI).toFixed(2)}°`, 22, 96);

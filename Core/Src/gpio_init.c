@@ -2,6 +2,7 @@
 #include "stm32f4xx.h"
 #include "board_pins.h"
 #include "vehicle_config.h"
+#include "easytvc_safety.h"
 
 /* LED "off" level: high for an active-low (common-anode) RGB LED. */
 #define LED_OFF_SET(pin) ((EASYTVC_LED_ACTIVE_LOW) ? (1U << (pin)) : ((1U << (pin)) << 16))
@@ -447,7 +448,7 @@ void EasyTVC_GPIO_Init(void)
      * "dfu pin" and PA13 as pyro2, but reconfiguring either removes SWD access. */
 
     /* Pyro outputs PB2 (pyro1) and PC3 (pyro3): drive LOW so a floating gate cannot fire.
-     * Nothing in this image ever drives them high (EASYTVC_PYRO_OUTPUTS_COMPILED_IN is 0).
+     * They are only ever driven high in an image built with EASYTVC_PYRO_OUTPUTS_COMPILED_IN 1.
      * PA13 (pyro2) is SWDIO, which resets to a pulled-up input: that net cannot be
      * guaranteed low from firmware, so do not connect an e-match to channel 2. */
     gpio = STM32_GPIOB;
@@ -525,4 +526,42 @@ void EasyTVC_GPIO_LedTick(uint32_t now_ms)
 void EasyTVC_GPIO_BuzzerSet(bool state)
 {
     BUZZER_TIM->CCR[0] = state ? BUZZER_PERIOD_US / 2U : 0U;
+}
+
+void EasyTVC_GPIO_HaltClockFault(void)
+{
+    EasyTVC_GPIO_Init();
+    for (;;) {
+        EasyTVC_GPIO_LedSet(2, true);
+        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
+        }
+        EasyTVC_GPIO_LedSet(2, false);
+        for (volatile uint32_t i = 0; i < 400000UL; ++i) {
+        }
+    }
+}
+
+uint8_t EasyTVC_GPIO_ContinuityBits(void)
+{
+    /* Pyro continuity sense inputs (vendor-untested): P1 = PB12, P2 = PC4, P3 = PC2. Inputs only;
+     * reading them changes nothing. Raw pin levels: what "continuity" reads as is not verified. */
+    return (uint8_t)(((STM32_GPIOB->IDR >> 12) & 1U) | (((STM32_GPIOC->IDR >> 4) & 1U) << 1) |
+                     (((STM32_GPIOC->IDR >> 2) & 1U) << 2));
+}
+
+void EasyTVC_GPIO_PyroWrite(uint8_t channel, bool on)
+{
+#if EASYTVC_PYRO_OUTPUTS_COMPILED_IN
+    /* P1 = PB2, P3 = PC3 (configured as push-pull LOW outputs at boot). P2 (PA13) is SWDIO and is
+     * never driven. */
+    if (channel == 1U) {
+        STM32_GPIOB->BSRR = on ? (1U << 2) : ((1U << 2) << 16);
+    } else if (channel == 3U) {
+        STM32_GPIOC->BSRR = on ? (1U << 3) : ((1U << 3) << 16);
+    }
+#else
+    /* outputs compiled out (easytvc_safety.h): the pins stay LOW */
+    (void)channel;
+    (void)on;
+#endif
 }

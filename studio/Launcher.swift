@@ -10,9 +10,11 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
     private var startupTimer: Timer?
     private var window: NSWindow?
     private var webView: WKWebView?
+    private let ble = BleRelay()     // Bluetooth ground link (BleRelay.swift); idle until Studio uses it
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
+        ble.start()
         guard let resource = Bundle.main.resourceURL else { fail("App resources are missing."); return }
         let paths = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
         guard let python = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
@@ -101,6 +103,7 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
         if let window = window { window.makeKeyAndOrderFront(nil); return }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        if #available(macOS 12.3, *) { configuration.preferences.isElementFullscreenEnabled = true }   /* flight view full screen */
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -109,6 +112,7 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
                               backing: .buffered, defer: false)
         window.title = "EasyTVC Studio"
         window.minSize = NSSize(width: 820, height: 560)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.contentView = view
         window.setFrameAutosaveName("EasyTVCStudioMain")
         window.center()
@@ -223,8 +227,13 @@ final class StudioDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegat
     }
 }
 
-let app = NSApplication.shared
-let delegate = StudioDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
+@main
+enum StudioMain {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = StudioDelegate()     // lives as long as run() does
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+}

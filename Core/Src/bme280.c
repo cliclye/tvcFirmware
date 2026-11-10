@@ -161,6 +161,9 @@ bool EasyTVC_Bme280Read(EasyTVCBme280 *device)
         return false;
     }
 
+    device->adc_p = (uint32_t)adc_P;
+    device->adc_t = (uint32_t)adc_T;
+    device->adc_h = (uint16_t)adc_H;
     device->t_fine = t_fine;
     device->temperature = temperature;
     device->pressure = pressure;

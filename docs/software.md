@@ -32,8 +32,8 @@ spin is not controlled. The old app incorrectly used Euler pitch/yaw despite
 treating Z as axial; `controller.c` replaces that path.
 
 Use `EasyTVCControlOutput.pulse_us[0..1]` and `settings.servo[i].channel` for physical
-outputs. Do not assume an opposed four-servo mixer. Legacy `tvc.c` remains for its
-original tests; `app.c` and Studio both use `controller.c`.
+outputs. Do not assume an opposed four-servo mixer (the old `tvc.c` mixer was removed);
+`app.c` and Studio both use `controller.c`.
 
 Gains operate on radians and normalized command: P command/rad, I command/(rad·s),
 D command·s/rad. Derivative is on measurement, optionally low-pass filtered.

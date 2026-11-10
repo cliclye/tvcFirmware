@@ -16,6 +16,9 @@ typedef struct {
     float landed_speed_m_s;
     uint32_t landed_confirm_ms;
     uint32_t tvc_enable_delay_ms;
+    /* In BOOST/COAST, sensors must be unhealthy this long before FAULT (0 = at once). One missed
+     * IMU read must not end TVC for the rest of the flight. */
+    uint32_t sensor_fault_ms;
 } EasyTVCFlightConfig;
 
 typedef struct {
@@ -50,6 +53,8 @@ typedef struct {
     bool landed_candidate_active;
     bool drogue_requested;
     bool main_requested;
+    bool unhealthy_active;
+    uint32_t unhealthy_since_ms;
 } EasyTVCFlightMachine;
 
 void EasyTVC_FlightInit(EasyTVCFlightMachine *machine,

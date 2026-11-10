@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import launch  # noqa: E402  (rocket config, build/flash, live board, flight logs)
+import groundlink  # noqa: E402  (the ground link: telemetry, requests)
 AXIS_FIELDS = ("kp", "ki", "kd", "integrator_limit", "output_limit", "output_rate_limit", "derivative_cutoff_hz")
 PLANT_FIELDS = ("inertia_x", "inertia_y", "thrust_n", "thrust_arm_m", "gimbal_deg", "servo_tau_s",
                 "wind_m_s", "gust_m_s", "temperature_c", "area_m2", "drag_coefficient", "cp_arm_m", "initial_tilt_deg")
@@ -159,14 +160,56 @@ class NativeController:
         self.lib.EasyTVC_Sim3D.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint,
             ctypes.POINTER(ctypes.c_float), ctypes.c_uint, ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
         self.lib.EasyTVC_Sim3D.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DBegin.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DBegin.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DAdvance.argtypes = [ctypes.c_float, ctypes.POINTER(ctypes.c_float), ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DAdvance.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DInject.argtypes = [ctypes.c_int, ctypes.c_float, ctypes.c_float]
+        self.lib.EasyTVC_Sim3DInject.restype = ctypes.c_int
+        self.lib.EasyTVC_Sim3DSetCurve.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_uint]
+        self.lib.EasyTVC_Sim3DSetCurve.restype = ctypes.c_int
+        self.sim_lock = threading.Lock()   # the C engine keeps one batch and one live instance
 
-    def sim3d(self, params, rows=True):
+    def _set_curve(self, curve):
+        """Caller holds sim_lock. The C engine keeps the curve for the runs that follow."""
+        if not curve:
+            return
+        times = (ctypes.c_float * len(curve))(*[float(t) for t, _ in curve])
+        force = (ctypes.c_float * len(curve))(*[float(f) for _, f in curve])
+        if self.lib.EasyTVC_Sim3DSetCurve(times, force, len(curve)) != 0:
+            raise ValueError("The thrust curve was rejected.")
+
+    def sim3d_begin(self, params, curve=None):
+        p = (ctypes.c_float * len(params))(*params)
+        with self.sim_lock:
+            self._set_curve(curve)
+            if self.lib.EasyTVC_Sim3DBegin(p, len(params)) != 0:
+                raise ValueError("The simulator rejected these settings (check servo limits and vehicle numbers).")
+
+    def sim3d_advance(self, seconds):
+        columns, max_rows = len(launch.SIM3D_COLUMNS), 200
+        out = (ctypes.c_float * (columns * max_rows))()
+        summary = (ctypes.c_float * len(launch.SIM3D_SUMMARY))()
+        with self.sim_lock:
+            n = self.lib.EasyTVC_Sim3DAdvance(seconds, out, max_rows, summary, len(launch.SIM3D_SUMMARY))
+        if n < 0:
+            raise ValueError("No live flight is running.")
+        return [[round(float(out[i * columns + j]), 5) for j in range(columns)] for i in range(n)], [float(v) for v in summary]
+
+    def sim3d_inject(self, kind, a, b):
+        with self.sim_lock:
+            return self.lib.EasyTVC_Sim3DInject(kind, a, b)
+
+    def sim3d(self, params, rows=True, curve=None):
         """6-DOF flight with the firmware in the loop. Returns (rows, summary)."""
         columns, max_rows = len(launch.SIM3D_COLUMNS), 6000
         p = (ctypes.c_float * len(params))(*params)
         out = (ctypes.c_float * (columns * max_rows))()
         summary = (ctypes.c_float * len(launch.SIM3D_SUMMARY))()
-        n = self.lib.EasyTVC_Sim3D(p, len(params), out, max_rows, summary, len(launch.SIM3D_SUMMARY))
+        with self.sim_lock:
+            self._set_curve(curve)
+            n = self.lib.EasyTVC_Sim3D(p, len(params), out, max_rows, summary, len(launch.SIM3D_SUMMARY))
         if n < 0:
             raise ValueError("The simulator rejected these settings (check servo limits and vehicle numbers).")
         values = [float(v) for v in summary]
@@ -394,6 +437,8 @@ class Handler(BaseHTTPRequestHandler):
                   "/launch.js": ("launch.js", "text/javascript; charset=utf-8"),
                   "/sim3d.js": ("sim3d.js", "text/javascript; charset=utf-8"),
                   "/gimbal.js": ("gimbal.js", "text/javascript; charset=utf-8"),
+                  "/live.js": ("live.js", "text/javascript; charset=utf-8"),
+                  "/tune.js": ("tune.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/terminal.css": ("terminal.css", "text/css; charset=utf-8")}
         if self.path in static:
@@ -414,7 +459,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/rocket/load":
             project = self.project()
             return {"config": launch.read_config(project), "project": str(project),
-                    "build": launch.image_info(project), "state": launch.load_state()}
+                    "build": launch.image_info(project), "state": launch.load_state(),
+                    "pyro_compiled_in": launch.pyro_outputs_compiled_in(project)}
         if path == "/api/rocket/save":
             return {"config": launch.write_config(self.project(), data.get("config")),
                     "build": launch.image_info(self.project())}
@@ -422,6 +468,33 @@ class Handler(BaseHTTPRequestHandler):
             return {"sim": launch.sim_defaults()}
         if path == "/api/sim3d/run":
             return launch.run_sim3d(server.native, data.get("config"), data.get("vehicle"), data.get("sim"))
+        if path == "/api/sim3d/live/start":
+            return launch.live_start(server.native, data.get("config"), data.get("vehicle"), data.get("sim"))
+        if path == "/api/sim3d/live/step":
+            return launch.live_step(server.native, data.get("config"), data.get("seconds"), data.get("manual"))
+        if path == "/api/motor/parse-eng":
+            text = data.get("text")
+            if not isinstance(text, str) or len(text) > 20000:
+                raise ValueError("Paste or open a .eng file (up to 20 kB).")
+            return launch.parse_eng(text)
+        if path == "/api/sim3d/live/inject":
+            return launch.live_inject(server.native, data.get("kind"), data.get("a", 0.0), data.get("b", 0.0))
+        if path == "/api/tune/evaluate":
+            return launch.tune_evaluate(server.native, data.get("config"), data.get("vehicle") or {}, data.get("sim") or {})
+        if path == "/api/tune/start":
+            job = getattr(server, "tune_job", None)
+            if job is not None and job.status()["running"]:
+                raise ValueError("Auto-tune is already running.")
+            server.tune_job = launch.TuneJob(server.native, data.get("config"), data.get("vehicle") or {}, data.get("sim") or {})
+            return server.tune_job.status()
+        if path == "/api/tune/status":
+            job = getattr(server, "tune_job", None)
+            return job.status() if job is not None else {"running": False, "result": None, "stage": "", "progress": 0}
+        if path == "/api/tune/cancel":
+            job = getattr(server, "tune_job", None)
+            if job is not None:
+                job.cancel()
+            return {"ok": True}
         if path == "/api/sim3d/batch":
             return launch.run_sim3d_batch(server.native, data.get("config"), data.get("vehicle"), data.get("sim"), data.get("count", 40))
         if path == "/api/rocket/model":
@@ -448,15 +521,84 @@ class Handler(BaseHTTPRequestHandler):
             finally: server.build_lock.release()
         if path == "/api/monitor/connect":
             server.device.close()
-            return server.monitor.connect(data.get("port"))
+            kind = data.get("kind", "serial")
+            if kind not in ("serial", "udp", "tcp", "ble"): raise ValueError("Choose Bluetooth, USB serial, UDP or TCP.")
+            options = {k: data[k] for k in ("port", "host", "listen_port") if k in data}
+            for k in ("port", "listen_port"):
+                if kind != "serial" and k in options:
+                    if isinstance(options[k], bool) or not isinstance(options[k], int) or not 1 <= options[k] <= 65535:
+                        raise ValueError("Ports are 1-65535.")
+            if "host" in options and (not isinstance(options["host"], str) or not 0 < len(options["host"]) <= 253):
+                raise ValueError("Enter the bridge's address.")
+            try:
+                return server.monitor.connect(kind, **options)
+            except OSError as error:
+                raise ValueError(f"Could not open the link: {error}") from error
         if path == "/api/monitor/disconnect":
             server.monitor.disconnect(); return server.monitor.status()
         if path == "/api/monitor/status":
-            return server.monitor.status()
+            since = data.get("since")
+            return server.monitor.status(since if isinstance(since, int) and not isinstance(since, bool) else None)
+        if path == "/api/monitor/request":
+            command = data.get("command")
+            if command not in ("HELLO", "PING", "STATUS"): raise ValueError("Unknown request.")
+            return {"reply": server.monitor.request(command)}
+        if path == "/api/monitor/gimbal":
+            try:
+                return server.monitor.gimbal(data.get("command"), data.get("a", 0), data.get("b", 0))
+            except TimeoutError as error:
+                raise ValueError(str(error)) from error
+        if path == "/api/monitor/settings/send":
+            values = data.get("values")
+            if not isinstance(values, dict):
+                raise ValueError("Send the settings as name: value.")
+            clean = launch.validate_config({**launch.read_config(server.project), **{k: values[k] for k in values
+                                            if k in dict(groundlink.TUNABLE_FIELDS)}})   # same ranges as Rocket setup
+            try:
+                return {"board": server.monitor.send_settings({k: clean[k] for k, _ in groundlink.TUNABLE_FIELDS})}
+            except TimeoutError as error:
+                raise ValueError(str(error)) from error
+        if path == "/api/monitor/settings/reset":
+            return {"board": server.monitor.reset_settings()}
+        if path == "/api/monitor/pyro/arm":
+            return server.monitor.pyro_arm(data.get("channel"))
+        if path == "/api/monitor/pyro/fire":
+            return server.monitor.pyro_fire(data.get("channel"), data.get("code"), data.get("pulse_ms"))
+        if path == "/api/monitor/beep":
+            return server.monitor.beep()
+        if path == "/api/monitor/config":
+            board = server.monitor.read_config()
+            saved = launch.read_config(server.project)
+            return {"board": board, "rows": launch.compare_config(board, saved)}
+        if path == "/api/monitor/log/start":
+            session = data.get("session")
+            if session is not None and (isinstance(session, bool) or not isinstance(session, int) or session < 0):
+                raise ValueError("Session must be a whole number.")
+            save = lambda raw, n: launch._save_session(raw, n)[0].name
+            return {"download": server.monitor.start_download(session, save)}
+        if path == "/api/monitor/log/status":
+            return {"download": server.monitor.download_status()}
+        if path == "/api/monitor/log/cancel":
+            server.monitor.cancel_download(); return {"download": server.monitor.download_status()}
         if path == "/api/logs/disks":
             return {"disks": launch.external_disks(), "folder": str(launch.flights_dir(create=False))}
         if path == "/api/logs/read-sd":
-            return launch.read_sd(server.project, data.get("disk"), data.get("session"))
+            return launch.read_sd(server.project, data.get("disk"), data.get("session"), bool(data.get("all")))
+        if path == "/api/logs/replay":
+            return launch.replay_session(server.project, data.get("id"), data.get("config"), data.get("vehicle"))
+        if path == "/api/logs/saved":
+            return launch.saved_sessions(server.project)
+        if path == "/api/logs/open-saved":
+            return launch.open_saved(server.project, data.get("name"))
+        if path == "/api/logs/delete-saved":
+            return launch.delete_saved(data.get("name"))
+        if path == "/api/logs/sensor-window":
+            t0, t1 = data.get("t0"), data.get("t1")
+            for v in (t0, t1):
+                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))): raise ValueError("Bad time range.")
+            return launch.sensor_window(data.get("id"), t0, t1, data.get("points", 6000))
+        if path == "/api/logs/sensor-csv":
+            return launch.sensor_csv_text(data.get("id"))
         return None
 
     def do_POST(self):
@@ -483,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number.")))
             if not isinstance(data, dict): raise ValueError("Expected an object.")
             native, device = self.server.native, self.server.device
-            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/sim3d", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
+            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/sim3d", "/api/tune", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
             if launch_result is not None: result = launch_result
             elif self.path == "/api/simulate": result = native.simulate(data)
             elif self.path == "/api/validate":

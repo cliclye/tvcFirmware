@@ -1,5 +1,8 @@
 # EasyTVC Studio protocol v1
 
+> The ground link on USART2 (USB-UART or DroneBridge wireless) uses the same E1 framing with its own
+> messages and an IDLE-only request gate: see [wireless-telemetry.md](wireless-telemetry.md).
+
 Implemented in `protocol.c`/`runtime.c` and the Mac client; no board USB CDC adapter
 exists yet. Transport: nominal 115200 CDC serial, ASCII, LF endings, maximum 255
 bytes including newline. No CR characters.

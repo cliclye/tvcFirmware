@@ -173,6 +173,11 @@ static bool enqueue_fill(DataLogger *logger, bool advance)
 
 bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record)
 {
+    return DataLogger_LogRaw(logger, record);
+}
+
+bool DataLogger_LogRaw(DataLogger *logger, const void *record)
+{
     if (!logger->initialized || logger->region_full) {
         return false;
     }
@@ -189,6 +194,32 @@ bool DataLogger_Log(DataLogger *logger, const TelemetryRecord *record)
     }
     logger->record_count++;
     return true;
+}
+
+bool DataLogger_ReadSector(DataLogger *logger, uint32_t sector, uint8_t *buffer)
+{
+    /* The card does one thing at a time: read only between the logger's own writes. */
+    if (!logger->initialized || logger->write_in_flight || sector < DATA_LOGGER_DIR_SECTOR) {
+        return false;
+    }
+    return SD_Raw_ReadSector(&sd_card, sector, buffer) == SD_OK;
+}
+
+/* The reserved area before the log directory (settings sent over the ground link live there).
+ * Blocking, a few ms; only between the logger's own writes. */
+static bool reserved(const DataLogger *logger, uint32_t sector)
+{
+    return logger->initialized && !logger->write_in_flight && sector >= 1U && sector < DATA_LOGGER_DIR_SECTOR;
+}
+
+bool DataLogger_ReadReserved(DataLogger *logger, uint32_t sector, uint8_t *buffer)
+{
+    return reserved(logger, sector) && SD_Raw_ReadSector(&sd_card, sector, buffer) == SD_OK;
+}
+
+bool DataLogger_WriteReserved(DataLogger *logger, uint32_t sector, const uint8_t *buffer)
+{
+    return reserved(logger, sector) && SD_Raw_WriteSector(&sd_card, sector, buffer) == SD_OK;
 }
 
 bool DataLogger_Flush(DataLogger *logger)

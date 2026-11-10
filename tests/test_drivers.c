@@ -118,6 +118,7 @@ static void test_bmi088_wakes_accelerometer_and_scales(void)
     accel_dev.reg[EASYTVC_BMI088_ACCEL_CHIP_ID_REG] = EASYTVC_BMI088_ACCEL_CHIP_ID;
     gyro_dev.reg[EASYTVC_BMI088_GYRO_CHIP_ID_REG] = EASYTVC_BMI088_GYRO_CHIP_ID;
     gyro_dev.reg[EASYTVC_BMI088_GYRO_BANDWIDTH_REG] = 0x80;   /* bit 7 reads back as 1 */
+    put_le16(&accel_dev.reg[EASYTVC_BMI088_ACCEL_X_LSB_REG + 4], 1365);   /* awake: gravity */
 
     EasyTVCBus accel = {.context = &accel_dev, .write = fake_write, .read = fake_read};
     EasyTVCBus gyro = {.context = &gyro_dev, .write = fake_write, .read = fake_read};
@@ -166,6 +167,144 @@ static void test_bmi088_configure_fails_if_registers_do_not_stick(void)
     assert(!EasyTVC_Bmi088Configure(&imu));
 }
 
+/* A BMI088 accelerometer as the real part behaves: Bosch power-on defaults, asleep (suspend)
+ * until ACC_PWR_CONF = 0 and ACC_PWR_CTRL = 4, drops the first `flaky` writes to each register
+ * while not fully awake, and reads all-zero data while asleep. */
+typedef struct {
+    uint8_t reg[256];
+    unsigned flaky;
+    unsigned dropped[256];
+    unsigned config_writes;
+    bool pwr_ctrl_broken;
+    bool range_stuck;
+} RealAccel;
+
+static bool real_awake(const RealAccel *a)
+{
+    return a->reg[EASYTVC_BMI088_ACCEL_PWR_CONF_REG] == 0x00U && a->reg[EASYTVC_BMI088_ACCEL_PWR_CTRL_REG] == 0x04U;
+}
+
+static int real_accel_read(EasyTVCBus *bus, uint8_t reg, uint8_t *data, size_t length)
+{
+    const RealAccel *a = bus->context;
+    for (size_t i = 0; i < length; ++i) {
+        const uint8_t r = (uint8_t)(reg + i);
+        const bool sample = r >= EASYTVC_BMI088_ACCEL_X_LSB_REG && r < EASYTVC_BMI088_ACCEL_X_LSB_REG + 6U;
+        data[i] = sample && !real_awake(a) ? 0U : a->reg[r];
+    }
+    return 0;
+}
+
+static int real_accel_write(EasyTVCBus *bus, uint8_t reg, const uint8_t *data, size_t length)
+{
+    RealAccel *a = bus->context;
+    for (size_t i = 0; i < length; ++i) {
+        const uint8_t r = (uint8_t)(reg + i);
+        ++a->config_writes;
+        if (!real_awake(a) && a->dropped[r] < a->flaky) {
+            ++a->dropped[r];
+            continue;
+        }
+        if ((r == EASYTVC_BMI088_ACCEL_PWR_CTRL_REG && a->pwr_ctrl_broken) ||
+            (r == EASYTVC_BMI088_ACCEL_RANGE_REG && a->range_stuck)) {
+            continue;
+        }
+        a->reg[r] = data[i];
+    }
+    return 0;
+}
+
+static void real_accel_power_on(RealAccel *a)
+{
+    memset(a, 0, sizeof(*a));
+    a->reg[EASYTVC_BMI088_ACCEL_CHIP_ID_REG] = EASYTVC_BMI088_ACCEL_CHIP_ID;
+    a->reg[EASYTVC_BMI088_ACCEL_CONF_REG] = 0xA8U;        /* datasheet reset values */
+    a->reg[EASYTVC_BMI088_ACCEL_RANGE_REG] = 0x01U;
+    a->reg[EASYTVC_BMI088_ACCEL_PWR_CONF_REG] = 0x03U;    /* suspend */
+    a->reg[EASYTVC_BMI088_ACCEL_PWR_CTRL_REG] = 0x00U;    /* off */
+    put_le16(&a->reg[EASYTVC_BMI088_ACCEL_X_LSB_REG + 4], 1365);   /* 1 g once awake */
+}
+
+static void real_gyro(FakeDevice *g)
+{
+    memset(g, 0, sizeof(*g));
+    g->writes_stick = true;
+    g->reg[EASYTVC_BMI088_GYRO_CHIP_ID_REG] = EASYTVC_BMI088_GYRO_CHIP_ID;
+    g->reg[EASYTVC_BMI088_GYRO_BANDWIDTH_REG] = 0x80U;
+}
+
+static void test_bmi088_setup_survives_dropped_writes(void)
+{
+    /* What the first real board did: writes during wake-up did not all stick. One try per
+     * register (the old code) gave up; retries get through. */
+    RealAccel a;
+    FakeDevice g;
+    real_accel_power_on(&a);
+    a.flaky = 4;
+    real_gyro(&g);
+    EasyTVCBus accel = {.context = &a, .write = real_accel_write, .read = real_accel_read};
+    EasyTVCBus gyro = {.context = &g, .write = fake_write, .read = fake_read};
+    EasyTVCBmi088 imu;
+    EasyTVC_Bmi088Init(&imu, &accel, &gyro);
+    assert(EasyTVC_Bmi088Probe(&imu));
+    assert(EasyTVC_Bmi088Configure(&imu));
+    assert(imu.config_fail_step == 0U);
+    assert(real_awake(&a));
+    assert(a.reg[EASYTVC_BMI088_ACCEL_CONF_REG] == 0xAA && (a.reg[EASYTVC_BMI088_ACCEL_RANGE_REG] & 3U) == 3U);
+    assert(EasyTVC_Bmi088Read(&imu) && imu.accel_z == 1365);
+    printf("bmi088: woke through %u dropped writes per register\n", a.flaky);
+
+    /* Warm reboot (MCU reset, sensor kept power): already configured, nothing is rewritten. */
+    a.config_writes = 0;
+    EasyTVC_Bmi088Init(&imu, &accel, &gyro);
+    assert(EasyTVC_Bmi088Configure(&imu));
+    assert(a.config_writes == 0U);
+}
+
+static void test_bmi088_reports_which_setup_step_failed(void)
+{
+    RealAccel a;
+    FakeDevice g;
+    real_accel_power_on(&a);
+    a.pwr_ctrl_broken = true;   /* the accelerometer never accepts "on" */
+    real_gyro(&g);
+    EasyTVCBus accel = {.context = &a, .write = real_accel_write, .read = real_accel_read};
+    EasyTVCBus gyro = {.context = &g, .write = fake_write, .read = fake_read};
+    EasyTVCBmi088 imu;
+    EasyTVC_Bmi088Init(&imu, &accel, &gyro);
+    assert(!EasyTVC_Bmi088Configure(&imu));
+    assert(imu.config_fail_step == 9U && !imu.accel_ok && imu.readback[1] == 0x00U);
+    assert(imu.gyro_ok);   /* a stubborn accelerometer no longer takes the gyro down with it */
+    printf("bmi088: accel asleep -> step %u, PWR_CTRL read back 0x%02X, gyro still ok\n",
+           imu.config_fail_step, imu.readback[1]);
+
+    /* Registers all stick but the data never wakes up: caught by the zero-sample check. */
+    real_accel_power_on(&a);
+    memset(&a.reg[EASYTVC_BMI088_ACCEL_X_LSB_REG], 0, 6);
+    EasyTVC_Bmi088Init(&imu, &accel, &gyro);
+    assert(!EasyTVC_Bmi088Configure(&imu));
+    assert(imu.config_fail_step == 9U);
+}
+
+static void test_bmi088_scales_by_the_range_it_really_has(void)
+{
+    /* The range write never sticks: the part stays at its +-6 g reset range, where 1 g is
+     * 5461 counts. Readings must still come out as 1 g, not 4 g. */
+    RealAccel a;
+    FakeDevice g;
+    real_accel_power_on(&a);
+    a.range_stuck = true;
+    put_le16(&a.reg[EASYTVC_BMI088_ACCEL_X_LSB_REG + 4], 5461);
+    real_gyro(&g);
+    EasyTVCBus accel = {.context = &a, .write = real_accel_write, .read = real_accel_read};
+    EasyTVCBus gyro = {.context = &g, .write = fake_write, .read = fake_read};
+    EasyTVCBmi088 imu;
+    EasyTVC_Bmi088Init(&imu, &accel, &gyro);
+    assert(EasyTVC_Bmi088Configure(&imu));
+    assert(EasyTVC_Bmi088Read(&imu));
+    assert(fabsf(imu.accel_m_s2[2] - 9.80665f) < 0.01f);
+}
+
 int main(void)
 {
     test_bme280_matches_bosch_example();
@@ -173,6 +312,9 @@ int main(void)
     test_bme280_config_must_stick();
     test_bmi088_wakes_accelerometer_and_scales();
     test_bmi088_configure_fails_if_registers_do_not_stick();
+    test_bmi088_setup_survives_dropped_writes();
+    test_bmi088_reports_which_setup_step_failed();
+    test_bmi088_scales_by_the_range_it_really_has();
     puts("driver tests passed");
     return 0;
 }

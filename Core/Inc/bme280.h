@@ -34,6 +34,8 @@ typedef struct {
     int32_t temperature;     /* 0.01 degC */
     uint32_t pressure;       /* Pa */
     uint32_t humidity;       /* Q22.10 %RH (divide by 1024) */
+    uint32_t adc_p, adc_t;   /* raw conversions of the last good read (20-bit) */
+    uint16_t adc_h;          /* raw humidity (16-bit) */
     int32_t t_fine;
     uint16_t dig_T1;
     int16_t dig_T2, dig_T3;

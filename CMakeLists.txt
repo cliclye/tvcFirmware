@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.22)
 
 project(EasyTVCFirmware LANGUAGES C)
 
+# Firmware identity sent over the ground link (SYS/HELLO): short git hash, "+" if uncommitted edits.
+execute_process(COMMAND git rev-parse --short=8 HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE EASYTVC_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+execute_process(COMMAND git status --porcelain --untracked-files=no WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE EASYTVC_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT EASYTVC_GIT_HASH)
+    set(EASYTVC_GIT_HASH "unknown")
+elseif(EASYTVC_GIT_DIRTY)
+    set(EASYTVC_GIT_HASH "${EASYTVC_GIT_HASH}+")
+endif()
+
 set(EASYTVC_CORE_SOURCES
     Core/Src/app.c
     Core/Src/attitude.c
@@ -15,19 +26,23 @@ set(EASYTVC_CORE_SOURCES
     Core/Src/pid.c
     Core/Src/pyro_seq.c
     Core/Src/telemetry.c
-    Core/Src/tvc.c
     Core/Src/settings.c
     Core/Src/controller.c
     Core/Src/protocol.c
     Core/Src/runtime.c
     Core/Src/pad_arm.c
+    Core/Src/servo_test.c
+    Core/Src/recovery_charge.c
+    Core/Src/tunables.c
+    Core/Src/pyro_test.c
+    Core/Src/text_line.c
+    Core/Src/link.c
 )
 
 # STM32F405 register-level drivers. These touch memory-mapped peripherals and inline
 # Cortex-M asm, so they are built for the MCU only and never for the host tests.
 set(EASYTVC_HW_SOURCES
     Core/Src/stm32f4xx.c
-    Core/Src/gpio_init.c
     Core/Src/spi_driver.c
     Core/Src/i2c_driver.c
     Core/Src/pwm_driver.c
@@ -35,6 +50,7 @@ set(EASYTVC_HW_SOURCES
     Core/Src/hardware_bus.c
     Core/Src/sd_raw.c
     Core/Src/data_logger.c
+    Core/Src/adc_driver.c
 )
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
@@ -56,15 +72,24 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
 
     # Two images from the same source: the bench image never arms and lets the gimbal follow the
     # board by hand; the flight image arms on the pad and runs TVC during boost.
-    function(easytvc_image name bench_mode)
+    # gpio_init.c and easytvc_safety.c hold the pyro lock, so they are compiled per image:
+    # the lock (EASYTVC_PYRO_OUTPUTS_COMPILED_IN) is 0 unless an image asks for 1.
+    function(easytvc_image name bench_mode main_source)
+        set(pyro_unlocked 0)
+        if(ARGC GREATER 3)
+            set(pyro_unlocked ${ARGV3})
+        endif()
         add_executable(${name}
-            Core/Src/main.c
+            ${main_source}
             Core/Src/startup_stm32f405rg.c
             Core/Src/easytvc_safety.c
+            Core/Src/gpio_init.c
         )
         target_include_directories(${name} PRIVATE Core/Inc)
         target_compile_features(${name} PRIVATE c_std_11)
-        target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode})
+        target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode}
+            EASYTVC_PYRO_OUTPUTS_COMPILED_IN=${pyro_unlocked}
+            EASYTVC_GIT_HASH="${EASYTVC_GIT_HASH}")
         target_compile_options(${name} PRIVATE
             -mcpu=cortex-m4
             -mthumb
@@ -98,8 +123,13 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         )
     endfunction()
 
-    easytvc_image(easytvc_bench 1)
-    easytvc_image(easytvc_flight 0)
+    easytvc_image(easytvc_bench 1 Core/Src/main.c)
+    easytvc_image(easytvc_flight 0 Core/Src/main.c)
+    # Sensor test: reads every sensor, logs every raw reading to SD, never arms or moves a servo.
+    easytvc_image(easytvc_sensortest 1 Core/Src/sensor_test.c)
+    # Pyro bench test: the bench image (never arms, never flies) with the pyro outputs unlocked, so
+    # Studio's pyro ground test really switches P1/P3. Only ever with a test load on the terminals.
+    easytvc_image(easytvc_pyrobench 1 Core/Src/main.c 1)
 else()
     add_library(easytvc_core STATIC ${EASYTVC_CORE_SOURCES})
     target_include_directories(easytvc_core PUBLIC Core/Inc)
@@ -108,7 +138,8 @@ else()
     target_link_libraries(easytvc_core PUBLIC m)
     set_target_properties(easytvc_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-    add_library(easytvc_studio SHARED Core/Src/studio_sim.c Core/Src/flight_sim3d.c)
+    # link.c is compiled in directly so Studio's tests can check its own decoder against the C encoder.
+    add_library(easytvc_studio SHARED Core/Src/studio_sim.c Core/Src/flight_sim3d.c Core/Src/link.c)
     target_link_libraries(easytvc_studio PRIVATE easytvc_core)
     target_compile_options(easytvc_studio PRIVATE -Wall -Wextra -Werror)
 
@@ -137,6 +168,10 @@ else()
     target_link_libraries(easytvc_test_sim3d PRIVATE easytvc_core)
     target_compile_options(easytvc_test_sim3d PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
+    add_executable(easytvc_test_link tests/test_link.c)
+    target_link_libraries(easytvc_test_link PRIVATE easytvc_core)
+    target_compile_options(easytvc_test_link PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+
     add_executable(easytvc_sim tests/sim_flight.c)
     target_link_libraries(easytvc_sim PRIVATE easytvc_core)
 
@@ -150,4 +185,5 @@ else()
     add_test(NAME easytvc_test_logger COMMAND easytvc_test_logger)
     add_test(NAME easytvc_test_flight COMMAND easytvc_test_flight)
     add_test(NAME easytvc_test_sim3d COMMAND easytvc_test_sim3d)
+    add_test(NAME easytvc_test_link COMMAND easytvc_test_link)
 endif()

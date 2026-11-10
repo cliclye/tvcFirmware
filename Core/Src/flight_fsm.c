@@ -35,6 +35,22 @@ void EasyTVC_FlightInit(EasyTVCFlightMachine *machine,
     machine->landed_candidate_active = false;
     machine->drogue_requested = false;
     machine->main_requested = false;
+    machine->unhealthy_active = false;
+    machine->unhealthy_since_ms = now_ms;
+}
+
+/* In flight: unhealthy for config.sensor_fault_ms in a row. */
+static bool sensors_failed(EasyTVCFlightMachine *machine, const EasyTVCFlightInput *input)
+{
+    if (input->sensors_healthy) {
+        machine->unhealthy_active = false;
+        return false;
+    }
+    if (!machine->unhealthy_active) {
+        machine->unhealthy_active = true;
+        machine->unhealthy_since_ms = input->now_ms;
+    }
+    return (uint32_t)(input->now_ms - machine->unhealthy_since_ms) >= machine->config.sensor_fault_ms;
 }
 
 EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
@@ -51,15 +67,18 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         .fault = false,
     };
 
-    const bool valid = input->sensors_healthy &&
-        isfinite(input->acceleration_magnitude_g) && isfinite(input->axial_acceleration_g) &&
+    const bool finite = isfinite(input->acceleration_magnitude_g) && isfinite(input->axial_acceleration_g) &&
         isfinite(input->altitude_m) && isfinite(input->vertical_speed_m_s);
+    const bool valid = input->sensors_healthy && finite;
     if (!valid && machine->state == EASYTVC_FLIGHT_ARMED) {
         transition(machine, EASYTVC_FLIGHT_IDLE, input->now_ms);
-    } else if (!valid && machine->state != EASYTVC_FLIGHT_IDLE &&
-               machine->state != EASYTVC_FLIGHT_LANDED) {
+    } else if (machine->state != EASYTVC_FLIGHT_IDLE && machine->state != EASYTVC_FLIGHT_ARMED &&
+               machine->state != EASYTVC_FLIGHT_LANDED && machine->state != EASYTVC_FLIGHT_FAULT &&
+               (!finite || sensors_failed(machine, input))) {
+        /* in flight: garbage numbers at once, unhealthy sensors only once it has lasted */
         transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
     }
+    const bool hold = !valid && machine->state != EASYTVC_FLIGHT_IDLE && machine->state != EASYTVC_FLIGHT_ARMED;
     if (machine->state == EASYTVC_FLIGHT_BOOST && !input->physical_arm_qualified) {
         transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
     }
@@ -74,6 +93,7 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         break;
 
     case EASYTVC_FLIGHT_ARMED:
+        machine->unhealthy_active = false;   /* the grace timer starts fresh in flight */
         /* Still on the pad: a bad sample disarms (the pad must re-qualify) rather than latching
          * FAULT, which could only be cleared by a power cycle. */
         if (!input->sensors_healthy || !input->physical_arm_qualified ||
@@ -96,8 +116,8 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         break;
 
     case EASYTVC_FLIGHT_BOOST:
-        if (!input->sensors_healthy) {
-            transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
+        if (hold) {
+            /* inside the grace time: hold the state, no decisions on bad data */
         } else if (elapsed_at_least(input->now_ms,
                                     machine->launch_ms,
                                     machine->config.minimum_boost_ms) &&
@@ -107,8 +127,8 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         break;
 
     case EASYTVC_FLIGHT_COAST:
-        if (!input->sensors_healthy) {
-            transition(machine, EASYTVC_FLIGHT_FAULT, input->now_ms);
+        if (hold) {
+            /* inside the grace time: hold the state, no decisions on bad data */
         } else if (elapsed_at_least(input->now_ms,
                                     machine->launch_ms,
                                     machine->config.failsafe_apogee_ms) ||
@@ -127,6 +147,9 @@ EasyTVCFlightOutput EasyTVC_FlightStep(EasyTVCFlightMachine *machine,
         break;
 
     case EASYTVC_FLIGHT_DESCENT:
+        if (hold) {
+            break;                    /* grace time: no main / landed decisions on bad data */
+        }
         if (!machine->main_requested &&
             input->vertical_speed_m_s < 0.0f &&
             input->altitude_m <= machine->config.main_deploy_altitude_m) {

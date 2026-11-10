@@ -14,6 +14,8 @@ it, rebuild with `./scripts/build-firmware.sh` and repeat the bench checks.
 
 ## 1. Parts list (Estes E12 build)
 
+Exact specs, quantities and substitutes for every item to buy: [shopping-list.md](shopping-list.md).
+
 | Part | Recommendation | Notes |
 |---|---|---|
 | Flight computer | EasyTVC v0.1 (you have it) | XT30 battery input; servos run from its onboard 5 V linear regulator |
@@ -25,7 +27,7 @@ it, rebuild with `./scripts/build-firmware.sh` and repeat the bench checks.
 | USB-UART adapter | 3.3 V CP2102 or FT232 module | Wire it to the `TX2/RX2/GND` header to see live telemetry. USB-C on the board is only for flashing (no USB serial yet) |
 | Motors | **Estes E12-0** (no ejection charge) | The firmware releases the parachute with a servo. With E12-4/-6 the ejection charge also fires through the gimbal, so that needs a gas path and a retained motor |
 | Igniters + launch controller | Estes starters and a standard controller | |
-| Recovery | 18" (45 cm) parachute, Kevlar shock cord, swivel, Nomex blanket | An 18" chute gives roughly 5 m/s descent at 350 g |
+| Recovery | 24" (61 cm) nylon parachute, Kevlar shock cord, swivel, Nomex blanket | The rocket model assumes ≥ 55 cm; enter the chute you buy in Rocket setup |
 | Launch stand | A vertical stand or tower that holds the rocket upright and lets go freely | A finless TVC rocket can't stabilise itself off a long rod. It has to be vertical before ignition |
 | Hardware | M2/M2.5 nylon standoffs, servo pushrods (1 mm wire with Z-bends or ball links), heat-set inserts | Use PETG/ASA, not PLA, for anything near the motor |
 
@@ -54,7 +56,8 @@ pulls *up* at reset. Pyro outputs are compiled out of this firmware altogether.
   SDA2, GND). It's much bigger than the 1 mm Qwiic connector on the back, probably JST-PH
   (2.0 mm) or JST-XH (2.5 mm) pitch. **Measure it before buying a mating cable.** A USB-UART
   adapter or a telemetry radio goes here: their TX → **RX2**, their RX → **TX2**, plus GND (and
-  5V to power a radio).
+  5V to power a radio). For a XIAO ESP32-C3 with DroneBridge, see
+  [wireless-telemetry.md](wireless-telemetry.md): pins, settings and how to connect Studio.
 - **4-pin RX4/TX4 connector** (left, UART4): not used by this firmware.
 - **P1/P2/P3/SW screw terminals** (top): pyro outputs and the vendor's pyro arming switch. Pyro is
   compiled out, so **leave them all empty**, and especially never use P2.
@@ -84,6 +87,40 @@ Then **unplug USB and the battery** (a full power cycle). If the board comes up 
 on and the parachute servo open, it either saw a non-power-on reset or was moving when it
 powered up. That's the in-air safety mode, and a power cycle with the board at rest clears it.
 
+### Sensor test (`easytvc_sensortest` image), the quickest first check
+
+In Studio, click **◎ Sensor test** under *Install on board* (or *Flash sensor test* on Build &
+flash). It installs a firmware that never arms and never moves a servo. It checks every sensor,
+then records every reading to the SD card.
+
+1. Put a microSD card in the board, lay the board flat and still, and power it up.
+2. LEDs go red, green, blue, then one beep. Green blinks fast for 3 s while it tests: don't touch it.
+3. **Two short beeps + steady green**: everything passed. **N long beeps + red blinking N
+   times**: group N failed (1 IMU, 2 barometer, 3 SD card, 4 power).
+4. Leave it running as long as you want (blue blinks while recording; one power-up holds about
+   9 minutes). Move it, warm it with your hand, blow on the barometer: it's all recorded.
+5. Put the card in your Mac, **Flight logs → Read from SD card**. Studio shows each check
+   (pass/fail at power-up and at the end), every channel's mean, noise and range, charts, and
+   **CSV ↓** exports every single reading.
+
+What it records:
+
+| Sensor | Rate | Values |
+|---|---|---|
+| BMI088 accelerometer + gyroscope | 400 Hz (its full output rate) | raw counts for all 6 axes, read time, error count |
+| BMI088 die temperature | 10 Hz | °C |
+| BME280 | 50 Hz | pressure, temperature, humidity, and the raw ADC values behind them |
+| STM32 ADC | 10 Hz | battery pin (PA4) voltage, 3.3 V rail (from the factory reference), MCU temperature |
+| Status | 1 Hz | chip IDs, check results, sample/error counters, SD dropped/write errors, loop timing |
+
+The checks: chip IDs answer (0x1E, 0x0F, 0x60); 1 g at rest; gyro bias under 5 °/s and noise
+under 3 °/s; values not stuck; 99 % of IMU and 95 % of barometer reads succeed; pressure 60–110
+kPa; temperatures and humidity sane; SD recording with nothing lost; 3.3 V rail 3.0–3.6 V. "1 g"
+and "gyro quiet" need the board still: once they pass (in the first 3 s or any later still
+second) they stay passed, so a bump during the test turns green once you leave the board alone,
+and picking it up later doesn't fail them. With a USB-UART on TX2/RX2, **Live board** shows the values and checks live (USB-C on the
+board has no serial port yet).
+
 ## 4. Bench checks (`easytvc_bench` image). Do all of them.
 
 The bench image never arms. The gimbal always tries to hold the motor so that it would push the
@@ -94,9 +131,13 @@ rocket back to vertical.
    moves at each step. Watch for binding: if the gimbal hits a stop, shrink `MIN_US`/`MAX_US`
    for that servo. If you hear no beep at all, the buzzer is not working; note it.
 2. **Nose axis.** Stand the rocket nose-up and keep it still. A **solid green LED** means the
-   board thinks it's vertical, so `EASYTVC_NOSE_AXIS` is right. If the green LED is off, read
-   the `B,...` telemetry line. One of the three `raw` accel numbers is near +1000 (or −1000):
-   set `EASYTVC_NOSE_AXIS` to that axis (`POS_`/`NEG_`), rebuild and reflash.
+   board thinks it's vertical, so `EASYTVC_NOSE_AXIS` is right. If the green LED is off, open
+   **Live → Pad tools**: it reads the bench image's raw accelerometer and suggests the nose axis
+   (one of the three raw numbers is near +1 g or −1 g). Set `EASYTVC_NOSE_AXIS` to that axis
+   (`POS_`/`NEG_`), rebuild and reflash.
+   With a wireless link (or USB-UART) you can also drive each servo from **Live → Pad tools → TVC
+   gimbal test**: sweep A then B, hold a slider to move one, and trim the centres until the motor
+   points straight along the body. Then use "Save trim to Rocket setup" and reinstall over USB-C.
 3. **Channel and direction (the tilt test).** Hold the rocket vertical, then lean the nose about
    10° toward one side. **The motor nozzle must swing to the opposite side** of the lean,
    because that pushes the tail back under the nose. Repeat for all four directions.
@@ -110,6 +151,45 @@ rocket back to vertical.
 5. **Logging.** Power-cycle twice, then put the card in your Mac and run
    `./scripts/read-sd-data.sh /dev/diskN`. It should report the latest session, and
    `python3 scripts/telemetry_viewer.py session_N.bin` should show your tilt test.
+
+### Pyro bench test (only if you want an ejection charge on P1 or P3)
+
+The vendor hasn't tested the pyro circuit, so the firmware ships with the outputs **locked**
+(`EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0` in `Core/Inc/easytvc_safety.h`). Locked, the board still
+counts down and logs when the charge is due (Live shows "DUE · locked"), but the pin never switches
+on. Don't connect an igniter or a charge until every step below has passed with a **test load**: an
+LED with a 1 kΩ resistor across the terminal (or a small bulb), never a real igniter.
+
+1. Pick the terminal in **Rocket setup → Board outputs** (P1 or P3; P2 can't be used: it's the
+   processor's debug pin and goes high at every reset). Set the delay and on-time under Recovery,
+   then save and install.
+2. **Locked image:** with the test load on the terminal, power up, unplug and replug, press reset, and
+   install firmware over USB-C. The LED must stay **off** the whole time. A meter across the terminal
+   reads 0 V.
+3. **Pyro bench image:** Install on board → **Pyro bench test**. It never arms and never flies, and
+   its pyro outputs are live: only Studio's pyro test switches them. It blinks red fast and chirps
+   every 5 s so it can't be mistaken for the flight image.
+4. Repeat step 2 with it: the test LEDs still stay dark at power-up, reset and in DFU mode (hold
+   BOOT and plug in USB: the pins are not driven by our firmware then, so this is the board's own
+   pull-down being tested).
+5. Stand the board vertical and still until it arms (solid green, chirps), then give it a sharp upward
+   jerk so it detects a launch. The LED must light for the on-time at the backup time (or apogee +
+   delay), exactly once, and the event log shows `CHARGE_FIRED`. Reboot: it must not light again.
+   Quicker check without a flight: **Live → Pad tools → Pyro channel test** (IDLE, disarmed) pulses
+   the channel once for 100–500 ms. The LED must light once with the unlocked image, and must stay
+   dark with the locked one.
+6. During the pulse, the meter across the terminal should read about the battery voltage. If it reads
+   much less, the output can't drive an igniter: stay with the parachute servo.
+
+Then note the Pyro tile's continuity dots with the load connected and disconnected: that tells us
+what "continuity" reads as on this board. When every step passes on P1 and P3, unlock the flight
+image (`EASYTVC_PYRO_OUTPUTS_COMPILED_IN 1` in `easytvc_safety.h`) and install it. If any step fails,
+stay locked.
+
+**Barometer and ejection charges:** the charge's gas and pressure pulse must not reach the
+barometer. Put the board in a sealed avionics bay with 1–3 small static-port holes to the outside
+(about 1 mm each, away from the nose/body joint), and keep the charge in the parachute bay. Even after a pass, connect the igniter **last**, at the
+pad, with the rocket pointed away from people, following your club's safety code.
 
 ## 5. Flight image
 
@@ -162,19 +242,64 @@ pulse sliders, the firmware's power-up self-test sweep, the flight playback (sam
 linkage numbers (horn radius, lever radius, servo °/µs and speed, mechanical stop) feed the sim:
 gimbal angle = asin(horn/lever × sin(horn angle)). Measure the real holes with calipers.
 
-**3D flight sim** then flies exactly that rocket with the real flight software in the loop.
+**3D flight sim** then flies exactly that rocket with the real flight software in the loop. It is a
+closed loop, not an animation: every millisecond the rocket's state becomes simulated IMU/baro
+readings, the real flight code turns them into servo pulses, the servo model (PWM frame rate,
+deadband, position loop with speed and acceleration limits, gear backlash, mechanical stop) turns
+the pulses into a gimbal angle, the gimbal tilts the thrust, and only that torque (plus the air's)
+turns the rocket. The "What turns the rocket" charts show TVC torque against aerodynamic torque.
+**Fly live** steps the same engine in real time and lets you kick the rocket, add a gust, or jam
+a servo mid-flight; tests confirm a live flight is bit-identical to a batch run.
+
+What the physics includes:
+- **Motor**: the measured NAR thrust curve for the Estes E12 (27.2 N·s, 33 N spike at 0.29 s,
+  ~9.7 N sustain, 2.44 s burn), with mass burning off in proportion to impulse delivered. Import
+  any other motor with **Import .eng** (files from thrustcurve.org).
+- **Air**: ISA density from launch-site altitude and temperature, Dryden-style turbulence on top
+  of the wind, Barrowman nose lift at the CP, body lift, aero pitch damping and jet damping.
+- **Gimbal**: motor-mount inertia (its reaction torque kicks the rocket when the gimbal swings),
+  servo stall torque (servos slow down under load), backlash, deadband and response time.
+- **Sensors**: the IMU's real offset from the CG (so spin shows up as false acceleration), the
+  BMI088's own low-pass filters and quantization, gyro bias and noise.
+- **Roll**: a finless rocket has nothing stopping it rolling. A steady roll torque (asymmetry,
+  motor swirl; 0.1 N·mm gives about 60°/s by burnout) spins it up against skin-friction damping,
+  and the gyroscopic coupling between roll and pitch/yaw is in the rigid-body equations.
+- **40 random flights** also vary thrust ±5 %, CG ±5 mm, inertia ±10 % and a random roll torque.
+
+**Roll and the TVC.** The servos push in the rocket's own frame, so roll matters. The controller
+takes the tilt from the full attitude quaternion (always in the current body frame), carries the
+derivative across the roll between samples so spin doesn't read as tilt rate, and aims each command
+15 ms ahead of the roll to cover the servo lag (`EASYTVC_ROLL_LEAD_S` in `controller.h`). Before
+this the sim lost control above ~500°/s of roll; now it holds up to 2000°/s. Studio warns if a
+flight rolls past 720°/s: look for what's twisting it (a launch lug, a crooked motor mount).
+**Spin 720°/s** in Fly live tests it.
+
+**Manual TVC**: while flying live, the joystick beside the view switches the TVC from Auto to
+Manual. The flight software still runs the pad arming, launch detection and parachute, but the
+servo pulses come from the stick (drag it, or hold W A S D / arrow keys; Sensitivity scales the
+throw). Switch back to Auto and the controller takes over from wherever the rocket is, but if the
+tilt is already past MAX_TILT_DEG (25°) the firmware's give-up latch centres the motor, just as it
+would in a real flight. The rocket is unstable, so hand-flying it is hard: that's the point.
 
 What the model found for the default E12 rocket (610 mm, 66 mm tube, 150 mm ogive):
 - **Without nose weight it can't be flown**: CG 401 mm, CP 70 mm (−5 cal), pivot only 164 mm
   behind the CG. No gains held it; above ~35 m/s the air overpowers the gimbal.
-- **With 80 g of nose weight**, a 10.5 mm horn / 30 mm lever (≈7.7° gimbal) and **KP 8, KI 0.5,
-  KD 0.8, slew 20/s**: CG 325 mm, −3.9 cal, pivot 240 mm behind the CG, 380 g liftoff. It held
-  16/16 random flights (3 m/s wind gusting ~6, 1° misalignment, 2° pad lean) under ~3°, about
-  120 m apogee, 5–6 m/s landing on a 55 cm parachute. These are the new defaults.
+- **With 80 g of nose weight** and a 10.5 mm horn / 30 mm lever (≈7.7° gimbal): CG 325 mm,
+  −3.9 cal, pivot 240 mm behind the CG, 380 g liftoff, about 105 m apogee on the measured E12 curve.
+- **Default gains: KP 10.4, KI 1.2, KD 0.92, D filter 30 Hz, slew 30/s**, from a gain search on
+  random flights (wind to 6 m/s, misalignment, pad lean, mid-boost kicks), checked on 60 flights
+  it never saw: mean boost tilt 0.89° (the earlier KP 8 / KI 0.5 / KD 0.8 / 20 Hz / 20/s gave
+  1.14°), never lost control, and stayed better with the model deliberately wrong (±30 %
+  inertia, ±40 % thrust, 2° servo slop, slower servo, 3× sensor noise, CP 3 cm forward). A more
+  aggressive set scored better on paper but oscillated when the rocket was lighter than modelled.
+  Thrust-based gain scheduling and gyro-rate damping were also tried and did not help this
+  rocket, so they are not used.
 - KD amplifies motor vibration into roughly ±1° of gimbal jitter. If the servos buzz or get hot,
   lower KD or the D filter cutoff.
 
-The model leaves out servo backlash, airframe flex and wind-tunnel data. A good sim result is
+With the measured E12 curve the default rocket reaches about 103 m and held 40/40 random flights.
+The model still leaves out airframe flex, nozzle erosion, roll from asymmetric parts and
+wind-tunnel data. A good sim result is
 necessary, not sufficient: do the bench checks and fly the first flight on a calm day.
 
 ## 7. What changed in this pass (review findings)

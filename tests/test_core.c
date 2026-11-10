@@ -14,7 +14,7 @@
 #include "pid.h"
 #include "pyro_seq.h"
 #include "telemetry.h"
-#include "tvc.h"
+#include "text_line.h"
 
 static EasyTVCFlightConfig test_config(void)
 {
@@ -118,7 +118,7 @@ static void test_fault_on_unhealthy_sensors(void)
     input = healthy_input(3U);
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_ARMED);
 
-    /* In flight it is a FAULT. */
+    /* In flight, with no grace time configured, it is a FAULT at once. */
     input = healthy_input(10U);
     input.acceleration_magnitude_g = 3.0f;
     (void)EasyTVC_FlightStep(&machine, &input);
@@ -126,6 +126,29 @@ static void test_fault_on_unhealthy_sensors(void)
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
     input.now_ms = 62U;
     input.sensors_healthy = false;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_FAULT);
+
+    /* With a grace time, one bad sample in flight is ridden through; a lasting one is a FAULT. */
+    EasyTVCFlightConfig graced = test_config();
+    graced.sensor_fault_ms = 100U;
+    EasyTVC_FlightInit(&machine, &graced, 0U);
+    input = healthy_input(1U);
+    (void)EasyTVC_FlightStep(&machine, &input);
+    input = healthy_input(10U);
+    input.acceleration_magnitude_g = 3.0f;
+    (void)EasyTVC_FlightStep(&machine, &input);
+    input.now_ms = 61U;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 62U;
+    input.sensors_healthy = false;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 67U;
+    input.sensors_healthy = true;
+    assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.sensors_healthy = false;
+    for (input.now_ms = 70U; input.now_ms < 170U; input.now_ms += 5U)
+        assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_BOOST);
+    input.now_ms = 170U;
     assert(EasyTVC_FlightStep(&machine, &input).state == EASYTVC_FLIGHT_FAULT);
 }
 
@@ -244,22 +267,21 @@ static void test_sensor_identity_fakes(void)
     assert(!EasyTVC_Bmi088Probe(&imu));
 }
 
-static void test_tvc_holds_center_when_disabled(void)
+static void test_text_line(void)
 {
-    EasyTVCTvc tvc;
-    const EasyTVCTvcConfig config = {
-        .pitch = {.kp = 2.0f, .ki = 0.0f, .kd = 0.0f, .integrator_limit = 1.0f,
-                  .output_limit = 1.0f, .output_rate_limit = 10.0f},
-        .yaw = {.kp = 2.0f, .ki = 0.0f, .kd = 0.0f, .integrator_limit = 1.0f,
-                .output_limit = 1.0f, .output_rate_limit = 10.0f},
-        .servo_center = 0.5f,
-        .servo_throw = 0.25f,
-    };
-    EasyTVC_TvcInit(&tvc);
-    const EasyTVCTvcOutput output = EasyTVC_TvcUpdate(&tvc, &config, 0.4f, -0.3f, false, 0.01f);
-    assert(fabsf(output.pitch_command) < 0.0001f);
-    assert(fabsf(output.yaw_command) < 0.0001f);
-    assert(fabsf(output.servo_normalized[0] - 0.5f) < 0.0001f);
+    char buffer[40];
+    EasyTVCTextLine line = {buffer, 0, sizeof(buffer)};
+    EasyTVC_LineStr(&line, "S");
+    EasyTVC_LineField(&line, 0);
+    EasyTVC_LineField(&line, -45);
+    EasyTVC_LineField(&line, INT32_MIN);
+    EasyTVC_LineStr(&line, " ");
+    EasyTVC_LineHex8(&line, 0x1E);
+    assert(strcmp(buffer, "S,0,-45,-2147483648 0x1E") == 0);
+    char small[6];
+    EasyTVCTextLine cut = {small, 0, sizeof(small)};
+    EasyTVC_LineInt(&cut, 1234567);   /* does not fit: cut off, still terminated */
+    assert(strcmp(small, "12345") == 0);
 }
 
 static void test_telemetry_and_app(void)
@@ -295,7 +317,7 @@ int main(void)
     test_logger();
     test_pyro_compile_lock();
     test_sensor_identity_fakes();
-    test_tvc_holds_center_when_disabled();
+    test_text_line();
     test_telemetry_and_app();
     return 0;
 }
