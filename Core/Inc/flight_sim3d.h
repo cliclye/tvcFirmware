@@ -58,6 +58,11 @@ enum {
     /* roll: a finless rocket has nothing to stop it rolling */
     SIM3D_ROLL_TORQUE_NMM,                /* steady roll torque from asymmetries / motor swirl, N*mm */
     SIM3D_IGNITION_S,
+    /* recovery as the firmware is set up (SIM3D_CHUTE_ENABLED above is no longer read) */
+    SIM3D_CHUTE_SERVO,                    /* 1 = a release servo is configured */
+    SIM3D_PYRO_CHANNEL,                   /* 0 = no charge, else the pyro terminal */
+    SIM3D_PYRO_ALT_M, SIM3D_PYRO_DELAY_MS, SIM3D_PYRO_BACKUP_MS,
+    SIM3D_PYRO_LIVE,                      /* 1 = pyro outputs unlocked: the charge really fires */
     SIM3D_PARAM_COUNT
 };
 
@@ -82,6 +87,8 @@ enum {
     SIM3D_SUM_FLIGHT_TIME, SIM3D_SUM_FINAL_STATE, SIM3D_SUM_UNDER_CHUTE, SIM3D_SUM_EST_ERROR_DEG,
     SIM3D_SUM_LIFTOFF, SIM3D_SUM_DONE, SIM3D_SUM_TIME,
     SIM3D_SUM_MAX_ROLL_DPS,               /* fastest roll during boost */
+    SIM3D_SUM_CHARGE_T,                   /* when the charge was due, s after ignition (-1 = never) */
+    SIM3D_SUM_TVC_ON_T,                   /* when TVC first steered, s after ignition (-1 = never) */
     SIM3D_SUMMARY_COUNT
 };
 

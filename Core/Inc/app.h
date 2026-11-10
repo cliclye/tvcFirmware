@@ -27,6 +27,9 @@ typedef struct {
     /* Age of the last complete, valid sensor sample, supplied by the driver. */
     uint32_t sensor_age_ms;
     float dt_s;
+    /* The barometer reading is old (a failed read): the altitude filter runs on the accelerometer
+     * alone until it is back. False = use baro_altitude_m. */
+    bool baro_stale;
 } EasyTVCAppInput;
 
 typedef struct {
@@ -53,6 +56,9 @@ typedef struct {
     /* The firmware sends E1 frames instead of output.telemetry: set this to skip formatting it
      * every tick (output.telemetry is then empty). The host sims leave it false. */
     bool skip_text_telemetry;
+    /* Time not yet integrated into the attitude because the samples were unusable (IMU dropout):
+     * added to the next good sample's step, so a gap doesn't lose the rotation that happened in it. */
+    float missed_s;
 } EasyTVCApp;
 
 void EasyTVC_AppInit(EasyTVCApp *app, uint32_t now_ms);

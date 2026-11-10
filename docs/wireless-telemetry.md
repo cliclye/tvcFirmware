@@ -242,23 +242,31 @@ Flash DroneBridge for ESP32 with its web flasher. Pick the **ESP32-C3** build. T
 official board list, but it's a plain ESP32-C3 with the pins above. Then open its web UI
 (Wi-Fi `DroneBridge ESP32`, password `dronebridge`, http://192.168.2.1).
 
-**Air unit (in the rocket)**
+**Single-board setup (current):** one XIAO in the rocket, no ground unit. DroneBridge runs in
+**Wi-Fi Access Point mode** and the Mac joins its Wi-Fi directly.
 
 | Setting | Value |
 | --- | --- |
-| Mode | **ESP-NOW LR Mode AIR** (long range), or **Wi-Fi Access Point** for short range |
+| Mode | **Wi-Fi Access Point** |
 | UART TX pin / RX pin | **5 / 4** |
 | UART baud | **115200** |
 | RTS / CTS (flow control) | **off** (RTS 0, CTS 0) |
 | Serial protocol | **Transparent** |
 | Serial read timeout | 20 ms (default is fine: frames are LF-terminated) |
 | Packet size | default |
+| Wi-Fi name / password | DroneBridge's defaults, or your own (change them in its web UI) |
 
-**Ground unit (ESP-NOW only)**: a second ESP32 in **ESP-NOW LR Mode GND**, same channel and
-encryption key as the air unit. In this mode it has **no Wi-Fi network**: plug it into the Mac by
-USB and choose it under **USB serial** in Studio.
+- The Mac joins that network (192.168.2.x). While it's joined, the Mac has no internet over Wi-Fi.
+- Range: DroneBridge rates Wi-Fi at up to about 150 m, less through a body tube and with the rocket
+  lying on the ground. Fine for the pad and a ~60 m flight; the SD card logs every sample anyway.
+- Studio connects over **Wi-Fi · UDP** (or TCP); see *Connecting Studio*.
 
-## Bluetooth (the default link)
+**Later: ESP-NOW long range (optional).** For about 1 km, set the rocket's XIAO to **ESP-NOW LR
+Mode AIR** and add a second ESP32 in **ESP-NOW LR Mode GND** (same channel and encryption key),
+plugged into the Mac by USB and chosen under **USB serial** in Studio. In ESP-NOW mode the ground
+unit has no Wi-Fi network of its own. Studio's link settings stay editable, so nothing else changes.
+
+## Bluetooth (alternative)
 
 DroneBridge for ESP32 has a **Bluetooth LE mode**: service `0000db32-0000-1000-8000-00805f9b34fb`,
 the board's bytes arrive as notifications on `…db34`, and bytes written to `…db33` go to the board.
@@ -277,20 +285,22 @@ rules are exactly the same as on every other link.
 - **Range is short.** DroneBridge's own docs say BLE range is "greatly reduced compared to Wi-Fi":
   expect tens of metres line of sight, less through a body tube. That's ideal on the pad (status,
   config check, log download, gimbal test) and fine for the start of a flight; expect gaps near
-  apogee. The SD card logs every sample regardless. For live data over the whole flight use
-  ESP-NOW LR (about 1 km, a second ESP32 on the Mac's USB).
+  apogee. The SD card logs every sample regardless. Wi-Fi AP mode (the default) reaches further.
 - Throughput is not a concern: ~4 KB/s of telemetry is well inside BLE's capacity.
 
 ## Connecting Studio
 
-Live → Pad tools, then pick a link:
+Live (sidebar), then pick a link in the bar at the top:
 
 | Link | Use it with | Settings |
 | --- | --- | --- |
-| **Bluetooth** (default) | DroneBridge in Bluetooth LE mode, from the Studio app | nothing to fill in |
-| **USB serial** | a USB-UART on TX2/RX2, or the DroneBridge ESP-NOW ground unit | pick the port |
-| **Wi-Fi · UDP** | DroneBridge in Wi-Fi AP mode (join its network first) | bridge `192.168.2.1`, port `14550`, listen on `14550` |
+| **Wi-Fi · UDP** (default) | the single-board setup: DroneBridge in Wi-Fi AP mode, Mac joined to its network | bridge `192.168.2.1`, port `14550`, listen on `14550` |
 | **Wi-Fi · TCP** | the same, over TCP | bridge `192.168.2.1`, port `5760` |
+| **Bluetooth** | DroneBridge in Bluetooth LE mode, from the Studio app | nothing to fill in |
+| **USB serial** | a USB-UART on TX2/RX2, or (later) an ESP-NOW ground unit | pick the port |
+
+All of these are editable in the Live bar (address, ports), so switching to an ESP-NOW ground unit
+later needs no code change.
 
 UDP: DroneBridge only sends to clients it has heard from, so Studio sends a `PING` once a second
 (this also measures round-trip time). The page shows frames/s, loss % (from sequence gaps), time since
@@ -342,7 +352,8 @@ rocket from Rocket setup in the 3D sim and answers requests with the firmware's 
 
 ## Not verified on hardware
 
-- DroneBridge on the XIAO ESP32-C3 (unofficial board) with GPIO4/5, and real ESP-NOW range.
+- DroneBridge on the XIAO ESP32-C3 (unofficial board) with GPIO4/5, and real Wi-Fi AP range from
+  inside the body tube.
 - On-target loop timing with the link running (read `loop_max_us` / `late_ticks` in SYS).
 - The battery divider ratio (calibrate once with a meter: Live data → Battery divider…).
 - What the continuity inputs read with and without an igniter (shown as raw levels only).

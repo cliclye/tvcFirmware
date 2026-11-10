@@ -84,12 +84,12 @@
  * from the tip, gimbal pivot 397 mm behind the CG, -6.6 cal, K-9 V8 gimbal 9 mm horn / 42 mm lever,
  * measured F15 curve): these gains hold boost tilt to 1.0 deg nominal and 40/40 Monte Carlo flights
  * (worst 3.2 deg) with no gimbal saturation. */
-#define EASYTVC_KP                 10.4f
-#define EASYTVC_KI                 1.2f
-#define EASYTVC_KD                 0.92f
+#define EASYTVC_KP                 18.0f
+#define EASYTVC_KI                 2.2f
+#define EASYTVC_KD                 2.0f
 #define EASYTVC_INTEGRATOR_LIMIT   0.15f
-#define EASYTVC_OUTPUT_RATE_LIMIT  30.0f   /* full travel per second */
-#define EASYTVC_DERIVATIVE_CUTOFF  30.0f   /* Hz */
+#define EASYTVC_OUTPUT_RATE_LIMIT  28.0f   /* full travel per second */
+#define EASYTVC_DERIVATIVE_CUTOFF  20.0f   /* Hz */
 /* Tilt (from vertical) at which TVC gives up and centres the gimbal for the rest of the burn. */
 #define EASYTVC_MAX_TILT_DEG       25.0f
 

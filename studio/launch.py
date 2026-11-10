@@ -198,7 +198,7 @@ def write_config(project: Path, values: dict) -> dict:
 # build / flash
 # --------------------------------------------------------------------------------------------
 
-IMAGES = ("bench", "flight", "sensortest")
+IMAGES = ("bench", "flight", "sensortest", "pyrobench")
 
 
 def image_info(project: Path) -> dict:
@@ -253,7 +253,7 @@ def dfu_devices(project: Path) -> dict:
 
 def flash(project: Path, image: str, sha256: str, serial: str | None) -> dict:
     if image not in IMAGES:
-        raise ValueError("Choose the bench, flight or sensor test image.")
+        raise ValueError("Choose the bench, flight, sensor test or pyro bench image.")
     info = image_info(project)["images"][image]
     if info is None:
         raise ValueError("Build the firmware first.")
@@ -727,6 +727,7 @@ SIM3D_PARAMS = (
     "servo_deadband_us", "servo_backlash_deg", "servo_tau_s",
     "thrust_scale", "site_alt_m", "temp_c", "nozzle_arm_m", "motor_gimbal_inertia", "servo_stall_nm",
     "imu_ahead_m", "turbulence_m_s", "gyro_lpf_hz", "accel_lpf_hz", "roll_torque_nmm", "ignition_s",
+    "chute_servo", "PYRO_CHUTE_CHANNEL", "PYRO_DEPLOY_ALT_M", "PYRO_CHUTE_DELAY_MS", "PYRO_BACKUP_MS", "pyro_live",
 )
 # Estes E12, NAR certification data (thrustcurve.org, C. J. Kobel 2012): 27.2 N*s, 33 N peak
 E12_CURVE = [[0.052, 5.045], [0.096, 9.910], [0.196, 24.144], [0.251, 31.351], [0.287, 32.973], [0.300, 29.910],
@@ -767,7 +768,8 @@ SIM3D_COLUMNS = ("t", "x", "y", "z", "qw", "qx", "qy", "qz", "speed", "vz", "til
                  "tq_tvc_x", "tq_tvc_y", "tq_aero_x", "tq_aero_y", "servo_fault", "wind", "roll_rate")
 SIM3D_SUMMARY = ("apogee_m", "apogee_t", "max_speed", "max_boost_tilt", "drift_m", "landing_speed",
                  "chute_t", "chute_speed", "armed_t", "launch_t", "tvc_fault", "saturation_pct",
-                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff", "done", "time", "max_roll_dps")
+                 "flight_time", "final_state", "under_chute", "est_error_deg", "liftoff", "done", "time", "max_roll_dps",
+                 "charge_t", "tvc_on_t")
 # (low, high, default) for the simulation-only inputs
 SIM_INPUTS = {
     "cn_alpha": (0, 10, 2.0), "wind_m_s": (0, 25, 2), "gust_m_s": (0, 35, 4),
@@ -776,6 +778,7 @@ SIM_INPUTS = {
     "reverse_servo_a": (0, 1, 0), "tower_m": (0, 3, 0.3), "thrust_profile": (0, 2, 2),
     "site_alt_m": (-400, 4000, 0), "temp_c": (-30, 50, 15), "turbulence_m_s": (0, 5, 0.5),
     "roll_torque_nmm": (-20, 20, 0.1),
+    "pyro_unlocked": (0, 1, 0),      # 1 = fly it as if the pyro outputs were unlocked in the firmware
 }
 
 
@@ -785,8 +788,9 @@ def sim_defaults():
 
 def sim_params(config: dict, vehicle: dict, sim: dict) -> list:
     clean = validate_config(config)
-    if not isinstance(sim, dict) or set(sim) != set(SIM_INPUTS):
+    if not isinstance(sim, dict) or not set(sim) <= set(SIM_INPUTS):
         raise ValueError("Simulation inputs are incomplete.")
+    sim = {**sim_defaults(), **sim}          # inputs added in later versions take their defaults
     for key, (low, high, _) in SIM_INPUTS.items():
         value = sim[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
@@ -820,12 +824,34 @@ def sim_params(config: dict, vehicle: dict, sim: dict) -> list:
         raise ValueError("The gimbal pivot must be behind the CG: check part positions.")
     values.update(clean)
     values.update(sim)
+    # A motor with a measured thrust curve always flies that curve: the generic shapes rise faster
+    # than a real F15 and make launch detection (and so TVC start) look ~0.25 s earlier than it is.
+    measured = isinstance(motor.get("curve"), list) and len(motor["curve"]) >= 2
+    values["thrust_profile"] = 2 if measured else min(1, int(sim["thrust_profile"]))
+    # Recovery as the firmware will really do it (Core/Src/recovery_charge.c runs inside the sim)
+    values["chute_servo"] = 1 if clean["CHUTE_CHANNEL"] else 0
+    values["pyro_live"] = 1 if clean["PYRO_CHUTE_CHANNEL"] and (sim["pyro_unlocked"] or pyro_live_in_firmware()) else 0
     values["chute_enabled"] = 1 if clean["CHUTE_CHANNEL"] or clean["PYRO_CHUTE_CHANNEL"] else 0
     values["ignition_s"] = clean["ARM_HOLD_MS"] / 1000 + 2.0
     return [float(values[name]) for name in SIM3D_PARAMS]
 
 
-def sim_verdict(s: dict, config: dict) -> list:
+def pyro_live_in_firmware() -> bool:
+    try:
+        return pyro_outputs_compiled_in(find_project())
+    except (OSError, ValueError):
+        return False
+
+
+def recovery_plan(config: dict, sim: dict | None = None) -> dict:
+    """What deploys the parachute, for the sim's verdict and the UI."""
+    servo, charge = bool(config.get("CHUTE_CHANNEL")), bool(config.get("PYRO_CHUTE_CHANNEL"))
+    live = charge and bool((sim or {}).get("pyro_unlocked") or pyro_live_in_firmware())
+    return {"servo": servo, "charge": charge, "charge_live": live, "assumed_unlocked": live and not pyro_live_in_firmware(),
+            "deploys": servo or live}
+
+
+def sim_verdict(s: dict, config: dict, sim: dict | None = None) -> list:
     out = []
     add = lambda level, text: out.append({"level": level, "text": text})
     if s["armed_t"] < 0:
@@ -845,7 +871,17 @@ def sim_verdict(s: dict, config: dict) -> list:
         add("warn", f"Rolling up to {s['max_roll_dps']:.0f}°/s during boost. The TVC compensates, but find the asymmetry (a lug, a crooked motor mount) before it gets worse.")
     if s["saturation_pct"] > 10:
         add("warn", f"The gimbal was at full travel {s['saturation_pct']:.0f}% of the burn: little margin left.")
-    if config["CHUTE_CHANNEL"] or config.get("PYRO_CHUTE_CHANNEL"):
+    plan = recovery_plan(config, sim)
+    if s["launch_t"] >= 0 and s.get("tvc_on_t", -1) >= 0:
+        add("info", f"Launch detected {s['launch_t']:.2f} s after ignition; TVC steering from {s['tvc_on_t']:.2f} s.")
+    if plan["charge"] and not plan["charge_live"] and not plan["servo"]:
+        add("bad", "No parachute: the ejection charge is the only recovery and the pyro outputs are locked in the firmware, "
+                   "so it never fires" + (f" (it was due at {s['charge_t']:.1f} s)." if s.get("charge_t", -1) >= 0 else "."))
+    elif not plan["servo"] and not plan["charge"]:
+        add("warn", "No recovery from the board (motor ejection only): the sim has no parachute.")
+    elif plan["deploys"]:
+        if plan["assumed_unlocked"]:
+            add("warn", "Flown as if the pyro outputs were unlocked. In the firmware as installed they are locked and the charge would not fire.")
         if s["chute_t"] < 0:
             add("bad", "Parachute never opened.")
         elif s["chute_speed"] > 20:
@@ -871,7 +907,8 @@ def run_sim3d(native, config, vehicle, sim):
     s = dict(zip(SIM3D_SUMMARY, summary))
     model = rocket_model(vehicle)
     model.pop("vehicle")
-    return {"columns": SIM3D_COLUMNS, "rows": rows, "summary": s, "verdict": sim_verdict(s, validate_config(config)),
+    return {"columns": SIM3D_COLUMNS, "rows": rows, "summary": s, "verdict": sim_verdict(s, validate_config(config), sim),
+            "recovery": recovery_plan(config, sim),
             "ignition_s": params[SIM3D_PARAMS.index("ignition_s")], "model": model}
 
 
@@ -882,7 +919,8 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
     import random
     count = max(5, min(200, int(count)))
     rng = random.Random(int(sim.get("seed", 1)))
-    runs, ok = [], 0
+    runs, ok, reasons, plan = [], 0, {}, recovery_plan(config, sim)
+    sim = {**sim_defaults(), **sim}
     for _ in range(count):
         trial = dict(sim)
         trial["seed"] = rng.randint(1, 99999)
@@ -910,14 +948,255 @@ def run_sim3d_batch(native, config, vehicle, sim, count=40):
         params[at("roll_torque_nmm")] = rng.uniform(-roll, roll)
         _, summary = native.sim3d(params, rows=False, curve=motor_curve(vehicle))
         s = dict(zip(SIM3D_SUMMARY, summary))
-        success = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"] and
-                       (s["under_chute"] or not (config.get("CHUTE_CHANNEL") or config.get("PYRO_CHUTE_CHANNEL"))) and 0 < s["landing_speed"] < 9)
+        ascent = bool(s["liftoff"] and s["launch_t"] >= 0 and not s["tvc_fault"])
+        recovered = bool(s["under_chute"] and 0 < s["landing_speed"] < 9)
+        success = ascent and (recovered or not plan["deploys"] and not plan["charge"])
+        late = s["launch_t"] > 1.0          # detected long after lift-off: the rocket had already tipped
+        ascent = ascent and not late
+        why = ("" if success and not late else "did not lift off" if not s["liftoff"]
+               else "launch not detected: TVC never started" if s["launch_t"] < 0
+               else "launch detected late: TVC started after the rocket tipped" if late
+               else "TVC lost control" if s["tvc_fault"] else "no parachute" if not s["under_chute"] else "hard landing")
+        success = success and not late
+        reasons[why] = reasons.get(why, 0) + (0 if success else 1)
         ok += success
         runs.append({"success": success, "wind": trial["wind_m_s"], "gust": trial["gust_m_s"],
                      "misalign": trial["misalign_deg"], "pad_tilt": trial["pad_tilt_deg"],
                      "tilt": s["max_boost_tilt"], "apogee": s["apogee_m"], "drift": s["drift_m"],
-                     "landing": s["landing_speed"], "fault": bool(s["tvc_fault"])})
-    return {"count": count, "success": ok, "runs": runs}
+                     "landing": s["landing_speed"], "fault": bool(s["tvc_fault"]), "ascent": ascent, "why": why,
+                     "launch_t": s["launch_t"]})
+    reasons.pop("", None)
+    return {"count": count, "success": ok, "runs": runs, "reasons": reasons, "ascent_ok": sum(r["ascent"] for r in runs),
+            "recovery": plan}
+
+
+# --------------------------------------------------------------------------------------------
+# Tuning: gains judged on the real rocket in the 3D sim (firmware in the loop), with the build
+# and hardware worse than the model says, because real servos and motors usually are
+# --------------------------------------------------------------------------------------------
+
+TUNE_KEYS = ("KP", "KI", "KD", "DERIVATIVE_CUTOFF", "OUTPUT_RATE_LIMIT")
+
+
+def _stress_cases(vehicle: dict) -> list:
+    base = upgrade_vehicle(vehicle)
+    length = base["body"]["nose_length_mm"] + base["body"]["length_mm"]
+
+    def make(slow=1.0, slop=1.0, thrust=1.0, grams=0):
+        v = json.loads(json.dumps(base))
+        v["gimbal"]["servo_s_per_60"] = min(1.0, v["gimbal"]["servo_s_per_60"] * slow)
+        v["gimbal"]["tau_s"] = min(0.2, v["gimbal"]["tau_s"] * slow)
+        v["gimbal"]["backlash_deg"] = min(10, v["gimbal"]["backlash_deg"] * slop)
+        v["gimbal"]["deadband_us"] = min(50, v["gimbal"]["deadband_us"] * slop)
+        if thrust != 1.0:
+            m = v["motor"]
+            m["avg_thrust_n"] *= thrust
+            if isinstance(m.get("curve"), list):
+                m["curve"] = [[t, f * thrust] for t, f in m["curve"]]
+        if grams:
+            v["parts"].append(["(stress) extra mass", grams, round(length * 0.85), 40])
+        return v
+    return [("slow", "Servos 2× slower than the model", make(slow=2)),
+            ("slop", "Twice the gimbal slop", make(slop=2)),
+            ("weak", "Motor 12 % weak", make(thrust=0.88)),
+            ("heavy", "60 g heavier at the tail", make(grams=60)),
+            ("all", "All of those at once", make(slow=2, slop=2, thrust=0.88, grams=60))]
+
+
+def _ascent_stats(batch: dict) -> dict:
+    """Judged on the powered flight only: lift-off, launch detected, TVC kept control."""
+    runs = batch["runs"]
+    tilts = sorted(r["tilt"] for r in runs)
+    held = [r["tilt"] for r in runs if r["ascent"]] or [0.0]
+    reasons = {}
+    for r in runs:
+        if not r["ascent"]:
+            reasons[r["why"]] = reasons.get(r["why"], 0) + 1
+    return {"flights": len(runs), "ok": sum(r["ascent"] for r in runs), "reasons": reasons,
+            "mean": round(sum(held) / len(held), 2), "p90": round(tilts[max(0, int(0.9 * len(tilts)) - 1)], 2),
+            "worst": round(max(held), 2)}
+
+
+def _merit(stats: list) -> float:
+    """Lower is better. Any flight lost outweighs everything else."""
+    return sum((x["flights"] - x["ok"]) * 100 + x["mean"] + 0.5 * x["p90"] + 0.25 * x["worst"] for x in stats) / len(stats)
+
+
+def launch_margin(native, config, vehicle, sim, seeds=12) -> dict:
+    """How much weaker the motor can be before the firmware misses the launch or sees it late.
+    The firmware needs an unbroken run of samples above the threshold, and motor vibration breaks
+    runs at random, so each thrust level (5 % steps) is flown with several noise seeds and has to
+    be detected in every one of them."""
+    at, seed_at, curve = SIM3D_PARAMS.index("thrust_scale"), SIM3D_PARAMS.index("seed"), motor_curve(vehicle)
+    params = sim_params(config, vehicle, sim)
+    weakest = None
+    for step in range(0, 10):
+        scale = 1.0 - 0.05 * step
+        for seed in range(seeds):
+            trial = list(params)
+            trial[at], trial[seed_at] = scale, float(1000 + 37 * seed)
+            _, summary = native.sim3d(trial, rows=False, curve=curve)
+            r = dict(zip(SIM3D_SUMMARY, summary))
+            if not r["liftoff"] or not 0 <= r["launch_t"] <= 1.0:
+                return {"percent": 0.0 if weakest is None else round((1.0 - weakest) * 100), "detected": weakest is not None}
+        weakest = scale
+    return {"percent": round((1.0 - weakest) * 100), "detected": True}
+
+
+def tune_evaluate(native, config, vehicle, sim, flights=40, stress_flights=20, cancel=None) -> dict:
+    """How these gains do on this rocket: the nominal boost, random flights, and the stress cases."""
+    config = validate_config(config)
+    sim = {**sim_defaults(), **{k: v for k, v in (sim or {}).items() if k in SIM_INPUTS}}
+    nominal = run_sim3d(native, config, vehicle, sim)
+    col = {c: i for i, c in enumerate(nominal["columns"])}
+    ig, s = nominal["ignition_s"], nominal["summary"]
+    burn = float(upgrade_vehicle(vehicle)["motor"]["burn_s"])
+    trace = [[round(r[0] - ig, 3), round(math.hypot(r[col["tilt_x"]], r[col["tilt_y"]]), 3),
+              round(r[col["gimbal_a"]], 3), round(r[col["gimbal_b"]], 3), int(r[col["tvc"]])]
+             for r in nominal["rows"] if -0.2 <= r[0] - ig <= burn + 0.6]
+    normal = _ascent_stats(run_sim3d_batch(native, config, vehicle, {**sim, "seed": 101}, flights))
+    stress = []
+    for key, label, v in _stress_cases(vehicle):
+        if cancel is not None and cancel():
+            break
+        stress.append({"key": key, "label": label, **_ascent_stats(run_sim3d_batch(
+            native, config, v, {**sim, "seed": 202}, stress_flights * 2 if key == "all" else stress_flights))})
+    stop = rocket_model(vehicle)["stop_deg"]
+    notes = []
+    add = lambda level, text: notes.append({"level": level, "text": text})
+    everything = [normal] + stress
+    lost = {}
+    for x in everything:
+        for why, n in x["reasons"].items():
+            lost[why] = lost.get(why, 0) + n
+    missed = sum(n for why, n in lost.items() if why.startswith("launch"))
+    if missed:
+        add("bad", f"Launch was missed or detected late in {missed} flight(s), so TVC never took hold. With a weak motor or extra weight this "
+                   f"motor barely passes the {config['LAUNCH_ACCEL_G']:g} g launch threshold. Lower \"Launch at\" in Rocket setup "
+                   "(1.4–1.5 g) or save weight: gains can't fix this.")
+    margin = launch_margin(native, config, vehicle, sim)
+    if not margin["detected"]:
+        add("bad", f"Launch is not detected even with a nominal motor: the {config['LAUNCH_ACCEL_G']:g} g threshold is above what this motor gives this rocket.")
+    elif margin["percent"] < 20 and not missed:
+        add("bad" if margin["percent"] < 10 else "warn",
+            f"Launch detection has only about {margin['percent']:.0f} % of thrust in hand. Motor vibration keeps restarting the firmware's "
+            f"launch timer, so a motor that much weaker (cold day, heavier build) can leave TVC switched off for the whole flight. "
+            f"Lower \"Launch at\" in Rocket setup from {config['LAUNCH_ACCEL_G']:g} g to 1.4–1.5 g, or save weight. Gains can't fix this.")
+    if lost.get("TVC lost control"):
+        add("bad", f"TVC lost control in {lost['TVC lost control']} flight(s).")
+    if lost.get("did not lift off"):
+        add("bad", "Some flights did not lift off: too heavy for this motor.")
+    slow = next((x for x in stress if x["key"] == "slow"), None)
+    if slow and slow["ok"] == slow["flights"] and slow["worst"] > max(2.0 * normal["worst"], normal["worst"] + 3):
+        add("warn", f"With slower servos the worst tilt jumps to {slow['worst']:.1f}°: these gains are close to the edge. Lower P and D a little.")
+    if s["saturation_pct"] > 10:
+        add("warn", f"The gimbal sat at full travel {s['saturation_pct']:.0f} % of the nominal burn: little authority left.")
+    gim = max((max(abs(r[2]), abs(r[3])) for r in trace), default=0)
+    if gim > 0.9 * stop:
+        add("warn", f"The motor swung to {gim:.1f}° of the {stop:g}° mechanical stop.")
+    if not notes:
+        add("good", f"Held every flight. Typical tilt {normal['mean']:.1f}°, worst {max(x['worst'] for x in everything):.1f}° across the stress cases.")
+    return {"gains": {k: config[k] for k in TUNE_KEYS}, "nominal": {"launch_t": s["launch_t"], "tvc_on_t": s.get("tvc_on_t", -1),
+            "max_tilt": s["max_boost_tilt"], "saturation_pct": s["saturation_pct"], "apogee_m": s["apogee_m"], "burn_s": burn,
+            "stop_deg": stop}, "trace": trace, "normal": normal, "stress": stress, "notes": notes,
+            "launch_margin": margin,
+            "score": round(_merit(everything), 3), "held_all": all(x["ok"] == x["flights"] for x in everything)}
+
+
+class TuneJob:
+    """Auto-tune in a background thread: a wide search on a few flights, a closer search round the
+    best, then the full evaluation of the finalists. The winner has to beat the starting gains on
+    the same flights, stress cases included; otherwise the starting gains are kept."""
+
+    def __init__(self, native, config, vehicle, sim, seed=5):
+        self.native, self.config, self.vehicle = native, validate_config(config), upgrade_vehicle(vehicle)
+        self.sim = {**sim_defaults(), **{k: v for k, v in (sim or {}).items() if k in SIM_INPUTS}}
+        self.state = {"running": True, "progress": 0.0, "stage": "Starting", "best": None, "result": None,
+                      "error": None, "cancelled": False}
+        self._cancel = False
+        self._rng = __import__("random").Random(seed)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def cancel(self):
+        self._cancel = True
+
+    def status(self):
+        return dict(self.state)
+
+    def _quick(self, gains, hard):
+        """A cheap score: a few normal flights and a few with everything worse."""
+        cfg = {**self.config, **gains}
+        a = _ascent_stats(run_sim3d_batch(self.native, cfg, self.vehicle, {**self.sim, "seed": 303}, 10))
+        b = _ascent_stats(run_sim3d_batch(self.native, cfg, hard, {**self.sim, "seed": 404}, 8))
+        return _merit([a, b])
+
+    def _run(self):
+        try:
+            rng, c = self._rng, self.config
+            start = {k: c[k] for k in TUNE_KEYS}
+            hard = _stress_cases(self.vehicle)[-1][2]
+            clamp = lambda v, lo, hi: min(hi, max(lo, v))
+
+            def random_gains():
+                return {"KP": round(rng.uniform(4, 30), 1), "KI": round(rng.uniform(0, 4), 1), "KD": round(rng.uniform(0.3, 3.0), 2),
+                        "DERIVATIVE_CUTOFF": float(rng.choice([15, 20, 25, 30, 40])), "OUTPUT_RATE_LIMIT": float(rng.choice([20, 25, 30, 40, 50]))}
+
+            def near(g):
+                return {"KP": round(clamp(g["KP"] * rng.uniform(0.85, 1.15), 1, 60), 1), "KI": round(clamp(g["KI"] * rng.uniform(0.7, 1.3), 0, 10), 1),
+                        "KD": round(clamp(g["KD"] * rng.uniform(0.85, 1.15), 0.05, 10), 2),
+                        "DERIVATIVE_CUTOFF": float(clamp(g["DERIVATIVE_CUTOFF"] + rng.choice([-5, 0, 5]), 10, 60)),
+                        "OUTPUT_RATE_LIMIT": float(clamp(g["OUTPUT_RATE_LIMIT"] + rng.choice([-5, 0, 5]), 10, 100))}
+
+            wide = [start] + [near(start) for _ in range(7)] + [random_gains() for _ in range(28)]
+            scored, total = [], len(wide) + 32 + 5
+            done = 0
+
+            def step(stage):
+                nonlocal done
+                done += 1
+                self.state.update(progress=round(done / total, 3), stage=stage)
+                if self._cancel:
+                    raise InterruptedError
+
+            for g in wide:
+                scored.append((self._quick(g, hard), g))
+                scored.sort(key=lambda x: x[0])
+                self.state["best"] = scored[0][1]
+                step("Searching widely")
+            for _, g0 in list(scored[:4]):
+                for _ in range(8):
+                    g = near(g0)
+                    scored.append((self._quick(g, hard), g))
+                    scored.sort(key=lambda x: x[0])
+                    self.state["best"] = scored[0][1]
+                    step("Refining the best")
+            finalists, seen = [start], {json.dumps(start, sort_keys=True)}
+            for _, g in scored:
+                key = json.dumps(g, sort_keys=True)
+                if key not in seen:
+                    finalists.append(g)
+                    seen.add(key)
+                if len(finalists) == 5:
+                    break
+            results = []
+            for g in finalists:
+                results.append(tune_evaluate(self.native, {**c, **g}, self.vehicle, self.sim, cancel=lambda: self._cancel))
+                step("Testing the finalists against the stress cases")
+            before = results[0]
+            # robust first: among those that hold every flight, the lowest score; a challenger must
+            # beat the starting gains by a clear margin (5 %) or the starting gains stay
+            pool = [r for r in results if r["held_all"]] or results
+            best = min(pool, key=lambda r: r["score"])
+            if best is not before and before["held_all"] and best["score"] > 0.95 * before["score"]:
+                best = before
+            self.state.update(result={"before": before, "best": best, "improved": best is not before}, progress=1.0, stage="Done")
+        except InterruptedError:
+            self.state.update(cancelled=True, stage="Cancelled")
+        except Exception as error:   # noqa: BLE001  (reported to the page)
+            self.state["error"] = str(error)
+        finally:
+            self.state["running"] = False
 
 
 # --------------------------------------------------------------------------------------------

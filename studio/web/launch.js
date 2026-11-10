@@ -386,7 +386,15 @@ function renderVehicleResults() {
 }
 
 /* ------------------------------------------------------------------ build & flash */
-const IMAGE_NAMES = {bench: "Bench image", flight: "Flight image", sensortest: "Sensor test image"};
+const IMAGE_NAMES = {bench: "Bench image", flight: "Flight image", sensortest: "Sensor test image", pyrobench: "Pyro bench image"};
+const PYRO_BENCH_STEPS = [el("strong", {text: "Pyro bench test, with a test load only:"}),
+  el("ol", {class: "steps"},
+    el("li", {text: "On P1 and P3: an LED with a 1 kΩ resistor (or a small bulb), and a multimeter on DC volts. No igniter, no charge, no motor."}),
+    el("li", {text: "Power up: the red LED blinks fast and it chirps every 5 s (pyro outputs live). The test LEDs must stay DARK through power-up, reset and USB."}),
+    el("li", {text: "Live → Pad tools → Pyro channel test, P1 then P3, 250 ms: each test LED lights once, and the meter reads close to the battery voltage."}),
+    el("li", {text: "Note the Pyro tile's continuity dots with and without the load: that tells us how continuity reads on this board."}),
+    el("li", {text: "When both channels pass, install the flight image again (it stays locked until you decide to unlock it)."})),
+  el("p", {class: "help", text: "This image never arms and never flies. Never put it in a rocket."})];
 const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
   el("ol", {class: "steps"}, el("li", {text: "Put a microSD card in the board (it records every reading)."}),
     el("li", {text: "Lay the board flat and still. Unplug USB-C, wait 2 s, plug it back in."}),
@@ -397,7 +405,7 @@ const SENSOR_TEST_STEPS = [el("strong", {text: "Now run the sensor test:"}),
 function renderImages() {
   const info = buildInfo; if (!info) return;
   const list = $("images"); list.replaceChildren();
-  for (const key of ["bench", "flight", "sensortest"]) {
+  for (const key of ["bench", "flight", "sensortest", "pyrobench"]) {
     const image = info.images[key];
     list.append(el("div", {class: `image-row ${image && !image.stale ? "" : "stale"}`},
       el("strong", {text: IMAGE_NAMES[key]}),
@@ -1032,10 +1040,19 @@ async function installOnBoard(source) {
   };
   choice.append(option("sensortest", "Sensor test", "Checks every sensor (IMU, barometer, temperatures, SD card, power) and records every reading to the SD card. Never arms; servos stay still.", source === "sensortest"),
     option("bench", "Bench image (recommended for testing)", "Never arms. The gimbal follows the board by hand, so you can check the servos.", source !== "sensortest"),
-    option("flight", "Flight image", benchOpen ? `Arms itself on the pad. ${benchOpen} bench check${benchOpen > 1 ? "s are" : " is"} still open.` : "Arms itself on the pad and runs TVC during boost.", false));
+    option("flight", "Flight image", benchOpen ? `Arms itself on the pad. ${benchOpen} bench check${benchOpen > 1 ? "s are" : " is"} still open.` : "Arms itself on the pad and runs TVC during boost.", false),
+    option("pyrobench", "Pyro bench test", "For testing P1/P3 with an LED or bulb. Never arms, never flies, pyro outputs LIVE: only Studio's pyro test switches them.", source === "pyrobench"));
   const tune = el("p", {class: "help", text: `Installs: KP ${cfg.KP} · KI ${cfg.KI} · KD ${cfg.KD} · servo A ${cfg.SERVO_A_MIN_US}/${cfg.SERVO_A_CENTER_US}/${cfg.SERVO_A_MAX_US} µs · servo B ${cfg.SERVO_B_MIN_US}/${cfg.SERVO_B_CENTER_US}/${cfg.SERVO_B_MAX_US} µs · nose ${cfg.NOSE_AXIS} · LED ${cfg.LED_BRIGHTNESS_PCT} %`});
   if (!await confirmModal("Install on board", [choice, tune, el("p", {class: "help", text: "Plug the board in by USB-C. If it isn't in DFU mode yet, you'll be told how."})], "Install")) return;
   const image = document.querySelector('input[name="install-image"]:checked').value;
+  if (image === "pyrobench") {
+    const load = el("input", {type: "checkbox"}), bench = el("input", {type: "checkbox"});
+    if (!await confirmModal("Install the pyro bench image?", [
+        el("p", {class: "warn-text", text: "In this image the pyro outputs are live: Studio's pyro test really switches P1/P3 on."}),
+        el("label", {class: "check"}, load, " Nothing but a test load (LED + resistor, or a bulb) is or will be on P1/P3: no igniter, no e-match, no charge."),
+        el("label", {class: "check"}, bench, " The board is on the bench, not in the rocket, and there is no motor near it.")], "Install pyro bench image")) return;
+    if (!load.checked || !bench.checked) throw new Error("Tick both boxes to install the pyro bench image.");
+  }
   if (image === "flight" && benchOpen && !await confirmModal("Bench checks are not done", [el("p", {class: "warn-text", text: "The flight image arms itself when it stands still and upright. Finish the bench checks first unless you know what you're doing."})], "Install flight image anyway")) return;
 
   installCancel = false;
@@ -1079,6 +1096,7 @@ async function installOnBoard(source) {
     renderImages(); renderChecklists();
     ui.step("flash", "done", "Installed and verified: every byte matches");
     if (image === "sensortest") ui.detail([...SENSOR_TEST_STEPS, el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);
+    else if (image === "pyrobench") ui.detail([...PYRO_BENCH_STEPS, el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);
     else ui.detail([el("strong", {text: "Now restart the board:"}),
       el("p", {text: "Unplug USB-C, wait 2 s, plug it back in (connect the LiPo first if servos are plugged in). At power-up the LED shows red → green → blue, then the servos sweep."}),
       el("details", {}, el("summary", {text: "Install log"}), el("pre", {class: "log", text: result.log}))]);

@@ -254,3 +254,15 @@ main:has(#live.dash-mode:not([hidden])) footer{display:none}
 .live-pad .board-settings,.live-pad .pyro-test{margin-top:18px}
 .bs-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.bs-grid label.field.changed input{border-color:var(--amber);background:var(--warn-bg)}
 @media(max-width:900px){.bs-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* ---- Tuning lab (tune.js) ---- */
+.tl-progress{display:flex;align-items:center;gap:12px;margin:0 0 16px}.tl-progress .progress-bar{flex:1}
+.tl-list{margin:14px 0 0;padding-left:18px;font-size:12px;line-height:1.8;color:var(--text-2)}
+.tl-tiles{border-top:0;padding-top:14px;margin-top:6px}.tl-tiles strong{font-size:22px}
+#tl-notes{display:grid;gap:8px;margin-top:16px}#tl-notes .check-line{margin:0}
+.tl-table{margin-top:16px}.tl-chart{height:250px}.tl-ref{color:var(--faint)}
+.legacy-model{margin-top:28px;border-top:1px solid var(--line);padding-top:10px}.legacy-model>summary{font-size:12px;padding:8px 0}
+.legacy-head{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:6px 0 4px}.legacy-head .help{margin:0;max-width:760px}
+.legacy-model .banner{margin-top:12px}
+.title-actions button{white-space:nowrap}.tl-tiles{grid-template-columns:repeat(3,minmax(0,1fr))}
+#sim3d .controls,#sim3d .sim-inputs-card{min-width:0}#sim-inputs select{width:100%;min-width:0;max-width:100%}
+#sim-inputs label.field{min-width:0}

@@ -166,9 +166,12 @@ LED with a 1 kΩ resistor across the terminal (or a small bulb), never a real ig
 2. **Locked image:** with the test load on the terminal, power up, unplug and replug, press reset, and
    install firmware over USB-C. The LED must stay **off** the whole time. A meter across the terminal
    reads 0 V.
-3. **Unlocked image (by hand, deliberately):** set `EASYTVC_PYRO_OUTPUTS_COMPILED_IN` to `1`, build
-   and install the flight image. Rocket setup's recovery card then shows the outputs as LIVE.
-4. Repeat step 2: still off at power-up and reset.
+3. **Pyro bench image:** Install on board → **Pyro bench test**. It never arms and never flies, and
+   its pyro outputs are live: only Studio's pyro test switches them. It blinks red fast and chirps
+   every 5 s so it can't be mistaken for the flight image.
+4. Repeat step 2 with it: the test LEDs still stay dark at power-up, reset and in DFU mode (hold
+   BOOT and plug in USB: the pins are not driven by our firmware then, so this is the board's own
+   pull-down being tested).
 5. Stand the board vertical and still until it arms (solid green, chirps), then give it a sharp upward
    jerk so it detects a launch. The LED must light for the on-time at the backup time (or apogee +
    delay), exactly once, and the event log shows `CHARGE_FIRED`. Reboot: it must not light again.
@@ -178,7 +181,14 @@ LED with a 1 kΩ resistor across the terminal (or a small bulb), never a real ig
 6. During the pulse, the meter across the terminal should read about the battery voltage. If it reads
    much less, the output can't drive an igniter: stay with the parachute servo.
 
-If any step fails, set the lock back to `0`. Even after a pass, connect the igniter **last**, at the
+Then note the Pyro tile's continuity dots with the load connected and disconnected: that tells us
+what "continuity" reads as on this board. When every step passes on P1 and P3, unlock the flight
+image (`EASYTVC_PYRO_OUTPUTS_COMPILED_IN 1` in `easytvc_safety.h`) and install it. If any step fails,
+stay locked.
+
+**Barometer and ejection charges:** the charge's gas and pressure pulse must not reach the
+barometer. Put the board in a sealed avionics bay with 1–3 small static-port holes to the outside
+(about 1 mm each, away from the nose/body joint), and keep the charge in the parachute bay. Even after a pass, connect the igniter **last**, at the
 pad, with the rocket pointed away from people, following your club's safety code.
 
 ## 5. Flight image

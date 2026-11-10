@@ -83,14 +83,29 @@ function renderSimInputs() {
   for (const [title, fields] of SIM_GROUPS) {
     wrap.append(el("h3", {class: "sub", text: title}), el("div", {class: "field-grid"}, ...fields.map(f => simField(...f))));
   }
+  /* a motor with a measured curve always flies it: the generic shapes rise faster than a real
+   * motor and make launch detection look earlier than it is */
+  const measured = !!(vehicle && vehicle.motor && Array.isArray(vehicle.motor.curve) && vehicle.motor.curve.length >= 2);
   const profile = el("select", {"aria-label": "Thrust curve"});
-  [[2, "Measured curve (motor in Rocket setup)"], [1, "Ignition spike (generic)"], [0, "Flat average"]].forEach(([v, n]) => { const o = el("option", {text: n}); o.value = v; profile.append(o); });
-  profile.value = String(sim.thrust_profile);
-  profile.onchange = () => { sim.thrust_profile = Number(profile.value); simChanged(); };
+  (measured ? [[2, `Measured curve · ${vehicle.motor.name || "motor in Rocket setup"}`]]
+            : [[1, "Ignition spike (generic shape)"], [0, "Flat average"]]).forEach(([v, n]) => { const o = el("option", {text: n}); o.value = v; profile.append(o); });
+  if (measured) { profile.value = "2"; profile.disabled = true; }
+  else { profile.value = String(Math.min(1, sim.thrust_profile)); profile.onchange = () => { sim.thrust_profile = Number(profile.value); simChanged(); }; }
   const reverse = el("input", {type: "checkbox"}); reverse.checked = sim.reverse_servo_a === 1;
   reverse.onchange = () => { sim.reverse_servo_a = reverse.checked ? 1 : 0; simChanged(); };
   wrap.append(el("label", {class: "field"}, el("span", {text: "Thrust curve"}), profile),
-    el("h3", {class: "sub", text: "Fault injection"}),
+    measured ? "" : el("p", {class: "help", text: "This motor has no measured curve, so the thrust shape is a guess: launch-detection timing is only approximate."}));
+  /* recovery: flown the way the firmware is set up */
+  const servo = cfg && cfg.CHUTE_CHANNEL !== 0, charge = cfg && cfg.PYRO_CHUTE_CHANNEL !== 0;
+  wrap.append(el("h3", {class: "sub", text: "Recovery"}),
+    el("p", {class: "help", text: !servo && !charge ? "None set in Rocket setup: the sim flies without a parachute."
+      : `${[servo ? `release servo on S${cfg.CHUTE_CHANNEL}` : "", charge ? `ejection charge on P${cfg.PYRO_CHUTE_CHANNEL}` : ""].filter(Boolean).join(" + ")}, timed by the flight software itself.`}));
+  if (charge && !pyroCompiledIn) {
+    const unlocked = el("input", {type: "checkbox"}); unlocked.checked = sim.pyro_unlocked === 1;
+    unlocked.onchange = () => { sim.pyro_unlocked = unlocked.checked ? 1 : 0; simChanged(); };
+    wrap.append(el("label", {class: "check"}, unlocked, " Fly as if the pyro outputs were unlocked. They are locked in the firmware now, so by default the charge does not fire and nothing deploys."));
+  }
+  wrap.append(el("h3", {class: "sub", text: "Fault injection"}),
     el("label", {class: "check"}, reverse, " Servo A installed backwards (what a failed tilt test would mean)"));
 }
 function simRequest() {
@@ -156,7 +171,7 @@ function renderSimSummary() {
     tile("CG / CP", `${m.cg_wet_mm.toFixed(1)} / ${m.cp_mm.toFixed(1)} mm`), tile("STABILITY", `${m.stability_cal.toFixed(2)} cal`),
     tile("PIVOT → CG", `${m.gimbal_arm_mm.toFixed(1)} mm`), tile("GIMBAL @ ±250 µs", `${(Math.asin(Math.min(1, m.linkage_ratio * Math.sin(250 * m.servo_deg_per_us * Math.PI / 180))) * 180 / Math.PI).toFixed(2)}°`));
   $("sim-verdict").replaceChildren(...simResult.verdict.map(v => el("div", {class: `check-line ${v.level}`, text: v.text})),
-    simResult.replay ? "" : el("div", {class: "check-line info", text: `Ignition at ${ig.toFixed(1)} s (after the ${(cfg.ARM_HOLD_MS / 1000).toFixed(1)} s arming hold). Times above are from ignition. This is a model: it does not include servo backlash, flex, or real aerodynamics, so prove the hardware on the bench.`}));
+    simResult.replay ? "" : el("div", {class: "check-line info", text: `Ignition at ${ig.toFixed(1)} s (after the ${(cfg.ARM_HOLD_MS / 1000).toFixed(1)} s arming hold). Times above are from ignition. The model includes servo speed, deadband, backlash and sensor noise, but not flex in the mount, real aerodynamics or a motor that differs from its published curve: prove the hardware on the bench.`}));
 }
 function simEvents() {
   const r = simResult.rows, out = []; let prev = -1;
@@ -190,13 +205,17 @@ function renderBatch(result) {
   const pct = Math.round(100 * result.success / result.count);
   const failures = result.runs.filter(r => !r.success);
   const canvas = el("canvas", {class: "log-chart", role: "img", "aria-label": "Wind versus tilt"});
+  const reasons = Object.entries(result.reasons || {}).map(([why, n]) => `${n} × ${why}`).join("; ");
+  const recovery = result.recovery || {deploys: true};
   box.replaceChildren(el("div", {class: "card-heading"}, el("div", {}, el("span", {class: "eyebrow", text: "MONTE CARLO"}),
-      el("h2", {text: `${result.success} / ${result.count} flights OK (${pct}%)`})),
-      el("span", {class: pct === 100 ? "chip good" : "chip", text: pct === 100 ? "robust in this envelope" : `${failures.length} failed`})),
-    el("p", {class: "help", text: "Each flight randomises wind speed and direction, gusts, motor misalignment, pad lean and sensor noise around your settings. OK means TVC held, the parachute opened, and it landed under 9 m/s."}),
+      el("h2", {text: `${result.ascent_ok} / ${result.count} powered flights held · ${result.success} / ${result.count} recovered`})),
+      el("span", {class: pct === 100 ? "chip good" : "chip bad", text: pct === 100 ? "robust in this envelope" : `${failures.length} failed`})),
+    el("p", {class: "help", text: "Each flight randomises wind, gusts, misalignment, pad lean, sensor noise, thrust (±5 %), CG, inertia and roll around your settings. OK means launch was detected, TVC held, the parachute opened and it landed under 9 m/s."}),
     canvas,
-    el("p", {class: "help", text: failures.length ? `Failures: ${failures.slice(0, 6).map(f => `wind ${f.wind} m/s, misalign ${f.misalign}°, lean ${f.pad_tilt}° → ${f.fault ? "TVC gave up" : `landed ${f.landing.toFixed(1)} m/s`}`).join("; ")}` : "No failures."}));
-  requestAnimationFrame(() => scatter(canvas, result.runs));
+    el("div", {class: `check-line ${failures.length ? "bad" : "good"}`, text: failures.length
+      ? `Powered flight held in ${result.ascent_ok} of ${result.count}. Lost: ${reasons}.` + (!recovery.deploys && recovery.charge ? " The parachute never opens because the pyro outputs are locked: tick \"Fly as if the pyro outputs were unlocked\" under Recovery to test the rest." : "")
+      : "No failures in this set."}));
+  requestAnimationFrame(() => { scatter(canvas, result.runs); box.scrollIntoView({block: "nearest", behavior: "smooth"}); });
 }
 function scatter(canvas, runs) {
   const rect = canvas.getBoundingClientRect(); if (!rect.width) return;
@@ -402,7 +421,7 @@ $("sim-true-scale").onchange = () => { cam.trueScale = $("sim-true-scale").check
 const previousTabHook = window.onTabShown;
 window.onTabShown = id => {
   if (previousTabHook) previousTabHook(id);
-  if (id === "sim3d") drawSimCharts();
+  if (id === "sim3d") { renderSimInputs(); drawSimCharts(); }
 };
 (async () => {
   await window.studioReady;

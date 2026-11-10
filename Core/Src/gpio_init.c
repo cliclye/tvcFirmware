@@ -448,7 +448,7 @@ void EasyTVC_GPIO_Init(void)
      * "dfu pin" and PA13 as pyro2, but reconfiguring either removes SWD access. */
 
     /* Pyro outputs PB2 (pyro1) and PC3 (pyro3): drive LOW so a floating gate cannot fire.
-     * Nothing in this image ever drives them high (EASYTVC_PYRO_OUTPUTS_COMPILED_IN is 0).
+     * They are only ever driven high in an image built with EASYTVC_PYRO_OUTPUTS_COMPILED_IN 1.
      * PA13 (pyro2) is SWDIO, which resets to a pulled-up input: that net cannot be
      * guaranteed low from firmware, so do not connect an e-match to channel 2. */
     gpio = STM32_GPIOB;

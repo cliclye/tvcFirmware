@@ -123,7 +123,7 @@ def parse_message(ident: str, payload: str):
         if ident == "SYS":
             v = _ints(payload, 23)
             errors = {n: bool(v[22] >> i & 1) for i, n in enumerate(SYS_ERRORS)}
-            return "sys", {"ms": v[0], "image": ("flight", "bench", "sensortest")[v[1]] if 0 <= v[1] < 3 else str(v[1]),
+            return "sys", {"ms": v[0], "image": ("flight", "bench", "sensortest", "pyrobench")[v[1]] if 0 <= v[1] < 4 else str(v[1]),
                            "state": STATES[v[2]] if 0 <= v[2] < 8 else str(v[2]), "state_id": v[2], "armed": v[3],
                            "chute": v[4], "batt_pin_v": v[5] / 1000, "vdda_v": v[6] / 1000,
                            "continuity": [bool(v[7] >> i & 1) for i in range(3)], "pyro_armed": v[8], "pyro_fired": v[9],

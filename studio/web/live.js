@@ -7,7 +7,7 @@
  * vehicle, rocketModel, appState, saveState, liveStatus, renderLive, showLivePorts, showTab,
  * showLog (launch.js) and rocketMesh, qrot and the vector helpers (sim3d.js). */
 
-const LT = {kind: "ble", timer: null, next: null, hist: [], lastMs: null, raf: null, lastDraw: 0,
+const LT = {kind: "udp", timer: null, next: null, hist: [], lastMs: null, raf: null, lastDraw: 0,
             evKey: "", padKey: "", yaw: -0.9, pitch: 0.3, drag: null, boardCfg: null, cfgTried: false,
             countEnd: null, countTimer: null, maxAlt: null, apogeeAlt: null,
             defaults: {host: "192.168.2.1", udp_port: 14550, tcp_port: 5760}};
@@ -15,10 +15,10 @@ const LT_WINDOW_S = 30, LT_POLL_MS = 100, LT_DRAW_MS = 50;      /* plots at 20 f
 const BATT_WARN_V = 7.0, LT_STALE_S = 1.0;
 const LT_KIND_NAMES = {ble: "Bluetooth", serial: "USB serial", udp: "Wi-Fi · UDP", tcp: "Wi-Fi · TCP"};
 const LT_HELP = {
-  ble: "Bluetooth LE to the DroneBridge in the rocket (BLE mode). Short range: best on the pad and for the bench tools.",
-  serial: "A 3.3 V USB-UART on TX2/RX2 (115200 baud), or the DroneBridge ground unit (ESP-NOW GND) plugged in by USB.",
-  udp: "Join the DroneBridge Wi-Fi first (password dronebridge by default). Studio pings the bridge every second so it knows where to send.",
-  tcp: "Join the DroneBridge Wi-Fi first, then connect to its TCP server (port 5760 by default)."};
+  udp: "Single-board setup: the XIAO in the rocket runs DroneBridge as a Wi-Fi access point and this Mac joins its Wi-Fi. Bridge 192.168.2.1, port 14550 (Defaults fills them in).",
+  tcp: "Same single-board Wi-Fi access point, over TCP: bridge 192.168.2.1, port 5760.",
+  ble: "Bluetooth LE to the DroneBridge (BLE mode). Short range, and needs the Studio app.",
+  serial: "A 3.3 V USB-UART on TX2/RX2 (115200 baud), or an ESP-NOW ground unit plugged in by USB if you add one later."};
 
 /* ---- settings (kept in Studio's state file: the Mac app's web view forgets local storage) ---- */
 function ltSettings() { return (appState.ui && appState.ui.live) || {}; }
@@ -85,17 +85,17 @@ document.querySelectorAll("#live-view button").forEach(b => b.onclick = () => { 
 
 /* ---- how to connect ---- */
 const LT_STEPS = {
-  ble: ["XIAO ESP32-C3 in the rocket: 5V → 5V, GND → GND, board TX2 → XIAO D2 (GPIO4), board RX2 → XIAO D3 (GPIO5). DroneBridge: mode Bluetooth LE, UART 115200, TX pin 5, RX pin 4, Transparent.",
-    "Turn Bluetooth on on this Mac. The first time, macOS asks to let EasyTVC Studio use Bluetooth: allow it (System Settings → Privacy & Security → Bluetooth).",
-    "Power the rocket, pick Bluetooth above and press Connect. Studio finds the DroneBridge by itself: no pairing, no Wi-Fi to join.",
-    "Range is short (tens of metres, less through the body tube): fine on the pad and for the bench tools. The SD card logs every sample of the flight either way."],
-  serial: ["Wire a 3.3 V USB-UART: its RX → board TX2, its TX → board RX2, GND → GND. Or plug in the DroneBridge ground unit (ESP-NOW GND mode) by USB.",
-    "Power the board from its battery.", "Pick USB above, choose the port (↻ looks again) and press Connect."],
-  udp: ["XIAO ESP32-C3 in the rocket: 5V → 5V, GND → GND, board TX2 → XIAO D2 (GPIO4), board RX2 → XIAO D3 (GPIO5). DroneBridge in Wi-Fi AP mode, UART 115200, TX pin 5, RX pin 4, Transparent.",
-    "Power the rocket, then join its Wi-Fi on this Mac (DroneBridge ESP32, password dronebridge by default).",
-    "Pick Wi-Fi UDP: bridge 192.168.2.1, port 14550, listen 14550 (Defaults fills them in), then Connect."],
-  tcp: ["Same wiring and DroneBridge settings as UDP.", "Join the rocket's Wi-Fi on this Mac.",
-    "Pick Wi-Fi TCP: bridge 192.168.2.1, port 5760, then Connect."]};
+  udp: ["In the rocket: XIAO ESP32-C3 wired 5V → 5V, GND → GND, board TX2 → XIAO D2 (GPIO4), board RX2 → XIAO D3 (GPIO5).",
+    "DroneBridge on the XIAO: mode Wi-Fi Access Point, UART 115200, TX pin 5, RX pin 4, flow control off, protocol Transparent. No ground unit.",
+    "Power the rocket, then join its Wi-Fi on this Mac (DroneBridge's network; password dronebridge unless you changed it). While joined, the Mac has no internet over Wi-Fi.",
+    "Pick Wi-Fi UDP: bridge 192.168.2.1, port 14550, listen 14550 (Defaults fills them in), then Connect. Studio pings the bridge every second so it knows where to send."],
+  tcp: ["Same single-board setup as UDP: the XIAO is a Wi-Fi access point and this Mac joins it.",
+    "Pick Wi-Fi TCP: bridge 192.168.2.1, port 5760, then Connect."],
+  ble: ["DroneBridge mode Bluetooth LE instead of Wi-Fi (same wiring and UART settings).",
+    "Turn Bluetooth on; the first time, macOS asks to let EasyTVC Studio use it: allow it.",
+    "Pick Bluetooth and Connect: Studio finds the DroneBridge by itself. Range is short (tens of metres)."],
+  serial: ["A 3.3 V USB-UART on the board: its RX → TX2, its TX → RX2, GND → GND. Or, later, an ESP-NOW ground unit (DroneBridge ESP-NOW LR GND, with the rocket's XIAO set to ESP-NOW LR AIR) plugged in by USB.",
+    "Pick USB, choose the port (↻ looks again) and press Connect."]};
 function ltHowTo(kind) {
   return [el("ol", {}, ...LT_STEPS[kind].map(t => el("li", {text: t}))),
     el("p", {class: "help", text: "Connected means Studio is receiving: the pill turns green and frames/s counts up. STALE means nothing for over 1 s (out of range, or the board is off). Studio records every frame; losing the link has no effect on the rocket."})];
@@ -343,8 +343,8 @@ function ltRenderPad(s) {
     $(id).disabled = !idle || running;
   $("bs-chip").textContent = !s.connected ? "not connected" : !idle ? "locked · not IDLE" : LT.boardCfg && LT.boardCfg.RADIO_SETTINGS ? "board uses radio settings" : "board uses installed settings";
   $("bs-chip").className = `chip ${idle ? (LT.boardCfg && LT.boardCfg.RADIO_SETTINGS ? "warn" : "good") : ""}`;
-  $("pt-chip").textContent = !s.connected ? "not connected" : !idle ? "locked · not IDLE" : pyroCompiledIn ? "outputs LIVE" : "outputs locked";
-  $("pt-chip").className = `chip ${idle ? (pyroCompiledIn ? "bad" : "good") : ""}`;
+  $("pt-chip").textContent = !s.connected ? "not connected" : !idle ? "locked · not IDLE" : boardPyroLive() ? "outputs LIVE" : "outputs locked";
+  $("pt-chip").className = `chip ${idle ? (boardPyroLive() ? "bad" : "good") : ""}`;
   ltRenderGimbal(s, idle && !running);
   const resumable = dl && !running && !dl.done && dl.bytes > 0;
   $("pad-resume").hidden = !resumable; $("pad-resume").disabled = !idle;
@@ -562,6 +562,8 @@ action("trim-board", async () => {
 });
 
 /* ---- pyro channel ground test: a test load only, IDLE + not armed, one code one pulse ---- */
+/* what the connected board says about its own lock (CFG), else the source file */
+function boardPyroLive() { return LT.boardCfg && LT.boardCfg.PYRO_OUTPUTS_COMPILED_IN !== undefined ? !!LT.boardCfg.PYRO_OUTPUTS_COMPILED_IN : pyroCompiledIn; }
 action("pt-start", async () => {
   const channel = Number($("pt-channel").value), ms = Number($("pt-ms").value);
   const load = el("input", {type: "checkbox"}), away = el("input", {type: "checkbox"});
@@ -569,7 +571,7 @@ action("pt-start", async () => {
       el("p", {text: `The board will switch P${channel} on for ${ms} ms. Only do this with a test load on the terminal.`}),
       el("label", {class: "check"}, load, " Only a test load (LED + resistor, or a bulb) is on the terminal: no igniter, no e-match, no charge."),
       el("label", {class: "check"}, away, " The rocket has no motor in it and nobody is in front of it."),
-      el("p", {class: "help", text: pyroCompiledIn ? "Pyro outputs are LIVE in this firmware: the pin really switches on." : "Pyro outputs are locked in this firmware: the test runs, but the pin stays off."})], "Arm test")) return;
+      el("p", {class: boardPyroLive() ? "warn-text" : "help", text: boardPyroLive() ? "Pyro outputs are LIVE in the firmware on this board: the pin really switches on." : "Pyro outputs are locked in the firmware on this board: the test runs, but the pin stays off."})], "Arm test")) return;
   if (!load.checked || !away.checked) throw new Error("Tick both boxes to run the test.");
   const armed = await api("monitor/pyro/arm", {channel});
   const cont = armed.continuity.map((c, i) => `P${i + 1} ${c ? "●" : "○"}`).join("  ");
@@ -710,7 +712,7 @@ function ltDrawAttitude() {
 /* restore the last link choice once Studio's state has loaded */
 (async () => {
   await window.studioReady;
-  ltShowKind(["ble", "serial", "udp", "tcp"].includes(ltSettings().kind) ? ltSettings().kind : "ble");
+  ltShowKind(["ble", "serial", "udp", "tcp"].includes(ltSettings().kind) ? ltSettings().kind : "udp");
   ltShowView(ltSettings().view === "pad" ? "pad" : "dash");
   ltRenderConnect(liveStatus || {connected: false}); ltRenderClock(null);
   try { liveStatus = await api("monitor/status", {}); ltIngest(liveStatus); ltRender(); if (liveStatus.connected) ltPoll(); }

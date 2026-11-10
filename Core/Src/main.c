@@ -171,7 +171,7 @@ static bool link_handle(void *context, const char *command, const char *payload,
     EasyTVCTextLine line = {out, 0, capacity};
     if (!strcmp(command, "HELLO")) {
         EasyTVC_LineStr(&line, "EASYTVC,2,");
-        EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? "bench," : "flight,");
+        EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? (EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? "pyrobench," : "bench,") : "flight,");
         EasyTVC_LineStr(&line, EASYTVC_FW_VERSION ",");
         EasyTVC_LineStr(&line, EASYTVC_GIT_HASH);
         return true;
@@ -688,7 +688,8 @@ static bool apply_tunables_now(const EasyTVCTunables *t)
 static void build_header(char *buffer, size_t capacity, bool recovery_boot)
 {
     EasyTVCTextLine line = {buffer, 0, capacity};
-    EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? "EasyTVC mode=bench" : "EasyTVC mode=flight");
+    EasyTVC_LineStr(&line, EASYTVC_BENCH_MODE ? (EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? "EasyTVC mode=pyrobench" : "EasyTVC mode=bench")
+                                              : "EasyTVC mode=flight");
     EasyTVC_LineStr(&line, recovery_boot ? " reset=abnormal" : " reset=normal");
     EasyTVC_LineStr(&line, " nose_axis="); EasyTVC_LineInt(&line, EASYTVC_NOSE_AXIS);
     EasyTVC_LineStr(&line, " kp_milli="); EasyTVC_LineInt(&line, milli(EASYTVC_KP));
@@ -843,9 +844,15 @@ int main(void)
     if (recovery_boot) send_event(STM32_Millis(), "RECOVERY_BOOT");
     if (!logger.initialized) send_event(STM32_Millis(), "SD_MISSING");
 
+    uint32_t previous_tick_us = STM32_Micros() - LOOP_PERIOD_US;
     for (;;) {
         const uint32_t elapsed_us = wait_for_tick(&last_us);
         const uint32_t tick_start_us = STM32_Micros();
+        /* The time step is the real time since the previous tick's samples. (elapsed_us is measured
+         * from the previous tick's *scheduled* start, so after a late tick it counted the lateness
+         * twice: once then and once in the catch-up tick.) */
+        const uint32_t step_us = tick_start_us - previous_tick_us;
+        previous_tick_us = tick_start_us;
         const uint32_t now_ms = STM32_Millis();
         ++tick;
         if (elapsed_us > LOOP_PERIOD_US + LOOP_PERIOD_US / 2U) {
@@ -872,6 +879,19 @@ int main(void)
             imu_ok = EasyTVC_Bmi088Probe(&bmi088) && EasyTVC_Bmi088Configure(&bmi088);
             imu_failures = 0;
             last_us = STM32_Micros();   /* setup took a while: do not run a burst of late ticks */
+        } else if (!on_ground_idle) {
+            /* Armed or flying: the blocking re-setup is not allowed, but a plain read costs nothing.
+             * Without this, 25 ms of failed reads lost the IMU (and with it TVC) for the rest of the
+             * flight, even if the glitch passed. All-zero accel means the chip reset itself into
+             * suspend: that is not a recovery. */
+            if (EasyTVC_Bmi088Read(&bmi088) && (bmi088.accel_x != 0 || bmi088.accel_y != 0 || bmi088.accel_z != 0)) {
+                imu_ok = true;
+                imu_failures = 0;
+                last_imu_good_ms = now_ms;
+                imu_fresh = true;
+            } else {
+                ++imu_errors;
+            }
         }
 
         if (tick % BARO_DIVIDER == 0U) {
@@ -915,6 +935,13 @@ int main(void)
                 app.attitude.integral_error[axis] = 0.0f;
             }
             gyro_cal_ok = true;
+            /* ... and the pad's altitude: the pressure taken at power-up may be many minutes old
+             * (weather, sensor warm-up), and the deploy height is measured from here. */
+            if (baro_fresh && bme280.pressure > 0U) {
+                baro_reference_pa = (float)bme280.pressure;
+                altitude_m = 0.0f;
+                EasyTVC_NavInit(&app.nav, 0.0f);
+            }
         }
 
         /* ---- estimation / flight state / control ---- */
@@ -927,7 +954,8 @@ int main(void)
             .accel_is_gravity_reference = true,
             .now_ms = now_ms,
             .sensor_age_ms = (uint32_t)(now_ms - last_imu_good_ms),
-            .dt_s = (float)elapsed_us * 1e-6f,
+            .dt_s = (float)step_us * 1e-6f,
+            .baro_stale = !baro_fresh,
         };
         memcpy(input.gyro_rad_s, gyro_body, sizeof(input.gyro_rad_s));
         memcpy(input.accel_m_s2, accel_body, sizeof(input.accel_m_s2));
@@ -1126,7 +1154,7 @@ int main(void)
             const uint16_t vdda_mv = EasyTVC_ADC_VddaMv(EasyTVC_ADC_Read(EASYTVC_ADC_CH_VREF));
             const uint16_t batt_raw = EasyTVC_ADC_Read(EASYTVC_ADC_BATT_CHANNEL);
             const EasyTVCLinkSys sys = {
-                .ms = now_ms, .image = EASYTVC_BENCH_MODE ? 1U : 0U, .state = (uint8_t)state,
+                .ms = now_ms, .image = EASYTVC_BENCH_MODE ? (EASYTVC_PYRO_OUTPUTS_COMPILED_IN ? 3U : 1U) : 0U, .state = (uint8_t)state,
                 .armed = pad.armed, .chute_open = chute_open,
                 .batt_pin_mv = batt_raw > 4095U ? 0U : (uint16_t)((uint32_t)batt_raw * vdda_mv / 4095U),
                 .vdda_mv = vdda_mv,
@@ -1171,6 +1199,10 @@ int main(void)
             green = false;
         }
         EasyTVC_GPIO_LedSet(1, green);
+#if EASYTVC_BENCH_MODE && EASYTVC_PYRO_OUTPUTS_COMPILED_IN
+        /* pyro bench image: unmistakable, so it never goes into a rocket by mistake */
+        EasyTVC_GPIO_LedSet(2, (now_ms % 500U) < 250U);
+#endif
         const bool beep_test = state == EASYTVC_FLIGHT_IDLE && (int32_t)(beep_test_until_ms - now_ms) > 0;
         if (beep_test) {
             /* check from the ground: red, green, blue in turn, with beeps */
@@ -1188,7 +1220,11 @@ int main(void)
         } else if (state == EASYTVC_FLIGHT_ARMED) {
             pattern = BUZZ_ARMED;
         }
-        EasyTVC_GPIO_BuzzerSet(beep_test ? (now_ms % 400U) < 150U : buzzer_on(pattern, now_ms));
+        bool buzz = beep_test ? (now_ms % 400U) < 150U : buzzer_on(pattern, now_ms);
+#if EASYTVC_BENCH_MODE && EASYTVC_PYRO_OUTPUTS_COMPILED_IN
+        buzz = buzz || (now_ms % 5000U) < 80U;                /* a chirp every 5 s: pyro outputs live */
+#endif
+        EasyTVC_GPIO_BuzzerSet(buzz);
 
         const uint32_t body_us = STM32_Micros() - tick_start_us;
         if (body_us > loop_max_us) {

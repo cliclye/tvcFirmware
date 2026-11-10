@@ -43,7 +43,6 @@ set(EASYTVC_CORE_SOURCES
 # Cortex-M asm, so they are built for the MCU only and never for the host tests.
 set(EASYTVC_HW_SOURCES
     Core/Src/stm32f4xx.c
-    Core/Src/gpio_init.c
     Core/Src/spi_driver.c
     Core/Src/i2c_driver.c
     Core/Src/pwm_driver.c
@@ -73,15 +72,23 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
 
     # Two images from the same source: the bench image never arms and lets the gimbal follow the
     # board by hand; the flight image arms on the pad and runs TVC during boost.
+    # gpio_init.c and easytvc_safety.c hold the pyro lock, so they are compiled per image:
+    # the lock (EASYTVC_PYRO_OUTPUTS_COMPILED_IN) is 0 unless an image asks for 1.
     function(easytvc_image name bench_mode main_source)
+        set(pyro_unlocked 0)
+        if(ARGC GREATER 3)
+            set(pyro_unlocked ${ARGV3})
+        endif()
         add_executable(${name}
             ${main_source}
             Core/Src/startup_stm32f405rg.c
             Core/Src/easytvc_safety.c
+            Core/Src/gpio_init.c
         )
         target_include_directories(${name} PRIVATE Core/Inc)
         target_compile_features(${name} PRIVATE c_std_11)
         target_compile_definitions(${name} PRIVATE EASYTVC_BENCH_MODE=${bench_mode}
+            EASYTVC_PYRO_OUTPUTS_COMPILED_IN=${pyro_unlocked}
             EASYTVC_GIT_HASH="${EASYTVC_GIT_HASH}")
         target_compile_options(${name} PRIVATE
             -mcpu=cortex-m4
@@ -120,6 +127,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
     easytvc_image(easytvc_flight 0 Core/Src/main.c)
     # Sensor test: reads every sensor, logs every raw reading to SD, never arms or moves a servo.
     easytvc_image(easytvc_sensortest 1 Core/Src/sensor_test.c)
+    # Pyro bench test: the bench image (never arms, never flies) with the pyro outputs unlocked, so
+    # Studio's pyro ground test really switches P1/P3. Only ever with a test load on the terminals.
+    easytvc_image(easytvc_pyrobench 1 Core/Src/main.c 1)
 else()
     add_library(easytvc_core STATIC ${EASYTVC_CORE_SOURCES})
     target_include_directories(easytvc_core PUBLIC Core/Inc)

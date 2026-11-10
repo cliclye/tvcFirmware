@@ -1,0 +1,291 @@
+EASYTVC FLIGHT COMPUTER + SOFTWARE: SPECS FOR THE CAD DESIGNER
+Rocket: TVCRocketV5.2 (finless, thrust-vector controlled)   Firmware 0.5.0   2026-11-03
+
+How to read this
+- Positions are mm from the NOSE TIP along the rocket axis unless stated.
+  (In the Fusion CAD z is up from the motor-tube bottom: tip distance = 1060 - z.)
+- [VERIFY] = not measured on the real part yet. Measure before final CAD.
+- Firmware body axes: +Z = toward the nose.
+
+
+==========================================================================================
+1. THE ROCKET IN ONE PARAGRAPH
+==========================================================================================
+A 3-inch (79 mm) finless rocket that stays upright only because a flight computer steers the
+motor with a 2-axis gimbal (thrust vector control, TVC). There are no fins: aerodynamically it is
+unstable on purpose (CP ahead of CG), so the TVC must work from the moment of launch. The
+parachute is deployed by the flight computer (currently planned: pyro ejection charge on P1).
+
+Key numbers (V5.2, as entered in Studio -> Rocket setup; weigh real parts to confirm)
+  Overall length (tip -> nozzle exit)   1062 mm
+  Body tube                             kraft 3": OD 76.2 / ID 74.4 mm (upper 413 + lower 457 mm, coupler)
+  Nose                                  tangent ogive 180 mm + 50 mm shoulder (OD 76.0)
+  Liftoff mass (Estes F15-0)            949 g   (burnout 889 g)          [VERIFY by weighing]
+  CG                                    614 mm at liftoff, 588 mm at burnout
+  CP (finless)                          84 mm  (about -6.6 calibers: unstable, by design)
+  Gimbal pivot                          1003 mm  -> gimbal arm (pivot to CG) 388 mm
+  Motor                                 Estes F15-0, 29 x 114 mm, 102 g
+  Simulated flight                      apogee ~56-66 m at ~5.2 s (1.0 deg boost tilt, nominal)
+  MASS WARNING: Estes rates the F15-0 for 539 g max. At 949 g the rocket leaves slowly.
+                Every gram saved in the airframe helps.
+
+
+==========================================================================================
+2. FLIGHT COMPUTER HARDWARE (Mr Wong's EasyTVC v0.1)
+==========================================================================================
+Board
+  Size                    45 x 80 x 1.6 mm (PCB)                               [VERIFY]
+  Component height        not measured: leave >= 12 mm clearance in front of the
+                          component side, >= 4 mm behind                       [VERIFY]
+  Mass                    ~25 g with headers                                   [VERIFY]
+  Mounting holes          2 holes, bottom corners (XT30 end): dia ~3.9 mm, centres
+                          ~3.9 mm from the edges. Current design: M3 x 8 into heat-set
+                          inserts. Two pads behind the holes under the logo.   [VERIFY]
+  MCU                     STM32F405 (168 MHz)
+  IMU                     Bosch BMI088 (accelerometer +-24 g, gyro +-2000 deg/s)
+  Barometer               Bosch BME280 (pressure + temperature), on I2C1 with the
+                          STM32 internal pull-ups (as the vendor requires)
+  Storage                 microSD card slot (all flight data is logged here)
+  Power                   2S LiPo (7.4 V nominal, 8.4 V full) into the XT30.
+                          The board's servo 5 V is an on-board 7805 LINEAR regulator: two MG90Ds
+                          can pull ~2 A at stall, so the servos are powered from a separate UBEC
+                          (5-6 V, >= 3 A) on the same LiPo; signal + common GND stay on the board.
+                          Do not use 3S.
+  Status                  RGB LED (red / green / blue) and a buzzer
+
+Connectors / controls (positions as seen on the board; confirm against the real part)
+  XT30 battery input           bottom edge (tail end when mounted)
+  Servo headers J9, J10        bottom edge, 3-pin columns: signal (top) / 5V / GND (bottom)
+                               J9 = servo headers S1, S2 (left of XT30)
+                               J10 = servo headers S3, S4 (right of XT30)
+  Pyro screw terminals         top edge (nose end): P1, P2, P3, SW
+                               P2 must NEVER be used (its pin is the CPU's debug pin)
+                               SW = the vendor's pyro arming switch input   [VERIFY function]
+  7-pin white connector        right side: 3.3V, 5V, TX2, RX2, SCL2, SDA2, GND
+                               (radio module plugs here). Pitch JST-PH 2.0 or JST-XH 2.5  [VERIFY]
+  USB-C                        flashing firmware only (in the current CAD at 611-626 mm, +X side)
+  BOOT and RST buttons         needed to install firmware (hold BOOT, plug USB-C)  [VERIFY location]
+  microSD slot                 [VERIFY location / which edge it ejects from]
+
+
+==========================================================================================
+3. HOW THE BOARD MUST BE MOUNTED (this matters to the software)
+==========================================================================================
+Orientation (the firmware is configured for exactly this: EASYTVC_NOSE_AXIS = POS_Y)
+  - Board stands VERTICALLY on the FC sled, in a plane through the rocket's axis.
+  - Pyro / SW screw terminals toward the NOSE; XT30 toward the TAIL.
+  - Component side faces the front window (CAD +Y).
+  - Board long edge parallel to the rocket axis to within ~1 deg.
+    (A tilted board reads as a tilted rocket. Small errors can be trimmed, large ones can't.)
+  - If the board ends up mounted any other way, tell the software side: it's a one-line
+    change, but it must be known before flight.
+
+Position
+  - IMU on (or very near) the rocket's centre line. V5.2: board 764-844 mm, IMU chip at
+    ~818 mm, about 204 mm behind the CG (the FC moved to the tail end in V4/V5). The sim models
+    this and passes; the accelerometer is only used on the pad, so the risk is small.
+  - Mount RIGID. No foam or rubber isolation: a board that wobbles on its mount makes the
+    attitude estimate wrong. Screws into a stiff sled.
+  - Keep it away from the motor heat and from the LiPo's magnetic/thermal mess where you can.
+
+Firmware body frame with this mounting (for anyone checking the CAD against logs)
+  body Z = sensor +Y = nose
+  body X = sensor +Z = CAD +Y
+  body Y = sensor +X = CAD -X
+
+
+==========================================================================================
+4. WIRING MAP (current setup in Core/Inc/vehicle_config.h)
+==========================================================================================
+  Servo header S1  ->  TVC servo, firmware "servo B" = CAD "TVC Servo A" (INNER gimbal)
+  Servo header S2  ->  TVC servo, firmware "servo A" = CAD "TVC Servo B" (OUTER gimbal)
+  Servo header S3  ->  free (was the parachute-release servo; not used with pyro)
+  Servo header S4  ->  free
+  Pyro P1          ->  parachute ejection charge (e-match)
+  Pyro P2          ->  NEVER CONNECT
+  Pyro P3          ->  free (could be a second/backup charge later)
+  SW               ->  pyro arming switch (see section 7)                      [VERIFY]
+  7-pin connector  ->  XIAO ESP32-C3 radio: 5V-5V, GND-GND, TX2 -> XIAO D2 (GPIO4),
+                       RX2 -> XIAO D3 (GPIO5). Never use XIAO pins D6/D7.
+  XT30             ->  2S LiPo
+  All of these can be re-assigned in software (Studio -> Rocket setup -> Board outputs), but
+  the CAD wire routing should follow this map.
+
+Wire routing
+  - Servo leads run aft from the sled through the empty tube section (678-932 mm) to the
+    gimbal servos at ~976 and ~1027 mm. Leave a channel/clip path; keep them off the motor.
+  - Pyro leads from P1 forward through the recovery bulkhead to the charge (section 7).
+  - V5.2: servo leads are short, ~100-200 mm from the gimbal through the baffle to the board's
+    bottom-edge headers. No long extensions needed.
+
+
+==========================================================================================
+5. TVC GIMBAL / MOTOR MOUNT (what the software expects)
+==========================================================================================
+  Gimbal design           K-9 V8: outer ring bolted to the airframe (2x M3x8), inner gimbal on
+                          M3x12 pivots, motor tube on M3x6 pivots (V5 outer ring: M3x6, thinner
+                          trimmed ring; M3x8 also fine)
+  Pivot location          1003 mm from tip; 59.8 mm above the nozzle exit
+  Motor sleeve            OD 31.4 mm printed (the 31.8 one jammed), or cardboard
+  TVC servos              TowerPro MG90D (metal gear, ~13 g). Two, one per axis.
+  Linkage                 servo horn hole 9 mm, pushrod lever ~42 mm -> ratio ~0.214,
+                          1 mm music wire with Z-bends
+  Commanded travel        servo pulses 1250 / 1500 / 1750 us (min / centre / max)
+                          = about +-22.5 deg of horn = about +-4.7 deg of motor
+  Mechanical clearance    airframe cut-outs must clear +-12 deg of motor tilt in BOTH axes
+                          without binding (the simulator uses +-12 deg as the hard stop)
+  Servo update rate       50 Hz (standard servo signal)
+  Requirements
+    - Zero play / slop at centre is the single most important thing for TVC accuracy.
+    - "Straight" must be repeatable: the software can trim each axis by up to +-100 us
+      (about +-2 deg of motor) over the radio, but the mount should be straight within
+      ~1 deg as built.
+    - Each servo moves only its own axis (no coupling between the two).
+    - Blast baffle (solid, at ~932-936 mm) keeps motor gas off the servos and wiring.
+    - Use PETG/ASA (not PLA) for anything near the motor.
+
+
+==========================================================================================
+6. RADIO (WIRELESS TELEMETRY / BLUETOOTH)
+==========================================================================================
+  Module          Seeed XIAO ESP32-C3 running DroneBridge firmware (21 x 17.8 mm)  [VERIFY]
+  Setup           single board: the XIAO runs DroneBridge as a Wi-Fi access point and the
+                  Mac joins its Wi-Fi directly (no ground unit; up to ~150 m). An ESP-NOW
+                  ground unit (~1 km) may be added later; nothing in the rocket changes for it
+  Placement
+    - Close to the tube wall, away from the LiPo, the motor and any carbon fibre or metal.
+      Blue Tube is radio-transparent; carbon fibre and foil are NOT.
+    - Use the XIAO's external antenna; route it along the inside of the tube wall, pointing
+      along the rocket axis, not bundled with servo or power wires.
+    - Secure it: it must not move at launch. Wire it to the 7-pin connector (section 4).
+  Power           from the board's 5 V (draws up to ~0.3 A while transmitting)
+
+
+==========================================================================================
+7. RECOVERY: PYRO EJECTION CHARGE (current plan) -> CAD REQUIREMENTS
+==========================================================================================
+How the software fires it
+  - Never before launch is detected. Never after an unexpected reboot.
+  - Fires ONCE at: detected apogee (or, if set, when the rocket comes back down through a
+    chosen height), OR at the backup timer (currently 5.8 s after launch), whichever is first.
+  - Output on P1 for 1.0 s.
+  - The pyro outputs are LOCKED in the firmware until the board's pyro channels have passed a
+    bench test with a test load (LED / resistor). The airframe should be designed for pyro now.
+
+What the airframe needs for a charge
+  1. A charge holder ("charge well" / cup) on the parachute side of the recovery bulkhead
+     (~460 mm), sized for an e-match + black powder. Amount is set by a ground ejection test,
+     not by design; leave room for ~0.5-1.5 g of BP in a cup with a removable cap. [designer]
+  2. A sealed pass-through for the two e-match wires through the recovery bulkhead (epoxy or a
+     small terminal block). The avionics bay must be GAS-TIGHT on the charge side: ejection gas
+     must not reach the board or the barometer.
+  3. Nose cone retention that holds through boost and coast but lets go on the charge: friction
+     fit or 2x nylon shear pins (e.g. 2-56). The current spring/piston/latch-servo release is no
+     longer needed with pyro (the latch servo at 233-265 mm can be removed); keep the piston if
+     it helps protect the chute.                                              [designer decision]
+  4. Flame/heat protection for the chute: Nomex blanket or wadding between charge and chute.
+  5. Room to connect the e-match LAST, at the pad (the charge bay must be reachable after the
+     rocket is otherwise assembled), or a connector at the bulkhead.
+  6. Pyro arming: a way to keep the pyro circuit off until the rocket is on the pad. Recommended:
+     an external switch (or screw switch / pull-pin) reachable from outside the tube, wired to
+     the board's SW terminal or in series with the charge.                     [VERIFY SW function]
+  7. Shock cord anchored to the recovery bulkhead U-bolt (M4), Kevlar, quick links.
+
+  Parachute: Estes 30" nylon (sim lands ~6.6 m/s; a 36" chute would land under 5 m/s).
+
+
+==========================================================================================
+8. BAROMETER VENTING (needed for apogee / altitude-based deployment)
+==========================================================================================
+  - The board's bay needs static-port holes to the outside air: 1-3 holes, ~1 mm each, evenly
+    around the tube, in the avionics bay section.
+  - NOT near the nose/body joint or any shoulder, NOT in line with the motor exhaust, and away
+    from the window edge (smooth airflow over the holes).
+  - The bay must otherwise be sealed: no leaks to the charge/chute bay (ejection pressure would
+    look like a false altitude), and no big openings that let the airflow pump the bay.
+  - Light foam over the barometer chip is OK (keeps light and gusts off it); do not seal it.
+
+
+==========================================================================================
+9. ACCESS THE ROCKET MUST GIVE (holes, hatches, windows)
+==========================================================================================
+  - Power: the XT30 unplug is the power switch, so either a hatch to reach it or an external
+    power switch in the battery lead.
+  - USB-C port: to install firmware without disassembly (hole in the tube at the port).
+  - BOOT button: needed together with USB-C to install firmware.             [VERIFY location]
+  - microSD card: removable after a flight to read the full log (a hatch or easy sled pull-out).
+  - Status LED visible from outside (window): solid green = ARMED (hands off), red = do not
+    launch, blue blink = alive/recording.
+  - Buzzer audible (an open path / small hole); it beeps a locator pattern after landing.
+  - Pyro arming switch reachable on the pad (section 7, item 6).
+  - Battery: 2S LiPo 300-450 mAh, XT30, ~20-31 g, on its own sled (current CAD: 468-550 mm,
+    V5.2 battery sled centre ~687 mm). Must be removable for charging.
+
+
+==========================================================================================
+10. HOW THE SOFTWARE WORKS (so the design makes sense)
+==========================================================================================
+Main loop: 200 times per second (every 5 ms). Every loop it reads the IMU, updates the
+attitude estimate, runs the flight state machine, computes the TVC command, drives the servos
+and pyro outputs, logs to SD and sends telemetry. Barometer read at 50 Hz.
+
+Flight states
+  IDLE     on the pad, powered. Calibrates the gyro while still.
+  ARMED    armed itself after standing still and vertical (within 10 deg) for 3 s.
+           Solid green LED + chirp every second. Tipped past 20 deg -> back to IDLE.
+           (Needs a working SD card.)
+  BOOST    launch detected: acceleration above 1.8 g for 40 ms. TVC starts 80 ms later.
+  COAST    motor burnt out. TVC off, gimbal centred.
+  APOGEE   vertical speed reaches zero (or the backup timer) -> parachute deployment.
+  DESCENT  under the chute. Logging continues.
+  LANDED   on the ground: locator beeps.
+  FAULT    something failed for real (e.g. tilted past 25 deg in boost, sensors lost for
+           more than 100 ms): TVC gives up and centres; the parachute backup timer still runs.
+
+TVC control (finless stability)
+  - Attitude: quaternion estimate from the gyro, corrected by the accelerometer only while on
+    the pad (during flight the motor's push hides gravity).
+  - Tilt error = angle of the nose away from vertical, about body X and Y.
+  - Two PID loops (V5.2 gains P 16, I 2.2, D 1.5, D-filter 20 Hz, slew limit 28 travel/s)
+    turn tilt into a gimbal command, which becomes servo pulses (1250-1750 us).
+  - Roll compensation: a finless rocket rolls; the software rotates the commands so the motor
+    still pushes the right way while the body spins (tested to 2000 deg/s in simulation).
+  - Glitch tolerance: a missed sensor reading holds the last command instead of giving up.
+  - Mechanical implication: the controller assumes the servo/gimbal respond in ~15 ms and the
+    linkage is linear and slop-free. Slop and a slow or flexible linkage are the biggest risks.
+
+Recovery: see section 7 (pyro). The software can also drive a release servo instead (on any free
+servo header) if the design ever goes back to a servo latch.
+
+Data and ground link
+  - SD card logs at 100 Hz from arming to landing (10 Hz on the pad): attitude, rates, accel,
+    altitude, servo pulses, state, events. Readable in Studio, with a 3D replay.
+  - Radio telemetry at 20 Hz in flight (state, altitude, speed, tilt, gimbal, battery,
+    barometer, parachute countdown). Losing the radio has NO effect on the flight.
+  - On the pad only (IDLE, not armed), Studio can: read the status/config, download logs, move
+    and align the gimbal, tune gains and the TVC centre, test the pyro channels with a test
+    load, and run an LED/buzzer check. Nothing can be commanded over the radio in flight.
+
+Firmware images
+  bench        never arms; the gimbal follows the board by hand (for servo/alignment checks)
+  flight       arms on the pad and flies
+  sensortest   checks every sensor and logs raw readings
+  pyrobench    never arms; pyro outputs live for the pyro test with a test load ONLY.
+               Never put this one in a rocket (fast red blink + chirp every 5 s).
+
+
+==========================================================================================
+11. CHECKLIST FOR THE CAD
+==========================================================================================
+  [ ] Board vertical, terminals to the nose, components facing the window, rigid M3 mount,
+      long edge parallel to the axis.
+  [ ] Clearance around the board (front >= 12 mm, back >= 4 mm) and for the 7-pin, servo and
+      XT30 plugs and their wires.                                              [VERIFY]
+  [ ] Gas-tight avionics bay with 1-3 x ~1 mm static ports.
+  [ ] Charge well + sealed wire pass-through on the recovery bulkhead; shear pins or friction
+      fit nose; Nomex; e-match connected last; pyro arming switch reachable from outside.
+  [ ] Gimbal clears +-12 deg both axes, no binding, no slop, blast baffle in front of servos.
+  [ ] Servo wire path aft (~400 mm), clipped, off the motor.
+  [ ] XIAO radio near the tube wall with its antenna along the wall, away from LiPo/motor.
+  [ ] Access: USB-C + BOOT, microSD, power switch/XT30, LED window, buzzer hole.
+  [ ] Weigh every part and send the numbers back: the TVC gains depend on mass, CG and inertia.

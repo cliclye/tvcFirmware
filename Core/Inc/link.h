@@ -111,7 +111,7 @@ enum {
 
 typedef struct {
     uint32_t ms;
-    uint8_t image;                 /* 0 flight, 1 bench, 2 sensor test */
+    uint8_t image;                 /* 0 flight, 1 bench, 2 sensor test, 3 pyro bench (pyro outputs live) */
     uint8_t state;
     uint8_t armed;
     uint8_t chute_open;

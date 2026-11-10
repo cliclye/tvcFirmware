@@ -11,6 +11,7 @@
   <script defer src="/sim3d.js"></script>
   <script defer src="/gimbal.js"></script>
   <script defer src="/live.js"></script>
+  <script defer src="/tune.js"></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -101,7 +102,36 @@
       </div>
     </section>
     <section id="tune" class="tab" hidden>
-      <div class="page-title"><div><h1>Find your balance.</h1><p>Tune two gimbal axes. Explore disturbances. Keep the limits in view.</p></div><button id="run" class="primary">Run simulation <span>↗</span></button></div>
+      <div class="page-title"><div><h1>Tune on your rocket.</h1><p>Gains are tested on the rocket from <strong>Rocket setup</strong>, flown in the 3D sim with the real flight software, in random weather and with the hardware worse than the model says.</p></div>
+        <div class="title-actions"><button id="tl-auto">Auto-tune</button><button id="tl-test" class="primary">Test these gains <span>↗</span></button></div></div>
+      <div id="tl-progress" class="tl-progress" hidden><div class="progress-bar"><i id="tl-bar"></i></div><span id="tl-stage" class="help-inline"></span><button id="tl-cancel" class="small quiet">Cancel</button></div>
+      <div class="workspace-grid tl-grid">
+        <div class="controls">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">01 / GAINS</span><h2>Controller gains</h2></div><span id="tl-source" class="chip">—</span></div>
+            <p class="help">Both gimbal axes use the same gains. The output is a fraction of full gimbal travel per radian of tilt.</p>
+            <div id="tl-gains" class="field-grid"></div>
+            <div class="actions"><button id="tl-revert" class="quiet">Back to Rocket setup's</button><button id="tl-use" class="primary">Use in Rocket setup</button></div>
+            <p id="tl-rocket" class="help mono"></p></article>
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">02 / WHAT IS TESTED</span><h2>Flights and stress cases</h2></div></div>
+            <ul class="tl-list"><li><strong>Nominal flight</strong>: the conditions set on the 3D flight sim page.</li>
+              <li><strong>40 random flights</strong>: wind, gusts, misalignment, pad lean, thrust ±5 %, CG ±5 mm, inertia ±10 %, roll.</li>
+              <li><strong>Stress cases</strong>: servos 2× slower, twice the slop, motor 12 % weak, 60 g heavier, and all of them together.</li>
+              <li><strong>Launch detection margin</strong>: how weak the motor can be before the firmware misses the launch.</li></ul>
+            <p class="help">A flight counts as held when the rocket lifts off, launch is detected in time and TVC keeps it inside the give-up tilt. Recovery is judged on the 3D flight sim page, not here.</p></article>
+        </div>
+        <div class="results">
+          <article class="card"><div class="card-heading"><div><span class="eyebrow">RESULT</span><h2 id="tl-headline">Not tested yet</h2></div><span id="tl-stale" class="chip" hidden>gains changed · test again</span></div>
+            <div id="tl-tiles" class="metrics wide tl-tiles"></div>
+            <div id="tl-notes"></div>
+            <table id="tl-stress" class="cfg-table tl-table" hidden><thead><tr><th>Case</th><th>Flights held</th><th>Typical tilt</th><th>Worst tilt</th></tr></thead><tbody></tbody></table></article>
+          <article class="card chart-card"><div class="card-heading"><div><span class="eyebrow">NOMINAL BOOST</span><h2>Tilt during the burn</h2></div>
+              <div class="legend"><span class="x">● these gains</span><span class="tl-ref">● last result before</span><span class="y">● gimbal angle</span></div></div>
+            <div class="chart-wrap tl-chart"><canvas id="tl-canvas" aria-label="Tilt and gimbal angle during the burn" role="img"></canvas><span id="tl-hint">Press Test these gains to fly it.</span></div>
+            <p class="help">Tilt from vertical (true, not the board's estimate) and the larger of the two gimbal angles, from ignition to burnout. The shaded band is before TVC switches on: the rocket is unsteered there.</p></article>
+        </div>
+      </div>
+      <details class="legacy-model"><summary>Simplified single-axis model (the old Tuning lab)</summary>
+      <div class="legacy-head"><p class="help">The original Tuning lab: one axis pair, constant thrust and example vehicle numbers (only the average thrust comes from your rocket). Useful for seeing how P, I and D shape a response; it is not your rocket. The test above is.</p><button id="run" class="primary small">Run simplified model <span>↗</span></button></div>
       <div class="banner"><strong>Model, not flight evidence</strong><span>Gains and servo limits here start from your rocket setup. When a response looks right, copy it back with <em>Use in rocket setup</em>, then save and rebuild.</span><button id="tune-to-rocket" class="small">Use in rocket setup</button><button id="tune-install" class="primary small">Install this tune on board ↗</button></div>
       <div class="profile-bar"><label>PROFILE <input id="profile-name" maxlength="80" aria-label="Profile name"></label><div><button id="import">Import</button><button id="export">Save profile ↓</button><button id="reset" class="quiet">Reset</button></div><input id="file" type="file" accept="application/json,.json" hidden></div>
       <div class="workspace-grid">
@@ -115,6 +145,7 @@
           <article class="card"><div class="card-heading"><div><span class="eyebrow">04 / ACTUATORS</span><h2>Servo calibration</h2></div><span class="chip">Profile only</span></div><p class="help">Choose separate output channels and measured pulse limits. Editing these fields does not move hardware. A proper 5 V servo supply is required; USB power alone is not established as sufficient.</p><div id="servos"></div></article>
         </div>
       </div>
+      </details>
     </section>
 
     <section id="sim3d" class="tab" hidden>
@@ -203,10 +234,10 @@
           <div class="segmented" role="group" aria-label="Live view" id="live-view"><button data-view="dash" class="selected">Dashboard</button><button data-view="pad">Pad tools</button></div></div>
         <div class="link-bar">
           <span id="link-pill" class="link-pill off"><i></i><b id="link-title">Not connected</b></span>
-          <div class="segmented" role="group" aria-label="Link type" id="link-kind"><button data-kind="ble" class="selected">Bluetooth</button><button data-kind="serial">USB</button><button data-kind="udp">Wi-Fi UDP</button><button data-kind="tcp">Wi-Fi TCP</button></div>
-          <span id="link-ble" class="link-fields"><span id="ble-state" class="chip">Bluetooth</span></span>
+          <div class="segmented" role="group" aria-label="Link type" id="link-kind"><button data-kind="udp" class="selected">Wi-Fi UDP</button><button data-kind="tcp">Wi-Fi TCP</button><button data-kind="ble">Bluetooth</button><button data-kind="serial">USB</button></div>
+          <span id="link-ble" class="link-fields" hidden><span id="ble-state" class="chip">Bluetooth</span></span>
           <span id="link-serial" class="link-fields" hidden><select id="live-port" aria-label="Serial port"></select><button id="live-refresh" class="small" title="Look for USB serial ports again">↻</button></span>
-          <span id="link-net" class="link-fields" hidden><input id="link-host" type="text" spellcheck="false" aria-label="Bridge address" title="Bridge address">
+          <span id="link-net" class="link-fields"><input id="link-host" type="text" spellcheck="false" aria-label="Bridge address" title="Bridge address">
             <input id="link-port" type="number" min="1" max="65535" aria-label="Bridge port" title="Bridge port">
             <span id="link-listen-wrap" class="inline-mini">listen <input id="link-listen" type="number" min="1" max="65535" aria-label="Local UDP port" title="Local UDP port"></span>
             <button id="link-defaults" class="small quiet" title="192.168.2.1 · UDP 14550 · TCP 5760">Defaults</button></span>

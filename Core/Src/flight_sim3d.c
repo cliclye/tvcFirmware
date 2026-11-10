@@ -3,6 +3,7 @@
 #include "app.h"
 #include "controller.h"
 #include "pad_arm.h"
+#include "recovery_charge.h"
 
 #include <math.h>
 #include <string.h>
@@ -44,6 +45,7 @@ typedef struct {
     float fw_bias[3];
     bool launched, chute_open;
     uint32_t launch_ms;
+    EasyTVCCharge charge;
     /* vehicle */
     Quat q;
     float pos[3], vel[3], w[3], rail_axis[3];
@@ -226,7 +228,9 @@ static bool valid_params(const float *p)
         fabsf(p[SIM3D_IMU_AHEAD_M]) < p[SIM3D_LENGTH_M] && p[SIM3D_TURBULENCE_M_S] >= 0.0f && p[SIM3D_TURBULENCE_M_S] <= 10.0f &&
         p[SIM3D_GYRO_LPF_HZ] >= 5.0f && p[SIM3D_GYRO_LPF_HZ] <= 500.0f && p[SIM3D_ACCEL_LPF_HZ] >= 5.0f && p[SIM3D_ACCEL_LPF_HZ] <= 500.0f &&
         fabsf(p[SIM3D_ROLL_TORQUE_NMM]) <= 50.0f &&
-        ((int)p[SIM3D_THRUST_PROFILE] != 2 || curve_n > 1);
+        ((int)p[SIM3D_THRUST_PROFILE] != 2 || curve_n > 1) &&
+        p[SIM3D_PYRO_CHANNEL] >= 0.0f && p[SIM3D_PYRO_CHANNEL] <= 3.0f && p[SIM3D_PYRO_ALT_M] >= 0.0f &&
+        p[SIM3D_PYRO_DELAY_MS] >= 0.0f && p[SIM3D_PYRO_BACKUP_MS] >= 0.0f;
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -285,6 +289,8 @@ static int sim_begin(Sim *s, const float *p, unsigned param_count)
     s->pulse_latched[0] = s->settings.servo[0].center_us;
     s->pulse_latched[1] = s->settings.servo[1].center_us;
     s->summary[SIM3D_SUM_CHUTE_T] = s->summary[SIM3D_SUM_ARMED_T] = s->summary[SIM3D_SUM_LAUNCH_T] = -1.0f;
+    s->summary[SIM3D_SUM_CHARGE_T] = s->summary[SIM3D_SUM_TVC_ON_T] = -1.0f;
+    EasyTVC_ChargeInit(&s->charge);
     s->chute_open_time = s->land_time = -1.0f;
     s->ready = true;
     return 0;
@@ -563,12 +569,28 @@ static void sim_step(Sim *s, float *rows, unsigned max_rows, unsigned *row_count
         }
         if (out.control.fault) s->summary[SIM3D_SUM_TVC_FAULT] = 1.0f;
         if (out.control.enabled) {
+            if (s->summary[SIM3D_SUM_TVC_ON_T] < 0) s->summary[SIM3D_SUM_TVC_ON_T] = t - p[SIM3D_IGNITION_S];
             ++s->tvc_ticks;
             if (fabsf(out.control.command[0]) > 0.98f || fabsf(out.control.command[1]) > 0.98f) ++s->saturated_ticks;
         }
-        if (p[SIM3D_CHUTE_ENABLED] > 0.5f && !s->chute_open &&
+        /* recovery exactly as main.c does it: the release servo, and the ejection charge through
+         * the firmware's own logic. A charge behind locked pyro outputs deploys nothing. */
+        bool deploy = p[SIM3D_CHUTE_SERVO] > 0.5f &&
             EasyTVC_ChuteShouldOpen(s->launched, now_ms - s->launch_ms, out.flight.state,
-                                    out.flight.drogue_deploy_requested, (uint32_t)p[SIM3D_CHUTE_BACKUP_MS])) {
+                                    out.flight.drogue_deploy_requested, (uint32_t)p[SIM3D_CHUTE_BACKUP_MS]);
+        {
+            const EasyTVCChargeConfig charge_config = {
+                .channel = (uint8_t)p[SIM3D_PYRO_CHANNEL], .delay_ms = (uint32_t)p[SIM3D_PYRO_DELAY_MS],
+                .backup_ms = (uint32_t)p[SIM3D_PYRO_BACKUP_MS], .fire_ms = 1000U, .deploy_alt_m = p[SIM3D_PYRO_ALT_M]};
+            const bool reached_apogee = out.flight.drogue_deploy_requested ||
+                (out.flight.state >= EASYTVC_FLIGHT_APOGEE && out.flight.state <= EASYTVC_FLIGHT_LANDED);
+            const bool was_fired = s->charge.fired;
+            (void)EasyTVC_ChargeStep(&s->charge, &charge_config, s->launched, s->launch_ms, reached_apogee,
+                                     s->app.nav.altitude_m, true, now_ms);
+            if (s->charge.fired && !was_fired) s->summary[SIM3D_SUM_CHARGE_T] = t - p[SIM3D_IGNITION_S];
+            if (s->charge.fired && p[SIM3D_PYRO_LIVE] > 0.5f) deploy = true;
+        }
+        if (deploy && !s->chute_open) {
             s->chute_open = true;
             s->chute_open_time = t;
             s->summary[SIM3D_SUM_CHUTE_T] = t - p[SIM3D_IGNITION_S];

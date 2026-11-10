@@ -224,6 +224,40 @@ static void test_imu_dropout_in_boost(void)
     printf("flight: 15 ms IMU dropout in boost held the gimbal and kept TVC on; 150 ms gave up\n");
 }
 
+/* A barometer that freezes in flight must not drag the speed estimate to zero (a false apogee
+ * while still climbing), and an attitude gap must not lose the rotation that happened in it. */
+static void test_stale_baro_and_attitude_gap(void)
+{
+    EasyTVCNavFilter frozen, ignored;
+    EasyTVC_NavInit(&frozen, 0.0f);
+    EasyTVC_NavInit(&ignored, 0.0f);
+    frozen.vertical_speed_m_s = ignored.vertical_speed_m_s = 19.0f;      /* burnout, coasting up */
+    float lowest = 19.0f;
+    for (unsigned i = 0; i < 100U; ++i) {                                 /* 0.5 s, baro stuck at 0 m */
+        EasyTVC_NavUpdate(&frozen, 0.0f, true, -G, 0.005f);
+        EasyTVC_NavUpdate(&ignored, 0.0f, false, -G, 0.005f);
+        if (frozen.vertical_speed_m_s < lowest) lowest = frozen.vertical_speed_m_s;
+    }
+    assert(lowest <= 0.0f);                                               /* following it: a false apogee */
+    assert(ignored.vertical_speed_m_s > 13.0f && ignored.vertical_speed_m_s < 15.0f);   /* 19 - g*0.5 */
+
+    EasyTVCApp app;
+    EasyTVC_AppInit(&app, 0);
+    EasyTVCAppInput in = {.accel_m_s2 = {0, 0, G}, .gyro_rad_s = {0.5f, 0, 0}, .sensors_healthy = true,
+                          .dt_s = 0.005f, .now_ms = 5};
+    (void)EasyTVC_AppStep(&app, &in);
+    in.sensors_healthy = false;                                           /* 40 ms with no usable IMU */
+    for (in.now_ms = 10; in.now_ms <= 45; in.now_ms += 5) (void)EasyTVC_AppStep(&app, &in);
+    in.sensors_healthy = true;
+    in.now_ms = 50;
+    in.accel_m_s2[2] = 3.0f * G;                                          /* no accel correction */
+    (void)EasyTVC_AppStep(&app, &in);
+    float tilt[2];
+    EasyTVC_ControllerTilt(&app.attitude.orientation, tilt);
+    assert(tilt[0] > 0.5f * 0.045f && tilt[0] < 0.5f * 0.055f);          /* ~0.5 rad/s over the whole 50 ms */
+    puts("flight: frozen barometer ignored (no false apogee); attitude covers an IMU gap");
+}
+
 static void test_pad_safety(void)
 {
     Vehicle v;
@@ -272,6 +306,7 @@ static void test_pad_safety(void)
 int main(void)
 {
     test_imu_dropout_in_boost();
+    test_stale_baro_and_attitude_gap();
     test_full_flight();
     test_backup_timer_opens_chute_after_fault();
     test_pad_safety();

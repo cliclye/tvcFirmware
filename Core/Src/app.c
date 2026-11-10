@@ -32,6 +32,7 @@ void EasyTVC_AppInit(EasyTVCApp *app, uint32_t now_ms)
     EasyTVC_PyroSequencerInit(&app->pyro);
     EasyTVC_LogRingInit(&app->log, app->log_storage, 32U);
     app->skip_text_telemetry = false;
+    app->missed_s = 0.0f;
 }
 
 bool EasyTVC_AppApplySettings(EasyTVCApp *app, const EasyTVCSettings *settings, bool physical_arm)
@@ -58,17 +59,22 @@ EasyTVCAppOutput EasyTVC_AppStep(EasyTVCApp *app, const EasyTVCAppInput *input)
     }
 
     if (healthy) {
+        /* after a gap, this sample's rate stands in for the time that was skipped (50 ms at most) */
+        const float dt_s = fminf(input->dt_s + app->missed_s, 0.05f);
+        app->missed_s = 0.0f;
         EasyTVC_AttitudeUpdate(&app->attitude, input->gyro_rad_s, input->accel_m_s2,
             input->accel_is_gravity_reference && app->flight.state <= EASYTVC_FLIGHT_ARMED &&
-            fabsf(vector_norm(input->accel_m_s2) - gravity) < gravity * 0.15f, input->dt_s);
+            fabsf(vector_norm(input->accel_m_s2) - gravity) < gravity * 0.15f, dt_s);
         const EasyTVCQuaternion q = app->attitude.orientation;
         /* Body +Z is noseward; rotate specific force into world vertical. */
         const float vertical_accel =
             2.0f * (q.x * q.z - q.w * q.y) * input->accel_m_s2[0] +
             2.0f * (q.w * q.x + q.y * q.z) * input->accel_m_s2[1] +
             (q.w*q.w - q.x*q.x - q.y*q.y + q.z*q.z) * input->accel_m_s2[2];
-        EasyTVC_NavUpdate(&app->nav, input->baro_altitude_m,
-                         vertical_accel - gravity, input->dt_s);
+        EasyTVC_NavUpdate(&app->nav, input->baro_altitude_m, !input->baro_stale,
+                         vertical_accel - gravity, dt_s);
+    } else if (isfinite(input->dt_s) && input->dt_s > 0.0f) {
+        app->missed_s = fminf(app->missed_s + input->dt_s, 0.05f);
     }
 
     const EasyTVCFlightInput flight_input = {

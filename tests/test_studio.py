@@ -33,9 +33,10 @@ class FlightSim3DTests(unittest.TestCase):
         cls.native = studio.NativeController()
         cls.config = studio.launch.read_config(studio.launch.find_project())
         cls.vehicle = studio.launch.upgrade_vehicle({})   # the default TVCRocketV3 model (978 g, F15)
+        cls.servo_config = {**cls.config, "CHUTE_CHANNEL": 3, "PYRO_CHUTE_CHANNEL": 0}   # recovery by release servo
 
     def test_configured_rocket_flies(self):
-        result = studio.launch.run_sim3d(self.native, self.config, self.vehicle, studio.launch.sim_defaults())
+        result = studio.launch.run_sim3d(self.native, self.servo_config, self.vehicle, studio.launch.sim_defaults())
         s = result["summary"]
         self.assertGreater(len(result["rows"]), 100)
         self.assertEqual(s["tvc_fault"], 0)
@@ -80,9 +81,56 @@ class FlightSim3DTests(unittest.TestCase):
         self.assertEqual(studio.launch.gimbal_angle_deg(1000, m), m["stop_deg"])   # 90 deg of horn would be 12.4 deg: clamped
 
     def test_batch(self):
-        result = studio.launch.run_sim3d_batch(self.native, self.config, self.vehicle, studio.launch.sim_defaults(), 10)
+        result = studio.launch.run_sim3d_batch(self.native, self.servo_config, self.vehicle, studio.launch.sim_defaults(), 10)
         self.assertEqual(result["count"], 10)
         self.assertGreaterEqual(result["success"], 8)
+
+    def test_tuning_lab_engine(self):
+        """Gains judged on the real rocket: evaluation, launch margin and the auto-tune job."""
+        import time as _t
+        launch, sim = studio.launch, studio.launch.sim_defaults()
+        # 1.5 g launch threshold: at 1.8 g this rocket misses the odd launch in the "all" case (the real finding)
+        base = {**self.servo_config, "LAUNCH_ACCEL_G": 1.5}
+        good = launch.tune_evaluate(self.native, base, self.vehicle, sim, flights=10, stress_flights=6)
+        self.assertEqual([x["key"] for x in good["stress"]], ["slow", "slop", "weak", "heavy", "all"])
+        self.assertTrue(good["held_all"])
+        self.assertGreater(good["nominal"]["tvc_on_t"], good["nominal"]["launch_t"])
+        self.assertTrue(all(len(p) == 5 for p in good["trace"]) and len(good["trace"]) > 50)
+        json.dumps(good)
+        weak = launch.tune_evaluate(self.native, {**base, "KP": 0.3, "KI": 0.0, "KD": 0.02}, self.vehicle, sim,
+                                    flights=10, stress_flights=6)
+        self.assertGreater(weak["score"], good["score"] * 3)                  # far too soft: flights are lost
+        self.assertFalse(weak["held_all"])
+        # a lower launch threshold leaves more thrust in hand before a launch is missed
+        low = launch.launch_margin(self.native, {**self.servo_config, "LAUNCH_ACCEL_G": 1.4}, self.vehicle, sim, seeds=4)
+        high = launch.launch_margin(self.native, {**self.servo_config, "LAUNCH_ACCEL_G": 2.4}, self.vehicle, sim, seeds=4)
+        self.assertGreater(low["percent"], high["percent"])
+        job = launch.TuneJob(self.native, self.servo_config, self.vehicle, sim)
+        _t.sleep(0.5)
+        self.assertTrue(job.status()["running"])
+        job.cancel()
+        job.thread.join(20)
+        self.assertTrue(job.status()["cancelled"] and not job.status()["running"])
+
+    def test_recovery_is_flown_as_the_firmware_would(self):
+        """Release servo, a live charge (also at a deploy height), and a charge behind locked outputs."""
+        launch, sim = studio.launch, studio.launch.sim_defaults()
+        charge = {**self.config, "CHUTE_CHANNEL": 0, "PYRO_CHUTE_CHANNEL": 1, "PYRO_DEPLOY_ALT_M": 0.0}
+        with patch.object(launch, "pyro_live_in_firmware", lambda: False):
+            locked = launch.run_sim3d(self.native, charge, self.vehicle, sim)
+            self.assertLess(locked["summary"]["chute_t"], 0)                 # nothing deploys ...
+            self.assertGreater(locked["summary"]["charge_t"], 0)             # ... though the charge was due
+            self.assertTrue(any(v["level"] == "bad" and "locked" in v["text"] for v in locked["verdict"]))
+            self.assertEqual(launch.run_sim3d_batch(self.native, charge, self.vehicle, sim, 5)["reasons"], {"no parachute": 5})
+            live = launch.run_sim3d(self.native, charge, self.vehicle, {**sim, "pyro_unlocked": 1})
+            self.assertGreater(live["summary"]["chute_t"], 0)
+            self.assertTrue(live["recovery"]["assumed_unlocked"])
+            low = launch.run_sim3d(self.native, {**charge, "PYRO_DEPLOY_ALT_M": 20.0, "PYRO_BACKUP_MS": 20000},
+                                   self.vehicle, {**sim, "pyro_unlocked": 1})["summary"]
+            self.assertGreater(low["chute_t"], live["summary"]["chute_t"] + 1.0)   # waits to come down to 20 m
+        # a motor with a measured curve always flies it, whatever the saved choice says
+        at = launch.SIM3D_PARAMS.index("thrust_profile")
+        self.assertEqual(launch.sim_params(self.servo_config, self.vehicle, {**sim, "thrust_profile": 1})[at], 2.0)
 
 
 class SensorTestImageTests(unittest.TestCase):
@@ -331,6 +379,9 @@ class GroundLinkTests(unittest.TestCase):
         self.assertEqual(self.g.parse_message("TLM", base + ",3700")[1]["deploy_eta_s"], 3.7)
         self.assertIsNone(self.g.parse_message("TLM", base + ",-1")[1]["deploy_eta_s"])
         self.assertIsNone(self.g.parse_message("TLM", base)[1]["deploy_eta_s"])
+        sys_frame = "1,3,0,0,0,1234,3300,0,0,0,1,7,10,0,0,8000,900,0,0,0,0,0,0"     # image 3: the pyro bench image
+        self.assertEqual(self.g.parse_message("SYS", sys_frame)[1]["image"], "pyrobench")
+        self.assertIn("pyrobench", studio.launch.IMAGES)
 
     def test_history_since_and_ui_state_merge(self):
         import time as _t

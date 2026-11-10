@@ -7,7 +7,13 @@
  * Policy only. Pin nets exist in board_pins.h; this file still does not
  * configure or write any physical GPIO. Vendor pyro nets are untested.
  */
+/* The master pyro lock: 0 = no pyro pin is ever driven. It is 0 for every image except
+ * easytvc_pyrobench (CMakeLists.txt), the bench-only image for testing the pyro channels with a
+ * test load: it never arms or flies, so only Studio's pyro ground test can switch a channel. The
+ * flight image unlocks only by changing this line after that test has passed. */
+#ifndef EASYTVC_PYRO_OUTPUTS_COMPILED_IN
 #define EASYTVC_PYRO_OUTPUTS_COMPILED_IN 0
+#endif
 
 typedef enum {
     EASYTVC_FLIGHT_IDLE = 0,

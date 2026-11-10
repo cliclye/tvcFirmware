@@ -438,6 +438,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/sim3d.js": ("sim3d.js", "text/javascript; charset=utf-8"),
                   "/gimbal.js": ("gimbal.js", "text/javascript; charset=utf-8"),
                   "/live.js": ("live.js", "text/javascript; charset=utf-8"),
+                  "/tune.js": ("tune.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/terminal.css": ("terminal.css", "text/css; charset=utf-8")}
         if self.path in static:
@@ -478,6 +479,22 @@ class Handler(BaseHTTPRequestHandler):
             return launch.parse_eng(text)
         if path == "/api/sim3d/live/inject":
             return launch.live_inject(server.native, data.get("kind"), data.get("a", 0.0), data.get("b", 0.0))
+        if path == "/api/tune/evaluate":
+            return launch.tune_evaluate(server.native, data.get("config"), data.get("vehicle") or {}, data.get("sim") or {})
+        if path == "/api/tune/start":
+            job = getattr(server, "tune_job", None)
+            if job is not None and job.status()["running"]:
+                raise ValueError("Auto-tune is already running.")
+            server.tune_job = launch.TuneJob(server.native, data.get("config"), data.get("vehicle") or {}, data.get("sim") or {})
+            return server.tune_job.status()
+        if path == "/api/tune/status":
+            job = getattr(server, "tune_job", None)
+            return job.status() if job is not None else {"running": False, "result": None, "stage": "", "progress": 0}
+        if path == "/api/tune/cancel":
+            job = getattr(server, "tune_job", None)
+            if job is not None:
+                job.cancel()
+            return {"ok": True}
         if path == "/api/sim3d/batch":
             return launch.run_sim3d_batch(server.native, data.get("config"), data.get("vehicle"), data.get("sim"), data.get("count", 40))
         if path == "/api/rocket/model":
@@ -608,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number.")))
             if not isinstance(data, dict): raise ValueError("Expected an object.")
             native, device = self.server.native, self.server.device
-            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/sim3d", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
+            launch_result = self.launch_route(data) if self.path.startswith(("/api/rocket", "/api/state", "/api/sim3d", "/api/tune", "/api/build", "/api/dfu", "/api/monitor", "/api/logs")) else None
             if launch_result is not None: result = launch_result
             elif self.path == "/api/simulate": result = native.simulate(data)
             elif self.path == "/api/validate":
